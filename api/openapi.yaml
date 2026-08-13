@@ -58,6 +58,18 @@ paths:
         '401':
           $ref: '#/components/responses/UnauthorizedError'
 
+  /auth/logout:
+    post:
+      summary: User Logout & Session Revocation
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Session invalidated successfully (clears session cookie / revokes token)
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
   /devices:
     get:
       summary: List Tenant Devices

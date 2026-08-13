@@ -7,7 +7,7 @@ export interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, pass: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   // Dev-only role simulation switcher
   switchRole: (role: UserRole) => void;
   hasPermission: (permission: PermissionCode) => boolean;
@@ -106,22 +106,32 @@ const ROLE_PERMISSIONS: Record<UserRole, PermissionCode[]> = {
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<UserSession | null>(() => {
-    const saved = localStorage.getItem('pcp_auth_session');
-    if (saved === 'null' || saved === 'none' || !saved) return null;
-    try {
-      return JSON.parse(saved);
-    } catch {
-      return null;
+    if (import.meta.env.DEV) {
+      const saved = localStorage.getItem('pcp_auth_session');
+      if (saved === 'null' || saved === 'none' || !saved) return null;
+      try {
+        return JSON.parse(saved);
+      } catch {
+        return null;
+      }
     }
+    return null;
   });
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState<boolean>(!import.meta.env.DEV);
 
   useEffect(() => {
     let mounted = true;
     async function loadSession() {
-      const current = await authService.fetchSession();
-      if (mounted) {
-        setSession(current);
+      setIsLoading(true);
+      try {
+        const current = await authService.fetchSession();
+        if (mounted) {
+          setSession(current);
+        }
+      } finally {
+        if (mounted) {
+          setIsLoading(false);
+        }
       }
     }
     loadSession();
@@ -131,10 +141,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    if (session) {
-      localStorage.setItem('pcp_auth_session', JSON.stringify(session));
-    } else {
-      localStorage.setItem('pcp_auth_session', 'null');
+    if (import.meta.env.DEV) {
+      if (session) {
+        localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      } else {
+        localStorage.setItem('pcp_auth_session', 'null');
+      }
     }
   }, [session]);
 
@@ -148,9 +160,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
-    authService.logout();
-    setSession(null);
+  const logout = async () => {
+    setIsLoading(true);
+    try {
+      await authService.logout();
+      setSession(null);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Dev-only role switcher guarded by feature flag

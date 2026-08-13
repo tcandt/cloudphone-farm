@@ -11,6 +11,7 @@ export class CommandExecutionError extends Error {
 
 interface IdempotencyRecord {
   command: DeviceCommand;
+  fingerprint: string;
   expiresAt: number;
 }
 
@@ -92,10 +93,18 @@ export class CommandEngine {
     // 3. Check authorization, leases, device online status, and payload details
     this.validateCommandAuthorization(req, device, session);
 
-    // 4. Check idempotency after authorization (scoped to organization)
+    // 4. Check idempotency and request fingerprinting (scoped to organization)
+    const requestFingerprint = `${req.deviceId}:${req.type}:${JSON.stringify(req.payload)}:${session.user_id}`;
     const idempotencyScopedKey = `${session.organization_id}:${req.idempotencyKey}`;
     const existing = this.idempotencyStore.get(idempotencyScopedKey);
+
     if (existing) {
+      if (existing.fingerprint !== requestFingerprint) {
+        throw new CommandExecutionError(
+          'IDEMPOTENCY_CONFLICT',
+          'Idempotency key reused with different request parameters.'
+        );
+      }
       return existing.command;
     }
 
@@ -120,6 +129,7 @@ export class CommandEngine {
     // Cache idempotency with 10 min TTL
     this.idempotencyStore.set(idempotencyScopedKey, {
       command,
+      fingerprint: requestFingerprint,
       expiresAt: now + 600 * 1000,
     });
 
@@ -148,18 +158,19 @@ export class CommandEngine {
       throw new CommandExecutionError('DEVICE_OFFLINE', `Device ${device.device_id} is ${device.status} and cannot receive commands.`);
     }
 
-    // Validate payload details
+    // Granular device capability mapping per command type
     if (req.type === 'gesture.touch') {
+      if (!device.capabilities.control.supported || !device.capabilities.control.touch) {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Touch gesture interaction is unsupported on this device.');
+      }
       const p = req.payload as { x?: number; y?: number };
       if (typeof p.x !== 'number' || typeof p.y !== 'number' || p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) {
         throw new CommandExecutionError('INVALID_PAYLOAD', 'Touch gesture coordinates (x, y) must be numbers between 0 and 1.');
       }
-    } else if (req.type === 'input.text') {
-      const p = req.payload as { text?: string };
-      if (typeof p.text !== 'string' || !p.text.trim()) {
-        throw new CommandExecutionError('INVALID_PAYLOAD', 'Input text command requires a non-empty text string.');
-      }
     } else if (req.type === 'gesture.swipe') {
+      if (!device.capabilities.control.supported || !device.capabilities.control.swipe) {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Swipe gesture interaction is unsupported on this device.');
+      }
       const p = req.payload as { x1?: number; y1?: number; x2?: number; y2?: number };
       if (
         typeof p.x1 !== 'number' ||
@@ -172,6 +183,27 @@ export class CommandEngine {
         p.y2 < 0 || p.y2 > 1
       ) {
         throw new CommandExecutionError('INVALID_PAYLOAD', 'Swipe gesture coordinates (x1, y1, x2, y2) must be numbers between 0 and 1.');
+      }
+    } else if (req.type === 'input.text') {
+      if (!device.capabilities.control.supported || device.capabilities.control.text_input === 'none') {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Text input command is unsupported on this device.');
+      }
+      const p = req.payload as { text?: string };
+      if (typeof p.text !== 'string' || !p.text.trim()) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Input text command requires a non-empty text string.');
+      }
+    } else if (['global.back', 'global.home', 'global.recents'].includes(req.type)) {
+      const actionKey = req.type.replace('global.', '') as 'back' | 'home' | 'recents';
+      if (!device.capabilities.control.supported || !device.capabilities.control.global_actions?.includes(actionKey)) {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', `Global action ${actionKey} is unsupported on this device.`);
+      }
+    } else if (isView) {
+      if (!device.capabilities.capture.supported) {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Screen capture and stream viewing is unsupported on this device.');
+      }
+    } else if (isAdmin || isSoftware || isNetwork) {
+      if (!device.capabilities.control.sensitive_actions) {
+        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Sensitive administrative action is disabled on this device.');
       }
     }
 
@@ -202,40 +234,31 @@ export class CommandEngine {
       }
     }
 
-    // View commands
+    // View commands permission check
     if (isView) {
       if (!session.permissions.includes('device.stream.view') && !session.permissions.includes('device.read')) {
         throw new CommandExecutionError('PERMISSION_DENIED', 'Missing device.stream.view permission.');
       }
     }
 
-    // Admin commands
+    // Admin commands permission check
     if (isAdmin) {
       if (!session.permissions.includes('device.command.sensitive')) {
         throw new CommandExecutionError('PERMISSION_DENIED', 'Missing device.command.sensitive permission.');
       }
-      if (!device.capabilities.control.sensitive_actions) {
-        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Sensitive administrative action disabled on standard non-ADB APK.');
-      }
     }
 
-    // Software installation
+    // Software installation permission check
     if (isSoftware) {
       if (!session.permissions.includes('agent.enroll') && !session.permissions.includes('device.command.sensitive')) {
         throw new CommandExecutionError('PERMISSION_DENIED', 'Missing permission for APK software installation.');
       }
-      if (!device.capabilities.control.sensitive_actions) {
-        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'APK installation disabled on non-root device.');
-      }
     }
 
-    // Network proxy modification
+    // Network proxy modification permission check
     if (isNetwork) {
       if (!session.permissions.includes('device.update') && !session.permissions.includes('organization.manage')) {
         throw new CommandExecutionError('PERMISSION_DENIED', 'Missing permission for proxy configuration.');
-      }
-      if (!device.capabilities.control.sensitive_actions) {
-        throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Proxy modification disabled on non-ADB APK.');
       }
     }
   }

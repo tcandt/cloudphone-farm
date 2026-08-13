@@ -42,12 +42,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
   }, [device.device_id, isStreaming, sessionId]);
 
   const toggleStream = () => {
-    if (isStreaming) {
-      defaultMediaRegistry.release(sessionId);
-      setIsStreaming(false);
-    } else {
-      setIsStreaming(true);
-    }
+    setIsStreaming((prev) => !prev);
   };
 
   return (

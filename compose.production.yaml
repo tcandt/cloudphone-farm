@@ -1,5 +1,3 @@
-version: '3.8'
-
 networks:
   pcp-internal:
     driver: bridge
@@ -72,6 +70,8 @@ services:
       - "3478:3478/tcp"
       - "3478:3478/udp"
       - "49152-65535:49152-65535/udp"
+    environment:
+      - COTURN_REALM=${COTURN_REALM:-phonecontrol.io}
     secrets:
       - coturn_secret
     command:
