@@ -11,7 +11,7 @@ export class CommandExecutionError extends Error {
 
 interface IdempotencyRecord {
   command: DeviceCommand;
-  expiresAt: number; // Timestamp ms
+  expiresAt: number;
 }
 
 export class CommandEngine {
@@ -23,10 +23,10 @@ export class CommandEngine {
     // Seed initial active control lease for dev
     this.activeLeases.set('lease_dev_001', {
       control_lease_id: 'lease_dev_001',
-      device_id: 'dev_pixel7_001',
-      organization_id: 'org_cloudphone_demo',
-      user_id: 'usr_owner_001',
-      user_display_name: 'Alex Rivera',
+      device_id: 'dev_s7_001',
+      organization_id: 'org_pcp_enterprise_01',
+      user_id: 'usr_owner_01',
+      user_display_name: 'Minh Tuấn (Owner)',
       acquired_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
       ttl_seconds: 3600,
@@ -34,6 +34,22 @@ export class CommandEngine {
   }
 
   public registerLease(lease: ControlLease): void {
+    // Check single active lease occupancy per device
+    for (const [existingId, existingLease] of this.activeLeases.entries()) {
+      if (existingLease.device_id === lease.device_id && new Date(existingLease.expires_at).getTime() > Date.now()) {
+        if (existingLease.user_id !== lease.user_id) {
+          throw new CommandExecutionError(
+            'LEASE_CONFLICT',
+            `Device ${lease.device_id} already has an active control lease held by user ${existingLease.user_display_name}.`
+          );
+        } else {
+          // Same user replacing/renewing lease on the device
+          this.activeLeases.delete(existingId);
+        }
+      } else if (new Date(existingLease.expires_at).getTime() <= Date.now()) {
+        this.activeLeases.delete(existingId);
+      }
+    }
     this.activeLeases.set(lease.control_lease_id, lease);
   }
 
@@ -48,13 +64,7 @@ export class CommandEngine {
   public dispatch(req: DispatchCommandRequest, session: UserSession): DeviceCommand {
     this.cleanExpiredIdempotency();
 
-    // 1. Check idempotency
-    const existing = this.idempotencyStore.get(req.idempotencyKey);
-    if (existing) {
-      return existing.command;
-    }
-
-    // 2. Validate timestamp & clock skew (expired or > 5 min in future)
+    // 1. Validate timestamp & clock skew bounds
     const now = Date.now();
     const issuedAtTime = new Date(req.issuedAt).getTime();
     const expiresAtTime = new Date(req.expiresAt).getTime();
@@ -62,18 +72,32 @@ export class CommandEngine {
     if (isNaN(issuedAtTime) || issuedAtTime > now + 300 * 1000) {
       throw new CommandExecutionError('INVALID_TIMESTAMP', 'Command issuedAt timestamp is in the far future.');
     }
-    if (isNaN(expiresAtTime) || expiresAtTime <= now) {
+    if (isNaN(expiresAtTime) || issuedAtTime > expiresAtTime) {
+      throw new CommandExecutionError('INVALID_TIMEFRAME', 'Command issuedAt cannot be later than expiresAt.');
+    }
+    if (expiresAtTime <= now) {
       throw new CommandExecutionError('COMMAND_EXPIRED', 'Command request envelope has expired.');
     }
 
-    // 3. Find device
+    // 2. Find device & validate tenant isolation
     const device = mockDevices.find((d) => d.device_id === req.deviceId);
     if (!device) {
       throw new CommandExecutionError('DEVICE_NOT_FOUND', `Device ID ${req.deviceId} not found.`);
     }
 
-    // 4. Validate permissions and leases based on command category
+    if (device.organization_id !== session.organization_id) {
+      throw new CommandExecutionError('TENANT_MISMATCH', 'Target device belongs to a different organization.');
+    }
+
+    // 3. Check authorization, leases, device online status, and payload details
     this.validateCommandAuthorization(req, device, session);
+
+    // 4. Check idempotency after authorization (scoped to organization)
+    const idempotencyScopedKey = `${session.organization_id}:${req.idempotencyKey}`;
+    const existing = this.idempotencyStore.get(idempotencyScopedKey);
+    if (existing) {
+      return existing.command;
+    }
 
     // 5. Create command record
     const command: DeviceCommand = {
@@ -94,7 +118,7 @@ export class CommandEngine {
     this.commandHistory.set(req.deviceId, history);
 
     // Cache idempotency with 10 min TTL
-    this.idempotencyStore.set(req.idempotencyKey, {
+    this.idempotencyStore.set(idempotencyScopedKey, {
       command,
       expiresAt: now + 600 * 1000,
     });
@@ -119,6 +143,38 @@ export class CommandEngine {
     const isNetwork = req.type === 'network.proxy.apply';
     const isView = req.type === 'screen.capture';
 
+    // Device status check for interactive/admin commands
+    if ((isInteractive || isAdmin || isSoftware || isNetwork) && device.status !== 'online') {
+      throw new CommandExecutionError('DEVICE_OFFLINE', `Device ${device.device_id} is ${device.status} and cannot receive commands.`);
+    }
+
+    // Validate payload details
+    if (req.type === 'gesture.touch') {
+      const p = req.payload as { x?: number; y?: number };
+      if (typeof p.x !== 'number' || typeof p.y !== 'number' || p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Touch gesture coordinates (x, y) must be numbers between 0 and 1.');
+      }
+    } else if (req.type === 'input.text') {
+      const p = req.payload as { text?: string };
+      if (typeof p.text !== 'string' || !p.text.trim()) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Input text command requires a non-empty text string.');
+      }
+    } else if (req.type === 'gesture.swipe') {
+      const p = req.payload as { x1?: number; y1?: number; x2?: number; y2?: number };
+      if (
+        typeof p.x1 !== 'number' ||
+        typeof p.y1 !== 'number' ||
+        typeof p.x2 !== 'number' ||
+        typeof p.y2 !== 'number' ||
+        p.x1 < 0 || p.x1 > 1 ||
+        p.y1 < 0 || p.y1 > 1 ||
+        p.x2 < 0 || p.x2 > 1 ||
+        p.y2 < 0 || p.y2 > 1
+      ) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Swipe gesture coordinates (x1, y1, x2, y2) must be numbers between 0 and 1.');
+      }
+    }
+
     // Interactive commands REQUIRE control lease AND device.control.input permission
     if (isInteractive) {
       if (!session.permissions.includes('device.control.input')) {
@@ -131,6 +187,9 @@ export class CommandEngine {
       const lease = this.activeLeases.get(req.controlLeaseId);
       if (!lease) {
         throw new CommandExecutionError('INVALID_CONTROL_LEASE', 'Control lease does not exist or has been revoked.');
+      }
+      if (lease.organization_id !== session.organization_id) {
+        throw new CommandExecutionError('TENANT_MISMATCH', 'Control lease belongs to a different organization.');
       }
       if (lease.device_id !== req.deviceId) {
         throw new CommandExecutionError('LEASE_DEVICE_MISMATCH', 'Control lease is bound to a different device.');

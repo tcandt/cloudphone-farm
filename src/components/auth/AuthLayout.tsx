@@ -28,8 +28,8 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, mode }) => {
             </div>
             {/* Brand Text */}
             <div className="flex items-center text-lg font-extrabold tracking-tight">
-              <span className="text-orange-600">Max</span>
-              <span className="text-slate-900">CloudPhone</span>
+              <span className="text-orange-600">Phone</span>
+              <span className="text-slate-900"> Control Platform</span>
             </div>
           </Link>
 

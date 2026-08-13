@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { UserSession, UserRole, PermissionCode } from '../types';
-import { mockCurrentUserSession } from '../data/mockData';
+import { authService } from '../services/auth-service';
 
 export interface AuthContextType {
   session: UserSession | null;
@@ -117,6 +117,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
+    async function loadSession() {
+      const current = await authService.fetchSession();
+      if (mounted) {
+        setSession(current);
+      }
+    }
+    loadSession();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (session) {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
     } else {
@@ -124,14 +138,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [session]);
 
-  const login = async (_email: string, _pass: string) => {
+  const login = async (email: string, pass: string) => {
     setIsLoading(true);
-    await new Promise((res) => setTimeout(res, 300));
-    setSession(mockCurrentUserSession);
-    setIsLoading(false);
+    try {
+      const newSession = await authService.login(email, pass);
+      setSession(newSession);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const logout = () => {
+    authService.logout();
     setSession(null);
   };
 

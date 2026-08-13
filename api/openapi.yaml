@@ -238,6 +238,24 @@ paths:
                 $ref: '#/components/schemas/EnrollmentToken'
 
   /enrollment-tokens/{id}:
+    get:
+      summary: Get Enrollment Token by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Enrollment token details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnrollmentToken'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
     delete:
       summary: Revoke Enrollment Token
       parameters:
@@ -505,6 +523,12 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     ConflictError:
       description: Resource conflict or control lease occupied
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFoundError:
+      description: Requested resource was not found
       content:
         application/json:
           schema:

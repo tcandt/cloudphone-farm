@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 const mockAdminSession = {
-  user_id: 'usr_owner_001',
+  user_id: 'usr_owner_01',
   email: 'admin@phonecontrol.io',
   display_name: 'Alex Rivera',
   organization_id: 'org_pcp_enterprise_01',
@@ -118,8 +118,8 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await expect(page.locator('text=Touch gesture at')).toBeVisible();
   });
 
-  // Test 5: Command without Lease Rejection
-  test('5. Touch command without active control lease is rejected', async ({ page }) => {
+  // Test 5: Command without Lease Rejection & UI Lock Verification
+  test('5. Control lock overlay blocks unleased control and rejects command execution', async ({ page }) => {
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
@@ -132,8 +132,18 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible();
 
-    // Attempt canvas click without lease
-    await canvas.click({ position: { x: 100, y: 150 }, force: true });
+    // Verify Interactive Control Lock UI overlay is present
+    await expect(page.locator('text=Interactive Control Lock')).toBeVisible();
+    await expect(page.locator('button:has-text("Home")')).toBeDisabled();
+
+    // Dispatch click directly to canvas element to test CommandEngine rejection handling
+    await page.evaluate(() => {
+      const c = document.querySelector('canvas');
+      if (c) {
+        c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
+      }
+    });
+
     await expect(page.locator('text=CONTROL_LEASE_REQUIRED')).toBeVisible();
   });
 
@@ -148,16 +158,35 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await expect(page.locator('h2')).toContainText('404 — Device Not Found');
   });
 
-  // Test 7: Dual Independent Streams without Collision
-  test('7. Renders Dual Independent Video Streams without session state collision', async ({ page }) => {
+  // Test 7: Dual Independent Streams without Session Collision
+  test('7. Renders Dual Independent Video Streams and verifies independent lifecycle', async ({ page }) => {
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
     }, mockAdminSession);
 
     await page.goto('/app/live-monitor');
+    await expect(page.locator('h1')).toContainText(/Authorized LIVE Monitor Console/i);
 
-    // Verify live monitor page loaded with session active
-    await expect(page.locator('h1')).toContainText(/Authorized LIVE Monitor Console|Giám sát/i);
+    // Verify two active canvases exist
+    const canvases = page.locator('canvas');
+    await expect(canvases).toHaveCount(2);
+
+    // Retrieve session IDs of both independent streams
+    const sessionId1 = await canvases.nth(0).getAttribute('data-session-id');
+    const sessionId2 = await canvases.nth(1).getAttribute('data-session-id');
+
+    expect(sessionId1).toBeTruthy();
+    expect(sessionId2).toBeTruthy();
+    expect(sessionId1).not.toBe(sessionId2);
+
+    // Stop stream on Card 1
+    const stopButtons = page.locator('button[title="Stop Stream"]');
+    await stopButtons.nth(0).click();
+
+    // Verify Card 1 is stopped while Card 2 canvas remains active
+    await expect(canvases).toHaveCount(1);
+    const remainingSessionId = await canvases.nth(0).getAttribute('data-session-id');
+    expect(remainingSessionId).toBe(sessionId2);
   });
 });
