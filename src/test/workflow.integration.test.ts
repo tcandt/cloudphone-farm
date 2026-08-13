@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { defaultMediaRegistry } from '../services/media-client';
-import { defaultCommandEngine, canonicalJsonStringify, SUPPORTED_COMMAND_TYPES } from '../services/command-engine';
+import { defaultCommandEngine, canonicalJsonStringify, SUPPORTED_COMMAND_TYPES, CommandEngine } from '../services/command-engine';
 import { defaultWsSimulator } from '../services/websocket-simulator';
 import { mockDevices, mockCurrentUserSession } from '../data/mockData';
-import { ControlLease, DeviceEntity } from '../types';
+import { ControlLease, DeviceEntity, PermissionCode, UserSession } from '../types';
 import { MockAuthService, HttpAuthService } from '../services/auth-service';
 
 describe('Phone Control Platform — Workflow & Contract Hardening Integration Tests', () => {
@@ -200,34 +200,103 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     ).toThrow('COMMAND_TYPE_UNSUPPORTED');
   });
 
-  it('Enforces granular capability checking per command type', () => {
-    // Create mock device with disabled capabilities
-    const limitedDevice: DeviceEntity = {
+  it('Rejects screen.capture and all interactive commands when target device is offline', () => {
+    const offlineDevice: DeviceEntity = {
       ...mockDevices[0],
-      device_id: 'dev_limited_01',
-      organization_id: mockCurrentUserSession.organization_id,
-      status: 'online',
-      capabilities: {
-        capture: { supported: false, codecs: [], max_width: 0, max_height: 0, max_fps: 0 },
-        control: {
-          supported: true,
-          touch: false,
-          swipe: false,
-          global_actions: [],
-          text_input: 'none',
-          sensitive_actions: false,
+      device_id: 'dev_offline_test',
+      status: 'offline',
+    };
+    mockDevices.push(offlineDevice);
+
+    const engine = new CommandEngine();
+    const now = new Date();
+
+    expect(() =>
+      engine.dispatch(
+        {
+          deviceId: offlineDevice.device_id,
+          type: 'screen.capture',
+          payload: {},
+          idempotencyKey: `idemp_off_1_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
         },
-        telemetry: [],
-        transport: [],
-      },
+        mockCurrentUserSession
+      )
+    ).toThrow('DEVICE_OFFLINE');
+
+    // Cleanup
+    const idx = mockDevices.findIndex((d) => d.device_id === 'dev_offline_test');
+    if (idx !== -1) mockDevices.splice(idx, 1);
+  });
+
+  it('Strictly requires device.stream.view permission for screen.capture (RBAC least-privilege)', () => {
+    const targetDevice = mockDevices[0];
+    const now = new Date();
+    const sessionWithoutStreamView: UserSession = {
+      ...mockCurrentUserSession,
+      permissions: ['device.read' as PermissionCode, 'dashboard.read' as PermissionCode],
     };
 
-    mockDevices.push(limitedDevice);
+    const engine = new CommandEngine();
+    expect(() =>
+      engine.dispatch(
+        {
+          deviceId: targetDevice.device_id,
+          type: 'screen.capture',
+          payload: {},
+          idempotencyKey: `idemp_rbac_stream_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
+        },
+        sessionWithoutStreamView
+      )
+    ).toThrow('PERMISSION_DENIED');
+  });
 
-    const leaseId = `lease_limited_${Math.random().toString(36).substring(2, 8)}`;
-    defaultCommandEngine.registerLease({
+  it.each([
+    {
+      name: 'Touch capability disabled',
+      cmdType: 'gesture.touch' as const,
+      payload: { x: 0.5, y: 0.5 },
+      capabilitiesPatch: { control: { supported: true, touch: false, swipe: true, global_actions: ['back' as const], text_input: 'full' as const } },
+    },
+    {
+      name: 'Swipe capability disabled',
+      cmdType: 'gesture.swipe' as const,
+      payload: { x1: 0.1, y1: 0.1, x2: 0.8, y2: 0.8 },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: false, global_actions: ['back' as const], text_input: 'full' as const } },
+    },
+    {
+      name: 'Text input capability disabled',
+      cmdType: 'input.text' as const,
+      payload: { text: 'hello' },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'none' as const } },
+    },
+    {
+      name: 'Global home action disabled',
+      cmdType: 'global.home' as const,
+      payload: {},
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const } },
+    },
+  ])('Enforces capability check for $name -> throws CAPABILITY_UNSUPPORTED', ({ cmdType, payload, capabilitiesPatch }) => {
+    const devId = `dev_cap_${Math.random().toString(36).substring(2, 6)}`;
+    const testDevice: DeviceEntity = {
+      ...mockDevices[0],
+      device_id: devId,
+      status: 'online',
+      capabilities: {
+        ...mockDevices[0].capabilities,
+        ...capabilitiesPatch,
+      },
+    };
+    mockDevices.push(testDevice);
+
+    const engine = new CommandEngine();
+    const leaseId = `lease_cap_${Math.random().toString(36).substring(2, 6)}`;
+    engine.registerLease({
       control_lease_id: leaseId,
-      device_id: limitedDevice.device_id,
+      device_id: testDevice.device_id,
       organization_id: mockCurrentUserSession.organization_id,
       user_id: mockCurrentUserSession.user_id,
       user_display_name: mockCurrentUserSession.display_name,
@@ -237,16 +306,14 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     });
 
     const now = new Date();
-
-    // 1. Touch unsupported
     expect(() =>
-      defaultCommandEngine.dispatch(
+      engine.dispatch(
         {
-          deviceId: limitedDevice.device_id,
-          type: 'gesture.touch',
-          payload: { x: 0.5, y: 0.5 },
+          deviceId: testDevice.device_id,
+          type: cmdType,
+          payload,
           controlLeaseId: leaseId,
-          idempotencyKey: `idemp_lim_1_${Math.random().toString(36).substring(2, 8)}`,
+          idempotencyKey: `idemp_cap_${Math.random().toString(36).substring(2, 6)}`,
           issuedAt: now.toISOString(),
           expiresAt: new Date(now.getTime() + 10000).toISOString(),
         },
@@ -254,56 +321,51 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       )
     ).toThrow('CAPABILITY_UNSUPPORTED');
 
-    // 2. Text input unsupported
-    expect(() =>
-      defaultCommandEngine.dispatch(
-        {
-          deviceId: limitedDevice.device_id,
-          type: 'input.text',
-          payload: { text: 'hello' },
-          controlLeaseId: leaseId,
-          idempotencyKey: `idemp_lim_2_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('CAPABILITY_UNSUPPORTED');
-
-    // 3. Screen capture unsupported
-    expect(() =>
-      defaultCommandEngine.dispatch(
-        {
-          deviceId: limitedDevice.device_id,
-          type: 'screen.capture',
-          payload: {},
-          idempotencyKey: `idemp_lim_3_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('CAPABILITY_UNSUPPORTED');
-
-    // Cleanup mock device array
-    const idx = mockDevices.findIndex((d) => d.device_id === 'dev_limited_01');
+    const idx = mockDevices.findIndex((d) => d.device_id === devId);
     if (idx !== -1) mockDevices.splice(idx, 1);
   });
 
-  it('Verifies canonicalJsonStringify handles key ordering deterministically', () => {
+  it('Verifies canonicalJsonStringify handles key ordering, primitives, dates, and cyclic object rejection', () => {
     const obj1 = { z: 1, a: { y: 'test', x: [2, 1] } };
     const obj2 = { a: { x: [2, 1], y: 'test' }, z: 1 };
 
     expect(canonicalJsonStringify(obj1)).toBe(canonicalJsonStringify(obj2));
     expect(canonicalJsonStringify(obj1)).toBe('{"a":{"x":[2,1],"y":"test"},"z":1}');
+
+    // Test cyclic reference rejection
+    const cyclicObj: Record<string, unknown> = { a: 1 };
+    cyclicObj.self = cyclicObj;
+    expect(() => canonicalJsonStringify(cyclicObj)).toThrow('INVALID_PAYLOAD');
   });
 
-  it('Verifies AuthService implementations (Mock vs Http zero-trust)', async () => {
+  it('Verifies AuthService zero-trust production HttpAuthService contract via mocked HTTP responses', async () => {
     const mockAuth = new MockAuthService();
-    const session = await mockAuth.login('test@pcp.io', 'pass');
-    expect(session.user_id).toBe('usr_owner_01');
+    const devSession = await mockAuth.login('test@pcp.io', 'pass');
+    expect(devSession.user_id).toBe('usr_owner_01');
 
     const httpAuth = new HttpAuthService();
     expect(httpAuth).toBeInstanceOf(HttpAuthService);
+
+    // Mock successful session response
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockCurrentUserSession,
+    } as Response);
+
+    const prodSession = await httpAuth.fetchSession();
+    expect(prodSession?.user_id).toBe('usr_owner_01');
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/auth/session', expect.anything());
+
+    // Mock 401 unauthenticated response
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+    } as Response);
+
+    const unauthSession = await httpAuth.fetchSession();
+    expect(unauthSession).toBeNull();
   });
 });

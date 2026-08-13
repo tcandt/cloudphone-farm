@@ -24,18 +24,35 @@ export const SUPPORTED_COMMAND_TYPES = [
   'network.proxy.apply',
 ] as const;
 
-export function canonicalJsonStringify(obj: unknown): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export function canonicalJsonStringify(val: unknown, seen = new WeakSet()): string {
+  if (val === null || typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') {
+    return JSON.stringify(val);
   }
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(canonicalJsonStringify).join(',') + ']';
+  if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
+    return 'null';
   }
-  const keys = Object.keys(obj as Record<string, unknown>).sort();
-  const sortedPairs = keys.map(
-    (key) => `${JSON.stringify(key)}:${canonicalJsonStringify((obj as Record<string, unknown>)[key])}`
-  );
-  return '{' + sortedPairs.join(',') + '}';
+  if (typeof val === 'object') {
+    if (seen.has(val)) {
+      throw new CommandExecutionError('INVALID_PAYLOAD', 'Payload contains cyclic references.');
+    }
+    seen.add(val);
+
+    if (val instanceof Date) {
+      return JSON.stringify(val.toISOString());
+    }
+    if (Array.isArray(val)) {
+      return '[' + val.map((item) => canonicalJsonStringify(item, seen)).join(',') + ']';
+    }
+    const keys = Object.keys(val as Record<string, unknown>).sort();
+    const pairs = keys
+      .filter((k) => (val as Record<string, unknown>)[k] !== undefined && typeof (val as Record<string, unknown>)[k] !== 'function')
+      .map((k) => `${JSON.stringify(k)}:${canonicalJsonStringify((val as Record<string, unknown>)[k], seen)}`);
+    return '{' + pairs.join(',') + '}';
+  }
+  return 'null';
 }
 
 interface IdempotencyRecord {
@@ -190,8 +207,8 @@ export class CommandEngine {
     const isNetwork = req.type === 'network.proxy.apply';
     const isView = req.type === 'screen.capture';
 
-    // Device status check for interactive/admin commands
-    if ((isInteractive || isAdmin || isSoftware || isNetwork) && device.status !== 'online') {
+    // Device status check for ALL executable commands (interactive, view, admin, software, network)
+    if ((isInteractive || isView || isAdmin || isSoftware || isNetwork) && device.status !== 'online') {
       throw new CommandExecutionError('DEVICE_OFFLINE', `Device ${device.device_id} is ${device.status} and cannot receive commands.`);
     }
 
@@ -271,9 +288,9 @@ export class CommandEngine {
       }
     }
 
-    // View commands permission check
+    // View commands permission check (strictly require device.stream.view for least-privilege RBAC)
     if (isView) {
-      if (!session.permissions.includes('device.stream.view') && !session.permissions.includes('device.read')) {
+      if (!session.permissions.includes('device.stream.view')) {
         throw new CommandExecutionError('PERMISSION_DENIED', 'Missing device.stream.view permission.');
       }
     }
