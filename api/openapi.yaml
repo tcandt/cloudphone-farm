@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Phone Control Platform API Specification
-  version: 1.1.0-hardening
+  version: 1.2.0
   description: |
     Phone Control Platform authoritative REST & WebSocket API specification.
     Serves organization management, device registry, WebRTC stream orchestration, control leases, command dispatch, agent enrollment, and audit logging.
@@ -110,6 +110,25 @@ paths:
                       $ref: '#/components/schemas/DeviceEntity'
                   total:
                     type: integer
+
+  /devices/{id}:
+    get:
+      summary: Get Single Device Details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Device entity details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceEntity'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
 
   /devices/{id}/control-leases:
     post:

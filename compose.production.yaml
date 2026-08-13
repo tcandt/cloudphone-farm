@@ -25,6 +25,30 @@ services:
       timeout: 5s
       retries: 3
 
+  pcp-backend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    networks:
+      - pcp-internal
+    # NO PUBLIC HOST PORTS EXPOSED DIRECTLY IN PRODUCTION
+    environment:
+      - APP_ENV=production
+      - PORT=8080
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
   postgres:
     image: postgres:15-alpine
     networks:

@@ -1,0 +1,6 @@
+# oapi-codegen v2 configuration
+package: http
+generate:
+  chi-server: true
+  models: true
+output: internal/transport/http/generated.go

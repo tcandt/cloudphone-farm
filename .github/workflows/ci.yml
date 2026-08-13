@@ -1,14 +1,14 @@
-name: Phase 1.1 CI Pipeline
+name: Phone Control Platform CI Pipeline
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'feature/**' ]
   pull_request:
     branches: [ main ]
 
 jobs:
   verify:
-    name: Build, Lint & Test
+    name: Build, Lint & Test (Frontend & Go Backend)
     runs-on: ubuntu-latest
 
     steps:
@@ -21,7 +21,7 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install Dependencies
+      - name: Install Frontend Dependencies
         run: npm ci
 
       - name: Audit Production Dependencies
@@ -44,6 +44,20 @@ jobs:
 
       - name: Execute Vite Production Build
         run: npm run build
+
+      - name: Setup Go Environment (Pinned 1.22.6)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.6'
+          cache-dependency-path: backend/go.sum
+
+      - name: Execute Go Backend Unit & Migration Tests
+        working-directory: backend
+        run: go test -v ./...
+
+      - name: Build Go Backend Server Binary
+        working-directory: backend
+        run: go build -v -o /tmp/pcp-server ./cmd/server
 
       - name: Validate Docker Compose Configuration
         run: |

@@ -5,31 +5,65 @@ services:
       dockerfile: infra/docker/Dockerfile.web
     ports:
       - "3000:80"
-    restart: unless-stopped
     environment:
       - NODE_ENV=development
-      - VITE_FEATURE_RENTAL_STORE=false
+    networks:
+      - pcp-network
+
+  pcp-backend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    ports:
+      - "8080:8080"
+    environment:
+      - APP_ENV=development
+      - PORT=8080
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - pcp-network
 
   postgres:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-phone_control_platform}
-      POSTGRES_USER: ${POSTGRES_USER:-pcp_user}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pcp_dev_password_only}
+      POSTGRES_USER: pcp_user
+      POSTGRES_PASSWORD: pcp_secure_password_2026
+      POSTGRES_DB: phone_control_platform
     ports:
-      - "127.0.0.1:5432:5432"
+      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pcp_user -d phone_control_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pcp-network
 
   redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-redis_dev_password_only}"]
+    image: redis:7.2-alpine
     ports:
-      - "127.0.0.1:6379:6379"
+      - "6379:6379"
     volumes:
       - redisdata:/data
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - pcp-network
+
+networks:
+  pcp-network:
+    driver: bridge
 
 volumes:
   pgdata:
