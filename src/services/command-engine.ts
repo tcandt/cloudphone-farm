@@ -9,6 +9,35 @@ export class CommandExecutionError extends Error {
   }
 }
 
+export const SUPPORTED_COMMAND_TYPES = [
+  'gesture.touch',
+  'gesture.swipe',
+  'input.text',
+  'global.back',
+  'global.home',
+  'global.recents',
+  'screen.capture',
+  'device.reboot',
+  'device.lock',
+  'screen.rotate',
+  'apk.install',
+  'network.proxy.apply',
+] as const;
+
+export function canonicalJsonStringify(obj: unknown): string {
+  if (obj === null || typeof obj !== 'object') {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return '[' + obj.map(canonicalJsonStringify).join(',') + ']';
+  }
+  const keys = Object.keys(obj as Record<string, unknown>).sort();
+  const sortedPairs = keys.map(
+    (key) => `${JSON.stringify(key)}:${canonicalJsonStringify((obj as Record<string, unknown>)[key])}`
+  );
+  return '{' + sortedPairs.join(',') + '}';
+}
+
 interface IdempotencyRecord {
   command: DeviceCommand;
   fingerprint: string;
@@ -65,6 +94,14 @@ export class CommandEngine {
   public dispatch(req: DispatchCommandRequest, session: UserSession): DeviceCommand {
     this.cleanExpiredIdempotency();
 
+    // 0. Validate supported command types
+    if (!SUPPORTED_COMMAND_TYPES.includes(req.type as typeof SUPPORTED_COMMAND_TYPES[number])) {
+      throw new CommandExecutionError(
+        'COMMAND_TYPE_UNSUPPORTED',
+        `Command type '${req.type}' is not supported by the platform.`
+      );
+    }
+
     // 1. Validate timestamp & clock skew bounds
     const now = Date.now();
     const issuedAtTime = new Date(req.issuedAt).getTime();
@@ -93,8 +130,8 @@ export class CommandEngine {
     // 3. Check authorization, leases, device online status, and payload details
     this.validateCommandAuthorization(req, device, session);
 
-    // 4. Check idempotency and request fingerprinting (scoped to organization)
-    const requestFingerprint = `${req.deviceId}:${req.type}:${JSON.stringify(req.payload)}:${session.user_id}`;
+    // 4. Check idempotency and request fingerprinting using canonical JSON (scoped to organization)
+    const requestFingerprint = `${req.deviceId}:${req.type}:${canonicalJsonStringify(req.payload)}:${session.user_id}`;
     const idempotencyScopedKey = `${session.organization_id}:${req.idempotencyKey}`;
     const existing = this.idempotencyStore.get(idempotencyScopedKey);
 

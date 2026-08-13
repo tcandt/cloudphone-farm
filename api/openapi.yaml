@@ -437,6 +437,19 @@ components:
           type: string
         type:
           type: string
+          enum:
+            - gesture.touch
+            - gesture.swipe
+            - input.text
+            - global.back
+            - global.home
+            - global.recents
+            - screen.capture
+            - device.reboot
+            - device.lock
+            - screen.rotate
+            - apk.install
+            - network.proxy.apply
         payload:
           type: object
         controlLeaseId:
