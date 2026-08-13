@@ -17,13 +17,12 @@ services:
       - pcp-internal
     ports:
       - "80:80"
-      - "443:443"
     restart: unless-stopped
     environment:
       - NODE_ENV=production
       - VITE_FEATURE_RENTAL_STORE=false
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:80/"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -32,7 +31,7 @@ services:
     image: postgres:15-alpine
     networks:
       - pcp-internal
-    # NO PUBLIC PORTS EXPOSED
+    # NO PUBLIC HOST PORTS EXPOSED
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-phone_control_platform}
       POSTGRES_USER: ${POSTGRES_USER:-pcp_user}
@@ -52,12 +51,12 @@ services:
     image: redis:7.2-alpine
     networks:
       - pcp-internal
-    # NO PUBLIC PORTS EXPOSED
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    # NO PUBLIC HOST PORTS EXPOSED
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-pcp_redis_secure_password}"]
     volumes:
       - redisdata:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a $${REDIS_PASSWORD:-pcp_redis_secure_password} ping"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,13 +72,13 @@ services:
       - "49152-65535:49152-65535/udp"
     environment:
       - REALM=${COTURN_REALM:-phonecontrol.io}
-      - TURN_SECRET=${COTURN_SECRET}
+      - TURN_SECRET=${COTURN_SECRET:-coturn_secure_secret_prod}
     command:
       - turnserver
       - -n
       - --log-file=stdout
       - --use-auth-secret
-      - --static-auth-secret=${COTURN_SECRET}
+      - --static-auth-secret=${COTURN_SECRET:-coturn_secure_secret_prod}
       - --realm=${COTURN_REALM:-phonecontrol.io}
       - --min-port=49152
       - --max-port=65535

@@ -10,8 +10,6 @@ import {
   PlusCircle,
   Clock,
   CheckCircle2,
-  AlertTriangle,
-  XCircle,
   ArrowRight,
   TrendingUp,
 } from 'lucide-react';

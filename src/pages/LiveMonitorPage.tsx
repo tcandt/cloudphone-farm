@@ -1,11 +1,8 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
-import { Eye, ShieldCheck, AlertCircle, Grid, Activity } from 'lucide-react';
+import { Eye, ShieldCheck } from 'lucide-react';
 import { mockDevices } from '../data/mockData';
-import { defaultMediaClient } from '../services/media-client';
 
 export const LiveMonitorPage: React.FC = () => {
-  const { t } = useTranslation();
 
   return (
     <div className="space-y-6">

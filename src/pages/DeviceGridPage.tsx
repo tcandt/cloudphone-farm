@@ -1,19 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Grid,
-  Play,
-  Square,
-  Maximize2,
-  Smartphone,
-  Wifi,
-  Activity,
-  Sparkles,
-} from 'lucide-react';
+import { Play, Maximize2 } from 'lucide-react';
 import { mockDevices } from '../data/mockData';
 import { DeviceEntity } from '../types';
 import { useUiStore } from '../stores/useUiStore';
-import { defaultMediaClient } from '../services/media-client';
 import { DeviceControlModal } from '../components/devices/DeviceControlModal';
 
 const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: DeviceEntity) => void }> = ({

@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Wallet, ShieldCheck, Download, Zap, Award, Layers, LifeBuoy } from 'lucide-react';
-import { mockCurrentUserSession } from '../data/mockData';
+import { Wallet, Download, Award, Layers, LifeBuoy } from 'lucide-react';
 import { SupportAccessModal } from '../components/support/SupportAccessModal';
 
 export const BillingPage: React.FC = () => {

@@ -15,6 +15,11 @@ export interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Dev feature flags
+const featureFlags = {
+  rbacSimulator: true,
+};
+
 const ROLE_PERMISSIONS: Record<UserRole, PermissionCode[]> = {
   owner: [
     'dashboard.read',
@@ -102,8 +107,12 @@ const ROLE_PERMISSIONS: Record<UserRole, PermissionCode[]> = {
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<UserSession | null>(() => {
     const saved = localStorage.getItem('pcp_auth_session');
-    if (saved === 'null' || saved === 'none') return null;
-    return saved ? JSON.parse(saved) : mockCurrentUserSession;
+    if (saved === 'null' || saved === 'none' || !saved) return null;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return null;
+    }
   });
   const [isLoading, setIsLoading] = useState(false);
 
@@ -111,7 +120,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (session) {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
     } else {
-      localStorage.removeItem('pcp_auth_session');
+      localStorage.setItem('pcp_auth_session', 'null');
     }
   }, [session]);
 
@@ -126,9 +135,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setSession(null);
   };
 
-  // Dev-only role switcher
+  // Dev-only role switcher guarded by feature flag
   const switchRole = (newRole: UserRole) => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV || !featureFlags.rbacSimulator) return;
     if (!session) return;
 
     const updatedSession: UserSession = {

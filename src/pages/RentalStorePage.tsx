@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ShoppingBag, Server, Check, ShieldAlert, Sparkles, Cpu } from 'lucide-react';
+import { Server, ShieldAlert, Sparkles } from 'lucide-react';
 import { mockRentalPackages, mockCurrentUserSession } from '../data/mockData';
 import { useUiStore } from '../stores/useUiStore';
 

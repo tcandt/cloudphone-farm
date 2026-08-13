@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { User, Shield, Building2, Key, CheckCircle2, ToggleLeft, ToggleRight } from 'lucide-react';
+import { User, Shield, Key, CheckCircle2, ToggleLeft, ToggleRight } from 'lucide-react';
 import { mockCurrentUserSession } from '../data/mockData';
 import { useUiStore } from '../stores/useUiStore';
 

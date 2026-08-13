@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { useNavigate, Link } from 'react-router-dom';
 import { User, Lock, Eye, EyeOff, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useAuth } from '../../context/AuthContext';
 import { AuthLayout } from '../../components/auth/AuthLayout';
 
 const loginSchema = z.object({
@@ -17,6 +18,7 @@ type LoginForm = z.infer<typeof loginSchema>;
 
 export const LoginPage: React.FC = () => {
   const { t } = useTranslation();
+  const { login } = useAuth();
   const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
 
@@ -34,8 +36,7 @@ export const LoginPage: React.FC = () => {
   });
 
   const onSubmit = async (data: LoginForm) => {
-    // Prototype login simulation
-    await new Promise((res) => setTimeout(res, 600));
+    await login(data.email, data.password);
     navigate('/app');
   };
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { defaultMediaClient } from '../services/media-client';
+import { defaultMediaRegistry } from '../services/media-client';
 import { mockCurrentUserSession, mockDevices } from '../data/mockData';
 import { useUiStore } from '../stores/useUiStore';
 
@@ -14,7 +14,8 @@ describe('Phone Control Platform — Core Architecture Tests', () => {
   });
 
   it('MediaClient starts session and generates valid StreamSession contract', async () => {
-    const session = await defaultMediaClient.startSession('dev_s7_001', {
+    const mediaClient = defaultMediaRegistry.acquire('str_test_001');
+    const session = await mediaClient.startSession('dev_s7_001', {
       resolution: '480p',
       fps: 30,
       bitrate_kbps: 1500,

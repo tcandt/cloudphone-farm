@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Users, UserPlus, Shield, Mail, CheckCircle2 } from 'lucide-react';
+import { UserPlus, CheckCircle2 } from 'lucide-react';
 import { UserRole } from '../types';
 import { PermissionGuard } from '../components/common/PermissionGuard';
 

@@ -160,7 +160,7 @@ export const IsometricIllustration: React.FC<IsometricIllustrationProps> = ({ mo
       {/* Decorative Footer Badge inside Banner */}
       <div className="relative z-10 flex items-center gap-2 text-[11px] font-semibold text-slate-400">
         <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
-        MaxCloudPhone Platform Security Standard v2.4
+        Phone Control Platform Security Standard v2.4
       </div>
     </div>
   );

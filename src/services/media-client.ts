@@ -231,4 +231,3 @@ export class DefaultMediaClientRegistry {
 }
 
 export const defaultMediaRegistry = new DefaultMediaClientRegistry();
-export const defaultMediaClient = defaultMediaRegistry.acquire('str_default_global');

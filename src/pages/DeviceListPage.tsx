@@ -1,21 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import {
-  Smartphone,
-  Search,
-  Filter,
-  CheckSquare,
-  Square,
-  Play,
-  RotateCcw,
-  SlidersHorizontal,
-  Plus,
-  ShieldCheck,
-  Zap,
-  MoreVertical,
-  Activity,
-  Layers,
-} from 'lucide-react';
+import { Search, CheckSquare, Square, Play } from 'lucide-react';
 import { mockDevices, mockGroups } from '../data/mockData';
 import { DeviceEntity } from '../types';
 import { useUiStore } from '../stores/useUiStore';

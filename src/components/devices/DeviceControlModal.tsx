@@ -2,22 +2,18 @@ import React, { useEffect, useRef, useState } from 'react';
 import { DeviceEntity, ControlLease } from '../../types';
 import { defaultMediaRegistry, MediaClient } from '../../services/media-client';
 import { defaultCommandEngine } from '../../services/command-engine';
+import { useAuth } from '../../context/AuthContext';
+import { PermissionGuard } from '../common/PermissionGuard';
 import {
   X,
+  Play,
+  RotateCcw,
   Smartphone,
-  Home,
-  ArrowLeft,
-  Layers,
-  Send,
-  Lock,
-  Power,
-  SlidersHorizontal,
-  ShieldAlert,
+  CheckCircle,
   Clock,
-  Sparkles,
+  Shield,
+  Wifi,
 } from 'lucide-react';
-import { mockCurrentUserSession } from '../../data/mockData';
-import { PermissionGuard } from '../common/PermissionGuard';
 
 interface DeviceControlModalProps {
   device: DeviceEntity;
@@ -32,12 +28,16 @@ interface CommandLogItem {
 }
 
 export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, isOpen, onClose }) => {
+  const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [lease, setLease] = useState<ControlLease | null>(null);
   const [leaseSecondsLeft, setLeaseSecondsLeft] = useState<number>(0);
   const [textPayload, setTextPayload] = useState('');
   const [commandLog, setCommandLog] = useState<CommandLogItem[]>([]);
   const mediaClientRef = useRef<MediaClient | null>(null);
+
+  // Unique stream session ID per viewer instance
+  const [sessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
 
   const addLog = (msg: string) => {
     setCommandLog((prev) => [
@@ -50,7 +50,6 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   useEffect(() => {
     if (!isOpen) return;
 
-    const sessionId = `str_${device.device_id}`;
     const mediaClient = defaultMediaRegistry.acquire(sessionId);
     mediaClientRef.current = mediaClient;
 
@@ -74,7 +73,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       mounted = false;
       defaultMediaRegistry.release(sessionId);
     };
-  }, [device, isOpen]);
+  }, [device, isOpen, sessionId]);
 
   // Handle Lease Timer Countdown
   useEffect(() => {
@@ -85,6 +84,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       setLeaseSecondsLeft(remaining);
 
       if (remaining <= 0) {
+        if (lease) defaultCommandEngine.revokeLease(lease.control_lease_id);
         setLease(null);
         addLog('Control lease ended (Expired)');
       }
@@ -94,29 +94,35 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   }, [lease]);
 
   const acquireLease = () => {
+    if (!session) return;
     const newLease: ControlLease = {
       control_lease_id: `lease_${Math.random().toString(36).substring(2, 8)}`,
       device_id: device.device_id,
       organization_id: device.organization_id,
-      user_id: mockCurrentUserSession.user_id,
-      user_display_name: mockCurrentUserSession.display_name,
+      user_id: session.user_id,
+      user_display_name: session.display_name,
       acquired_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 60000).toISOString(),
       ttl_seconds: 60,
     };
+
+    defaultCommandEngine.registerLease(newLease);
     setLease(newLease);
     setLeaseSecondsLeft(60);
     addLog('Acquired 60s exclusive control lease');
   };
 
   const releaseLease = () => {
+    if (lease) {
+      defaultCommandEngine.revokeLease(lease.control_lease_id);
+    }
     setLease(null);
     setLeaseSecondsLeft(0);
     addLog('Released control lease manually');
   };
 
   const handleCanvasClick = async (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!canvasRef.current) return;
+    if (!canvasRef.current || !session) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
     const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -128,15 +134,18 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
     try {
       const now = new Date();
-      await defaultCommandEngine.dispatchCommand({
-        deviceId: device.device_id,
-        type: 'gesture.touch',
-        payload: { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) },
-        controlLeaseId: lease?.control_lease_id,
-        idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
-        issuedAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 10000).toISOString(),
-      });
+      defaultCommandEngine.dispatch(
+        {
+          deviceId: device.device_id,
+          type: 'gesture.touch',
+          payload: { x: Number(x.toFixed(3)), y: Number(y.toFixed(3)) },
+          controlLeaseId: lease?.control_lease_id,
+          idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
+        },
+        session
+      );
       addLog(`Touch gesture at (${(x * 100).toFixed(0)}%, ${(y * 100).toFixed(0)}%)`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Command Failed';
@@ -145,17 +154,21 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   };
 
   const handleGlobalAction = async (action: 'global.back' | 'global.home' | 'global.recents') => {
+    if (!session) return;
     try {
       const now = new Date();
-      await defaultCommandEngine.dispatchCommand({
-        deviceId: device.device_id,
-        type: action,
-        payload: {},
-        controlLeaseId: lease?.control_lease_id,
-        idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
-        issuedAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 10000).toISOString(),
-      });
+      defaultCommandEngine.dispatch(
+        {
+          deviceId: device.device_id,
+          type: action,
+          payload: {},
+          controlLeaseId: lease?.control_lease_id,
+          idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
+        },
+        session
+      );
       addLog(`Global Key: ${action}`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Command Failed';
@@ -164,21 +177,45 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   };
 
   const handleSendText = async () => {
-    if (!textPayload.trim()) return;
-
+    if (!textPayload.trim() || !session) return;
     try {
       const now = new Date();
-      await defaultCommandEngine.dispatchCommand({
-        deviceId: device.device_id,
-        type: 'input.text',
-        payload: { text: textPayload },
-        controlLeaseId: lease?.control_lease_id,
-        idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
-        issuedAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 10000).toISOString(),
-      });
-      addLog(`Type text: "${textPayload}"`);
+      defaultCommandEngine.dispatch(
+        {
+          deviceId: device.device_id,
+          type: 'input.text',
+          payload: { text: textPayload },
+          controlLeaseId: lease?.control_lease_id,
+          idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
+        },
+        session
+      );
+      addLog(`Input text: "${textPayload}"`);
       setTextPayload('');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Command Failed';
+      addLog(`[Error] ${msg}`);
+    }
+  };
+
+  const handleReboot = async () => {
+    if (!session) return;
+    try {
+      const now = new Date();
+      defaultCommandEngine.dispatch(
+        {
+          deviceId: device.device_id,
+          type: 'device.reboot',
+          payload: {},
+          idempotencyKey: `idemp_${Math.random().toString(36).substring(2, 8)}`,
+          issuedAt: now.toISOString(),
+          expiresAt: new Date(now.getTime() + 10000).toISOString(),
+        },
+        session
+      );
+      addLog('Dispatched: Device Reboot');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Command Failed';
       addLog(`[Error] ${msg}`);
@@ -188,12 +225,12 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-800 text-white rounded-3xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-fadeIn">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
+      <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl w-full max-w-5xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-900/50">
+        <div className="p-4 px-6 border-b border-slate-800/80 bg-slate-900/90 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-500 flex items-center justify-center font-bold">
+            <div className="p-2.5 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400">
               <Smartphone size={20} />
             </div>
             <div>
@@ -214,181 +251,177 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
           <button
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition-colors"
+            className="p-2 text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 rounded-full transition-all"
           >
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
 
-        {/* Modal Content Grid */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
-          {/* Left Column: Simulated Screen View (5 Cols) */}
-          <div className="lg:col-span-5 p-6 bg-slate-950 flex flex-col items-center justify-center border-b lg:border-b-0 lg:border-r border-slate-800 relative">
-            <div className="relative rounded-3xl border-4 border-slate-700 bg-slate-900 shadow-2xl p-2 max-w-[280px]">
+        {/* Modal Body Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-12 overflow-hidden flex-1">
+          {/* Stream Canvas (Left Column) */}
+          <div className="md:col-span-6 bg-slate-950 p-6 flex flex-col items-center justify-center border-b md:border-b-0 md:border-r border-slate-800/80 relative">
+            <div className="relative rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-800 bg-black aspect-[9/16] w-full max-w-[280px]">
               <canvas
                 ref={canvasRef}
-                width={270}
-                height={480}
+                width={360}
+                height={640}
                 onClick={handleCanvasClick}
-                className={`rounded-2xl block bg-slate-900 transition-all ${
-                  lease ? 'cursor-crosshair hover:opacity-95' : 'cursor-not-allowed opacity-80'
-                }`}
+                className="w-full h-full cursor-crosshair object-contain"
               />
+
               {!lease && (
-                <div className="absolute inset-0 m-2 rounded-2xl bg-slate-950/70 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center">
-                  <Lock size={32} className="text-amber-400 mb-2 animate-bounce" />
-                  <p className="text-xs font-bold text-white mb-1">Require Control Lease</p>
-                  <p className="text-[11px] text-slate-400 mb-3">Click button on right panel to acquire 60s lease</p>
-                  <button
-                    onClick={acquireLease}
-                    className="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white text-xs font-extrabold rounded-xl shadow-lg transition-all"
-                  >
-                    Acquire Lease Now
-                  </button>
+                <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer" onClick={acquireLease}>
+                  <Shield size={32} className="text-amber-400 animate-bounce" />
+                  <p className="text-xs font-bold text-slate-200">Interactive Control Lock</p>
+                  <p className="text-[11px] text-slate-400 max-w-[180px]">
+                    Acquire a control lease to interact with touch gestures and send input commands.
+                  </p>
+                  <PermissionGuard permission="device.control.acquire">
+                    <button
+                      onClick={acquireLease}
+                      className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition-all active:scale-95"
+                    >
+                      Acquire Control Lease
+                    </button>
+                  </PermissionGuard>
                 </div>
               )}
             </div>
-            <p className="text-[10px] text-slate-500 mt-3 font-medium">
-              Click on canvas to simulate touch gesture
+
+            <p className="text-[10px] text-slate-500 mt-3 font-mono flex items-center gap-1">
+              <Wifi size={12} className="text-emerald-400" /> Session ID: {sessionId}
             </p>
           </div>
 
-          {/* Right Column: Interactive Controls & Logs (7 Cols) */}
-          <div className="lg:col-span-7 p-6 overflow-y-auto space-y-5 custom-scrollbar bg-slate-900">
-            {/* Lease Status Box */}
-            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className={`p-2.5 rounded-xl ${lease ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-slate-800 text-slate-400'}`}>
-                  <Clock size={20} />
-                </div>
-                <div>
-                  <h4 className="text-xs font-extrabold text-white">
-                    {lease ? 'Control Lease Active' : 'Control Lease Expired'}
-                  </h4>
-                  <p className="text-[11px] text-slate-400">
-                    {lease ? `Remaining: ${leaseSecondsLeft}s (ID: ${lease.control_lease_id})` : 'Acquire lease to send gestures'}
-                  </p>
-                </div>
+          {/* Control Panel (Right Column) */}
+          <div className="md:col-span-6 p-6 space-y-5 bg-slate-900/50 flex flex-col overflow-y-auto">
+            {/* Lease Status Card */}
+            <div className="bg-slate-800/60 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
+              <div className="space-y-1">
+                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
+                  Quyền Điều Khiển (Lease)
+                </span>
+                {lease ? (
+                  <div className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                    <span className="text-xs font-extrabold text-emerald-400">
+                      Active ({leaseSecondsLeft}s còn lại)
+                    </span>
+                  </div>
+                ) : (
+                  <div className="text-xs font-bold text-amber-400">Chỉ xem (View Only)</div>
+                )}
               </div>
 
               {lease ? (
                 <button
                   onClick={releaseLease}
-                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-xl transition-all border border-slate-700"
+                  className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 font-bold text-xs rounded-xl transition-all"
                 >
-                  Release Lease
+                  Nhả Lease
                 </button>
               ) : (
                 <PermissionGuard permission="device.control.acquire">
                   <button
                     onClick={acquireLease}
-                    className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-extrabold rounded-xl transition-all shadow-md shadow-amber-500/20"
+                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white font-extrabold text-xs rounded-xl shadow-md transition-all"
                   >
-                    Acquire Lease (60s)
+                    Lấy Quyền (Lease)
                   </button>
                 </PermissionGuard>
               )}
             </div>
 
-            {/* Android Navigation Keys */}
+            {/* Global Actions */}
             <div className="space-y-2">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Android Navigation Keys</h4>
+              <span className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                Phím Cứng Hệ Thống
+              </span>
               <div className="grid grid-cols-3 gap-2">
                 <button
-                  disabled={!lease}
                   onClick={() => handleGlobalAction('global.back')}
-                  className="flex items-center justify-center gap-2 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-xs font-bold transition-all border border-slate-700"
+                  disabled={!lease}
+                  className="p-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700/60 rounded-xl text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
                 >
-                  <ArrowLeft size={16} /> Back
+                  <RotateCcw size={14} /> Back
                 </button>
                 <button
-                  disabled={!lease}
                   onClick={() => handleGlobalAction('global.home')}
-                  className="flex items-center justify-center gap-2 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-xs font-bold transition-all border border-slate-700"
+                  disabled={!lease}
+                  className="p-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700/60 rounded-xl text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
                 >
-                  <Home size={16} /> Home
+                  <Play size={14} /> Home
                 </button>
                 <button
-                  disabled={!lease}
                   onClick={() => handleGlobalAction('global.recents')}
-                  className="flex items-center justify-center gap-2 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-xs font-bold transition-all border border-slate-700"
+                  disabled={!lease}
+                  className="p-3 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed border border-slate-700/60 rounded-xl text-slate-200 text-xs font-bold transition-all flex items-center justify-center gap-1.5"
                 >
-                  <Layers size={16} /> Recents
+                  <Smartphone size={14} /> Recents
                 </button>
               </div>
             </div>
 
-            {/* Text Input Payload */}
+            {/* Text Input */}
             <div className="space-y-2">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Send Remote Text Payload</h4>
+              <span className="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                Gửi Văn Bản Từ Bàn Phím
+              </span>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={textPayload}
                   onChange={(e) => setTextPayload(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSendText()}
                   disabled={!lease}
-                  placeholder="Type message to send to device..."
-                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs font-medium text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-500 disabled:opacity-40"
+                  placeholder={lease ? 'Nhập văn bản rồi ấn Enter...' : 'Cần lấy Lease để nhập chữ'}
+                  className="flex-1 bg-slate-950 border border-slate-800 text-slate-200 text-xs rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500 disabled:opacity-50 font-sans"
                 />
                 <button
-                  disabled={!lease || !textPayload.trim()}
                   onClick={handleSendText}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all shadow-md"
+                  disabled={!lease || !textPayload.trim()}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-xs font-bold rounded-xl transition-all"
                 >
-                  <Send size={14} /> Send
+                  Gửi
                 </button>
               </div>
             </div>
 
-            {/* Capabilities Guard Notice */}
-            <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-start gap-2.5 text-xs text-amber-200">
-              <ShieldAlert size={18} className="text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-bold text-amber-400">Capabilities Guard Note: </span>
-                Reboot, Power, Proxy modification and APK Installation require explicit root/ADB capability flags.
+            {/* Sensitive Admin Action */}
+            <div className="pt-2 border-t border-slate-800/80">
+              <PermissionGuard permission="device.command.sensitive">
+                <button
+                  onClick={handleReboot}
+                  className="w-full py-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-extrabold rounded-xl transition-all"
+                >
+                  Khởi Động Lại Thiết Bị (Reboot)
+                </button>
+              </PermissionGuard>
+            </div>
+
+            {/* Real-time Command Audit Log */}
+            <div className="flex-1 bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2 font-mono overflow-y-auto max-h-[160px]">
+              <div className="flex items-center justify-between text-[10px] text-slate-500 border-b border-slate-800 pb-1.5">
+                <span className="font-bold uppercase tracking-wider flex items-center gap-1">
+                  <Clock size={12} /> Nhật Ký Thực Thi Command
+                </span>
+                <span className="text-emerald-400 flex items-center gap-1">
+                  <CheckCircle size={12} /> WebSocket Ready
+                </span>
               </div>
-            </div>
-
-            {/* Sensitive Actions (Disabled on Standard APK) */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              <button
-                disabled
-                title="Capability Disabled on Standard APK"
-                className="flex items-center justify-center gap-1.5 py-2 bg-slate-950 text-slate-600 rounded-xl text-xs font-medium cursor-not-allowed border border-slate-800"
-              >
-                <Power size={14} /> Reboot Device
-              </button>
-              <button
-                disabled
-                title="Capability Disabled on Standard APK"
-                className="flex items-center justify-center gap-1.5 py-2 bg-slate-950 text-slate-600 rounded-xl text-xs font-medium cursor-not-allowed border border-slate-800"
-              >
-                <SlidersHorizontal size={14} /> Apply Proxy
-              </button>
-              <button
-                disabled
-                title="Capability Disabled on Standard APK"
-                className="flex items-center justify-center gap-1.5 py-2 bg-slate-950 text-slate-600 rounded-xl text-xs font-medium cursor-not-allowed border border-slate-800"
-              >
-                <Sparkles size={14} /> Install APK
-              </button>
-            </div>
-
-            {/* Command Dispatch Log Stream */}
-            <div className="space-y-2 pt-1">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Realtime Dispatch Log</h4>
-              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3 font-mono text-[11px] space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
-                {commandLog.length === 0 ? (
-                  <p className="text-slate-600 italic">No commands dispatched yet in this session.</p>
-                ) : (
-                  commandLog.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between text-slate-300">
-                      <span>{item.msg}</span>
-                      <span className="text-slate-500 text-[10px]">{item.time}</span>
+              {commandLog.length === 0 ? (
+                <p className="text-[11px] text-slate-600 italic">Chưa có thao tác nào được ghi nhận.</p>
+              ) : (
+                <div className="space-y-1">
+                  {commandLog.map((log) => (
+                    <div key={log.id} className="text-[11px] flex justify-between gap-2">
+                      <span className="text-slate-300">{log.msg}</span>
+                      <span className="text-slate-600 text-[10px]">{log.time}</span>
                     </div>
-                  ))
-                )}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

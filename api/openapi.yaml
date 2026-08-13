@@ -1,19 +1,26 @@
 openapi: 3.0.3
 info:
   title: Phone Control Platform API Specification
-  version: 1.1.0-prototype
+  version: 1.1.0-hardening
   description: |
     Phone Control Platform authoritative REST & WebSocket API specification.
-    Serves organization management, device registry, WebRTC stream orchestration, control leases, command dispatch, and audit logging.
+    Serves organization management, device registry, WebRTC stream orchestration, control leases, command dispatch, agent enrollment, and audit logging.
 
 servers:
   - url: /api/v1
     description: Primary API Gateway Base Path
 
+security:
+  - bearerAuth: []
+  - cookieAuth: []
+
 paths:
   /auth/session:
     get:
       summary: Retrieve current authenticated session
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       responses:
         '200':
           description: User session details
@@ -27,6 +34,7 @@ paths:
   /auth/login:
     post:
       summary: User Login
+      security: []
       requestBody:
         required: true
         content:
@@ -122,6 +130,60 @@ paths:
         '204':
           description: Lease released successfully
 
+  /devices/{id}/control-leases/renew:
+    post:
+      summary: Renew Control Lease TTL
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lease renewed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlLease'
+
+  /devices/{id}/stream-sessions:
+    post:
+      summary: Request WebRTC Stream Session / Signaling
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                resolution:
+                  type: string
+                fps:
+                  type: integer
+      responses:
+        '201':
+          description: WebRTC Signaling session created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stream_session_id:
+                    type: string
+                  sdp_offer:
+                    type: string
+                  ice_servers:
+                    type: array
+                    items:
+                      type: object
+
   /commands:
     post:
       summary: Dispatch Device Command
@@ -144,6 +206,18 @@ paths:
           $ref: '#/components/responses/ForbiddenError'
 
   /enrollment-tokens:
+    get:
+      summary: List Active Enrollment Tokens
+      responses:
+        '200':
+          description: List of enrollment tokens
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EnrollmentToken'
+
     post:
       summary: Generate One-Time Agent Enrollment Token
       requestBody:
@@ -163,7 +237,83 @@ paths:
               schema:
                 $ref: '#/components/schemas/EnrollmentToken'
 
+  /enrollment-tokens/{id}:
+    delete:
+      summary: Revoke Enrollment Token
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Token revoked successfully
+
+  /agents/enroll:
+    post:
+      summary: Enroll Android APK Agent via Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token_code, public_key_fingerprint]
+              properties:
+                token_code:
+                  type: string
+                public_key_fingerprint:
+                  type: string
+                app_version:
+                  type: string
+      responses:
+        '200':
+          description: Agent registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id:
+                    type: string
+                  device_id:
+                    type: string
+
+  /audit-logs:
+    get:
+      summary: List Organization Audit Logs
+      parameters:
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1
+      responses:
+        '200':
+          description: Audit logs list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogItem'
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: pcp_session
+
   schemas:
     ErrorResponse:
       type: object
@@ -181,15 +331,19 @@ components:
 
     UserSession:
       type: object
-      required: [user_id, organization_id, email, display_name, roles, permissions]
+      required: [user_id, organization_id, email, display_name, role, permissions]
       properties:
         user_id:
           type: string
         organization_id:
           type: string
+        organization_name:
+          type: string
         email:
           type: string
         display_name:
+          type: string
+        role:
           type: string
         roles:
           type: array
@@ -202,21 +356,27 @@ components:
 
     DeviceEntity:
       type: object
-      required: [device_id, organization_id, name, model, serial_number, status]
+      required: [device_id, organization_id, display_name, model, android_version, serial_number, status]
       properties:
         device_id:
           type: string
         organization_id:
           type: string
-        name:
+        display_name:
           type: string
         model:
+          type: string
+        android_version:
           type: string
         serial_number:
           type: string
         status:
           type: string
-          enum: [online, offline, busy, maintenance]
+          enum: [provisioning, online, offline, degraded, maintenance, revoked, retired]
+        capabilities:
+          type: object
+        telemetry:
+          type: object
 
     ControlLease:
       type: object
@@ -229,6 +389,8 @@ components:
         organization_id:
           type: string
         user_id:
+          type: string
+        user_display_name:
           type: string
         acquired_at:
           type: string
@@ -258,7 +420,7 @@ components:
 
     DeviceCommand:
       type: object
-      required: [command_id, device_id, organization_id, actor_id, command_type, status, created_at]
+      required: [command_id, device_id, organization_id, actor_id, actor_name, command_type, status, created_at]
       properties:
         command_id:
           type: string
@@ -267,6 +429,8 @@ components:
         organization_id:
           type: string
         actor_id:
+          type: string
+        actor_name:
           type: string
         command_type:
           type: string
@@ -292,6 +456,33 @@ components:
           type: string
         used:
           type: boolean
+        bound_group_id:
+          type: string
+
+    AuditLogItem:
+      type: object
+      required: [audit_id, organization_id, action_code, actor_id, resource_type, resource_id, created_at]
+      properties:
+        audit_id:
+          type: string
+        organization_id:
+          type: string
+        action_code:
+          type: string
+        actor_id:
+          type: string
+        actor_email:
+          type: string
+        resource_type:
+          type: string
+        resource_id:
+          type: string
+        details:
+          type: string
+        ip_address:
+          type: string
+        created_at:
+          type: string
 
   responses:
     BadRequestError:

@@ -1,5 +1,3 @@
-import { DeviceEntity } from '../types';
-
 export type WsStatus = 'connected' | 'reconnecting' | 'disconnected';
 
 export type WsEventType =
@@ -7,14 +5,20 @@ export type WsEventType =
   | 'device.telemetry.updated'
   | 'stream.state.changed'
   | 'control.lease.changed'
-  | 'command.updated';
+  | 'command.updated'
+  | 'command.ack'
+  | 'command.executing'
+  | 'command.succeeded'
+  | 'command.failed';
 
 export interface WsEventEnvelope {
   event_id: string;
   event_type: WsEventType;
-  organization_id: string;
+  device_id?: string;
+  organization_id?: string;
   timestamp: string;
-  data: Record<string, any>;
+  payload?: Record<string, unknown>;
+  data?: Record<string, unknown>;
 }
 
 type WsListener = (event: WsEventEnvelope) => void;

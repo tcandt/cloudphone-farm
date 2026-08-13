@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { History, Shield, Clock, FileText } from 'lucide-react';
+// Lucide icons clean import
 import { mockAuditLogs } from '../data/mockData';
 
 export const AuditPage: React.FC = () => {

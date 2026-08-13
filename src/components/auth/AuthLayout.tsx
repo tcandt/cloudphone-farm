@@ -20,7 +20,7 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, mode }) => {
         {/* Top Header: Logo + Language Switcher */}
         <div className="flex items-center justify-between w-full mb-8">
           <Link to="/" className="flex items-center gap-2 group">
-            {/* Logo Icon matching MaxCloudPhone design */}
+            {/* Logo Icon matching Phone Control Platform design */}
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-orange-500 via-amber-500 to-red-500 p-0.5 shadow-md group-hover:scale-105 transition-transform flex items-center justify-center">
               <div className="w-full h-full bg-gradient-to-br from-orange-500 to-amber-600 rounded-[10px] flex items-center justify-center text-white font-black text-xs tracking-tighter">
                 MAX
@@ -44,7 +44,7 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, mode }) => {
 
         {/* Left Panel Footer / Legal copyright */}
         <div className="text-center lg:text-left text-xs font-medium text-slate-400 mt-8">
-          © {new Date().getFullYear()} MaxCloudPhone System. All rights reserved.
+          © {new Date().getFullYear()} Phone Control Platform System. All rights reserved.
         </div>
       </div>
 
@@ -57,7 +57,7 @@ export const AuthLayout: React.FC<AuthLayoutProps> = ({ children, mode }) => {
       <div className="fixed bottom-4 right-4 z-50">
         <button
           type="button"
-          onClick={() => alert('Đội ngũ hỗ trợ MaxCloudPhone 24/7 luôn sẵn sàng! Hotline: 1900 xxxx')}
+          onClick={() => alert('Đội ngũ hỗ trợ Phone Control Platform 24/7 luôn sẵn sàng! Hotline: 1900 xxxx')}
           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-2 rounded-xl shadow-lg shadow-blue-500/25 transition-all duration-200 hover:scale-105 active:scale-95 group text-xs font-bold"
         >
           <div className="relative">

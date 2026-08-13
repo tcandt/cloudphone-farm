@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Globe, Plus, Wifi, Check, Trash2, ShieldCheck, Activity } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 
 interface ProxyProfile {
   id: string;

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, Play, StopCircle, Wifi, Clock, ShieldAlert } from 'lucide-react';
+import { StopCircle } from 'lucide-react';
 import { StreamSession } from '../types';
 
 const mockActiveSessions: StreamSession[] = [

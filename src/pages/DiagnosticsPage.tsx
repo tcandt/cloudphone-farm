@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { Activity, Server, Database, Cpu, ShieldAlert, CheckCircle2, RefreshCw, FileText } from 'lucide-react';
+import { Server, Database, CheckCircle2, RefreshCw, FileText } from 'lucide-react';
 
 export const DiagnosticsPage: React.FC = () => {
-  const { t } = useTranslation();
   const [refreshing, setRefreshing] = useState(false);
 
   const handleRefresh = () => {

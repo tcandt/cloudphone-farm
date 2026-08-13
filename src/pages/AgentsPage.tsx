@@ -9,7 +9,7 @@ import { PermissionGuard } from '../components/common/PermissionGuard';
 
 export const AgentsPage: React.FC = () => {
   const { t } = useTranslation();
-  const [tokens, setTokens] = useState<EnrollmentToken[]>([]);
+  const [_tokens, setTokens] = useState<EnrollmentToken[]>([]);
   const [activeTokenModal, setActiveTokenModal] = useState<EnrollmentToken | null>(null);
   const [copied, setCopied] = useState(false);
   const [secondsLeft, setSecondsLeft] = useState<number>(600);

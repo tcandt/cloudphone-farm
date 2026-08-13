@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FolderGit2, Plus, Smartphone, Trash2, Edit2, Shield } from 'lucide-react';
+import { Plus } from 'lucide-react';
 import { mockGroups, mockDevices } from '../data/mockData';
 import { DeviceGroup } from '../types';
 import { PermissionGuard } from '../components/common/PermissionGuard';

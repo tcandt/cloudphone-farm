@@ -33,7 +33,7 @@ export const RegisterPage: React.FC = () => {
     resolver: zodResolver(registerSchema),
   });
 
-  const onSubmit = async (data: RegisterForm) => {
+  const onSubmit = async (_data: RegisterForm) => {
     await new Promise((res) => setTimeout(res, 600));
     navigate('/verify-email');
   };

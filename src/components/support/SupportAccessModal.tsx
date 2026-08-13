@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ShieldCheck, Clock, Ticket, AlertTriangle, X, Check } from 'lucide-react';
+import { ShieldCheck, Ticket, AlertTriangle, X, Check } from 'lucide-react';
 import { defaultWsSimulator } from '../../services/websocket-simulator';
 import { mockCurrentUserSession } from '../../data/mockData';
 
