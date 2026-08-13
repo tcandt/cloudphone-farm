@@ -259,27 +259,51 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       name: 'Touch capability disabled',
       cmdType: 'gesture.touch' as const,
       payload: { x: 0.5, y: 0.5 },
-      capabilitiesPatch: { control: { supported: true, touch: false, swipe: true, global_actions: ['back' as const], text_input: 'full' as const } },
+      capabilitiesPatch: { control: { supported: true, touch: false, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
     },
     {
       name: 'Swipe capability disabled',
       cmdType: 'gesture.swipe' as const,
       payload: { x1: 0.1, y1: 0.1, x2: 0.8, y2: 0.8 },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: false, global_actions: ['back' as const], text_input: 'full' as const } },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: false, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
     },
     {
       name: 'Text input capability disabled',
       cmdType: 'input.text' as const,
       payload: { text: 'hello' },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'none' as const } },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'none' as const, sensitive_actions: true } },
     },
     {
       name: 'Global home action disabled',
       cmdType: 'global.home' as const,
       payload: {},
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const } },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
     },
-  ])('Enforces capability check for $name -> throws CAPABILITY_UNSUPPORTED', ({ cmdType, payload, capabilitiesPatch }) => {
+    {
+      name: 'Screen capture capability disabled',
+      cmdType: 'screen.capture' as const,
+      payload: {},
+      capabilitiesPatch: { capture: { supported: false, codecs: [], max_width: 0, max_height: 0, max_fps: 0 } },
+    },
+    {
+      name: 'Sensitive action (Reboot) disabled',
+      cmdType: 'device.reboot' as const,
+      payload: {},
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
+    },
+    {
+      name: 'APK install disabled on non-ADB device',
+      cmdType: 'apk.install' as const,
+      payload: { apk_url: 'https://example.com/app.apk' },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
+    },
+    {
+      name: 'Network proxy apply disabled on non-ADB device',
+      cmdType: 'network.proxy.apply' as const,
+      payload: { proxy: 'http://1.2.3.4:8080' },
+      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
+    },
+  ])('Exhaustively enforces capability check for $name -> throws CAPABILITY_UNSUPPORTED', ({ cmdType, payload, capabilitiesPatch }) => {
     const devId = `dev_cap_${Math.random().toString(36).substring(2, 6)}`;
     const testDevice: DeviceEntity = {
       ...mockDevices[0],
@@ -325,17 +349,25 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     if (idx !== -1) mockDevices.splice(idx, 1);
   });
 
-  it('Verifies canonicalJsonStringify handles key ordering, primitives, dates, and cyclic object rejection', () => {
+  it('Verifies canonicalJsonStringify handles shared non-cyclic references, key ordering, and rejects invalid non-JSON types', () => {
+    // 1. Shared non-cyclic reference must succeed
+    const shared = { x: 100, y: 'shared_data' };
+    const objWithShared = { first: shared, second: shared };
+    expect(canonicalJsonStringify(objWithShared)).toBe('{"first":{"x":100,"y":"shared_data"},"second":{"x":100,"y":"shared_data"}}');
+
+    // 2. Key order invariance
     const obj1 = { z: 1, a: { y: 'test', x: [2, 1] } };
     const obj2 = { a: { x: [2, 1], y: 'test' }, z: 1 };
-
     expect(canonicalJsonStringify(obj1)).toBe(canonicalJsonStringify(obj2));
-    expect(canonicalJsonStringify(obj1)).toBe('{"a":{"x":[2,1],"y":"test"},"z":1}');
 
-    // Test cyclic reference rejection
+    // 3. Cyclic reference rejection
     const cyclicObj: Record<string, unknown> = { a: 1 };
     cyclicObj.self = cyclicObj;
     expect(() => canonicalJsonStringify(cyclicObj)).toThrow('INVALID_PAYLOAD');
+
+    // 4. Non-JSON primitive rejection (undefined inside object)
+    const invalidObj = { val: undefined };
+    expect(() => canonicalJsonStringify(invalidObj)).toThrow('INVALID_PAYLOAD');
   });
 
   it('Verifies AuthService zero-trust production HttpAuthService contract via mocked HTTP responses', async () => {

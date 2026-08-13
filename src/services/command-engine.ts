@@ -27,32 +27,45 @@ export const SUPPORTED_COMMAND_TYPES = [
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
-export function canonicalJsonStringify(val: unknown, seen = new WeakSet()): string {
+export function canonicalJsonStringify(val: unknown, stack = new WeakSet<object>()): string {
   if (val === null || typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') {
     return JSON.stringify(val);
   }
-  if (val === undefined || typeof val === 'function' || typeof val === 'symbol') {
-    return 'null';
+
+  if (val === undefined || typeof val === 'function' || typeof val === 'symbol' || typeof val === 'bigint') {
+    throw new CommandExecutionError(
+      'INVALID_PAYLOAD',
+      `Payload contains unsupported non-JSON type: ${typeof val}`
+    );
   }
+
   if (typeof val === 'object') {
-    if (seen.has(val)) {
+    if (stack.has(val as object)) {
       throw new CommandExecutionError('INVALID_PAYLOAD', 'Payload contains cyclic references.');
     }
-    seen.add(val);
 
-    if (val instanceof Date) {
-      return JSON.stringify(val.toISOString());
+    stack.add(val as object);
+    try {
+      if (Array.isArray(val)) {
+        return '[' + val.map((item) => canonicalJsonStringify(item, stack)).join(',') + ']';
+      }
+
+      const proto = Object.getPrototypeOf(val);
+      if (proto !== null && proto !== Object.prototype) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Payload contains non-plain object or class instance.');
+      }
+
+      const keys = Object.keys(val as Record<string, unknown>).sort();
+      const pairs = keys.map(
+        (k) => `${JSON.stringify(k)}:${canonicalJsonStringify((val as Record<string, unknown>)[k], stack)}`
+      );
+      return '{' + pairs.join(',') + '}';
+    } finally {
+      stack.delete(val as object);
     }
-    if (Array.isArray(val)) {
-      return '[' + val.map((item) => canonicalJsonStringify(item, seen)).join(',') + ']';
-    }
-    const keys = Object.keys(val as Record<string, unknown>).sort();
-    const pairs = keys
-      .filter((k) => (val as Record<string, unknown>)[k] !== undefined && typeof (val as Record<string, unknown>)[k] !== 'function')
-      .map((k) => `${JSON.stringify(k)}:${canonicalJsonStringify((val as Record<string, unknown>)[k], seen)}`);
-    return '{' + pairs.join(',') + '}';
   }
-  return 'null';
+
+  throw new CommandExecutionError('INVALID_PAYLOAD', 'Unsupported payload format.');
 }
 
 interface IdempotencyRecord {

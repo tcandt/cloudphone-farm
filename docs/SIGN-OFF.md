@@ -31,7 +31,7 @@
 - **Dependencies Audit:** `npm audit --omit=dev` → **Passed (0 Vulnerabilities)**
 - **ESLint Check:** `npm run lint` (`eslint . --max-warnings=0`) → **Passed (0 Errors, 0 Warnings)**
 - **TypeScript Typecheck:** `npm run typecheck` → **Passed (0 Errors)**
-- **Vitest Unit & Integration:** `npm run test` → **Passed (2/2 Files, 12/12 Tests)**
+- **Vitest Unit & Integration:** `npm run test` → **Passed (2/2 Files, 21/21 Tests)**
 - **Playwright E2E Browser Test:** `npm run e2e` → **Passed (1/1 Spec File, 7/7 E2E Specs)**
 - **Vite Bundle Build:** `npm run build` → **Succeeded (`dist/index.html`, 117.9 kB gzip main bundle)**
 - **Docker Config Validation:** `docker compose config` → **Validated Cleanly (compose.yaml & compose.production.yaml)**
