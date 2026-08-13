@@ -1,29 +1,43 @@
-import React from 'react';
+import React, { lazy, Suspense } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router-dom';
 import { Layout } from './components/layout/Layout';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
+import { RouteGuard } from './components/common/RouteGuard';
 
-import { LoginPage } from './pages/auth/LoginPage';
-import { RegisterPage } from './pages/auth/RegisterPage';
-import { VerifyEmailPage } from './pages/auth/VerifyEmailPage';
-import { ForgotPasswordPage } from './pages/auth/ForgotPasswordPage';
-import { ResetPasswordPage } from './pages/auth/ResetPasswordPage';
+// Lazy loading route modules for optimal bundle splitting
+const LoginPage = lazy(() => import('./pages/auth/LoginPage').then(m => ({ default: m.LoginPage })));
+const RegisterPage = lazy(() => import('./pages/auth/RegisterPage').then(m => ({ default: m.RegisterPage })));
+const VerifyEmailPage = lazy(() => import('./pages/auth/VerifyEmailPage').then(m => ({ default: m.VerifyEmailPage })));
+const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage').then(m => ({ default: m.ForgotPasswordPage })));
+const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage').then(m => ({ default: m.ResetPasswordPage })));
 
-import { DashboardPage } from './pages/DashboardPage';
-import { DeviceListPage } from './pages/DeviceListPage';
-import { DeviceGridPage } from './pages/DeviceGridPage';
-import { DeviceDetailPage } from './pages/DeviceDetailPage';
-import { GroupsPage } from './pages/GroupsPage';
-import { AgentsPage } from './pages/AgentsPage';
-import { ActiveSessionsPage } from './pages/ActiveSessionsPage';
-import { ProxyProfilesPage } from './pages/ProxyProfilesPage';
-import { TeamPage } from './pages/TeamPage';
-import { AuditPage } from './pages/AuditPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { BillingPage } from './pages/BillingPage';
-import { RentalStorePage } from './pages/RentalStorePage';
-import { DiagnosticsPage } from './pages/DiagnosticsPage';
-import { LiveMonitorPage } from './pages/LiveMonitorPage';
+const DashboardPage = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+const DeviceListPage = lazy(() => import('./pages/DeviceListPage').then(m => ({ default: m.DeviceListPage })));
+const DeviceGridPage = lazy(() => import('./pages/DeviceGridPage').then(m => ({ default: m.DeviceGridPage })));
+const DeviceDetailPage = lazy(() => import('./pages/DeviceDetailPage').then(m => ({ default: m.DeviceDetailPage })));
+const GroupsPage = lazy(() => import('./pages/GroupsPage').then(m => ({ default: m.GroupsPage })));
+const AgentsPage = lazy(() => import('./pages/AgentsPage').then(m => ({ default: m.AgentsPage })));
+const ActiveSessionsPage = lazy(() => import('./pages/ActiveSessionsPage').then(m => ({ default: m.ActiveSessionsPage })));
+const ProxyProfilesPage = lazy(() => import('./pages/ProxyProfilesPage').then(m => ({ default: m.ProxyProfilesPage })));
+const TeamPage = lazy(() => import('./pages/TeamPage').then(m => ({ default: m.TeamPage })));
+const AuditPage = lazy(() => import('./pages/AuditPage').then(m => ({ default: m.AuditPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then(m => ({ default: m.SettingsPage })));
+const BillingPage = lazy(() => import('./pages/BillingPage').then(m => ({ default: m.BillingPage })));
+const RentalStorePage = lazy(() => import('./pages/RentalStorePage').then(m => ({ default: m.RentalStorePage })));
+const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage').then(m => ({ default: m.DiagnosticsPage })));
+const LiveMonitorPage = lazy(() => import('./pages/LiveMonitorPage').then(m => ({ default: m.LiveMonitorPage })));
+
+const SuspenseLoader: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <Suspense
+    fallback={
+      <div className="flex items-center justify-center p-12 text-slate-400 font-medium text-sm animate-pulse">
+        Loading module...
+      </div>
+    }
+  >
+    {children}
+  </Suspense>
+);
 
 export const router = createBrowserRouter([
   {
@@ -32,91 +46,93 @@ export const router = createBrowserRouter([
   },
   {
     path: '/login',
-    element: <LoginPage />,
+    element: <SuspenseLoader><LoginPage /></SuspenseLoader>,
   },
   {
     path: '/register',
-    element: <RegisterPage />,
+    element: <SuspenseLoader><RegisterPage /></SuspenseLoader>,
   },
   {
     path: '/verify-email',
-    element: <VerifyEmailPage />,
+    element: <SuspenseLoader><VerifyEmailPage /></SuspenseLoader>,
   },
   {
     path: '/forgot-password',
-    element: <ForgotPasswordPage />,
+    element: <SuspenseLoader><ForgotPasswordPage /></SuspenseLoader>,
   },
   {
     path: '/reset-password',
-    element: <ResetPasswordPage />,
+    element: <SuspenseLoader><ResetPasswordPage /></SuspenseLoader>,
   },
   {
     path: '/app',
     element: (
-      <ErrorBoundary>
-        <Layout />
-      </ErrorBoundary>
+      <RouteGuard>
+        <ErrorBoundary>
+          <Layout />
+        </ErrorBoundary>
+      </RouteGuard>
     ),
     children: [
       {
         index: true,
-        element: <DashboardPage />,
+        element: <SuspenseLoader><DashboardPage /></SuspenseLoader>,
       },
       {
         path: 'devices',
-        element: <DeviceListPage />,
+        element: <SuspenseLoader><DeviceListPage /></SuspenseLoader>,
       },
       {
         path: 'devices/grid',
-        element: <DeviceGridPage />,
+        element: <SuspenseLoader><DeviceGridPage /></SuspenseLoader>,
       },
       {
         path: 'devices/:id',
-        element: <DeviceDetailPage />,
+        element: <SuspenseLoader><DeviceDetailPage /></SuspenseLoader>,
       },
       {
         path: 'groups',
-        element: <GroupsPage />,
+        element: <SuspenseLoader><GroupsPage /></SuspenseLoader>,
       },
       {
         path: 'agents',
-        element: <AgentsPage />,
+        element: <SuspenseLoader><AgentsPage /></SuspenseLoader>,
       },
       {
         path: 'sessions',
-        element: <ActiveSessionsPage />,
+        element: <SuspenseLoader><ActiveSessionsPage /></SuspenseLoader>,
       },
       {
         path: 'proxy',
-        element: <ProxyProfilesPage />,
+        element: <SuspenseLoader><ProxyProfilesPage /></SuspenseLoader>,
       },
       {
         path: 'team',
-        element: <TeamPage />,
+        element: <SuspenseLoader><TeamPage /></SuspenseLoader>,
       },
       {
         path: 'audit',
-        element: <AuditPage />,
+        element: <SuspenseLoader><AuditPage /></SuspenseLoader>,
       },
       {
         path: 'settings',
-        element: <SettingsPage />,
+        element: <SuspenseLoader><SettingsPage /></SuspenseLoader>,
       },
       {
         path: 'billing',
-        element: <BillingPage />,
+        element: <SuspenseLoader><BillingPage /></SuspenseLoader>,
       },
       {
         path: 'rental',
-        element: <RentalStorePage />,
+        element: <SuspenseLoader><RentalStorePage /></SuspenseLoader>,
       },
       {
         path: 'diagnostics',
-        element: <DiagnosticsPage />,
+        element: <SuspenseLoader><DiagnosticsPage /></SuspenseLoader>,
       },
       {
         path: 'live-monitor',
-        element: <LiveMonitorPage />,
+        element: <SuspenseLoader><LiveMonitorPage /></SuspenseLoader>,
       },
     ],
   },

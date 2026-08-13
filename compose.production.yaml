@@ -1,0 +1,94 @@
+version: '3.8'
+
+networks:
+  pcp-internal:
+    driver: bridge
+    internal: true
+  pcp-public:
+    driver: bridge
+
+services:
+  pcp-web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    networks:
+      - pcp-public
+      - pcp-internal
+    ports:
+      - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - VITE_FEATURE_RENTAL_STORE=false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  postgres:
+    image: postgres:15-alpine
+    networks:
+      - pcp-internal
+    # NO PUBLIC PORTS EXPOSED
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-phone_control_platform}
+      POSTGRES_USER: ${POSTGRES_USER:-pcp_user}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pcp_user -d phone_control_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.2-alpine
+    networks:
+      - pcp-internal
+    # NO PUBLIC PORTS EXPOSED
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  coturn:
+    image: coturn/coturn:4.6.2-alpine
+    networks:
+      - pcp-public
+    ports:
+      - "3478:3478/tcp"
+      - "3478:3478/udp"
+      - "49152-65535:49152-65535/udp"
+    environment:
+      - REALM=${COTURN_REALM:-phonecontrol.io}
+      - TURN_SECRET=${COTURN_SECRET}
+    command:
+      - turnserver
+      - -n
+      - --log-file=stdout
+      - --use-auth-secret
+      - --static-auth-secret=${COTURN_SECRET}
+      - --realm=${COTURN_REALM:-phonecontrol.io}
+      - --min-port=49152
+      - --max-port=65535
+    restart: unless-stopped
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+
+volumes:
+  pgdata:
+  redisdata:

@@ -1,0 +1,51 @@
+name: Phase 1.1 CI Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  verify:
+    name: Build, Lint & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-[version]: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Audit Production Dependencies
+        run: npm audit --omit=dev || true
+
+      - name: Execute ESLint Check
+        run: npm run lint
+
+      - name: Execute TypeScript Typecheck
+        run: npm run typecheck
+
+      - name: Execute Vitest Integration Tests
+        run: npm run test
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Execute Playwright E2E Tests
+        run: npm run e2e
+
+      - name: Execute Vite Production Build
+        run: npm run build
+
+      - name: Validate Docker Compose Configuration
+        run: |
+          docker compose -f compose.yaml config
+          docker compose -f compose.production.yaml config

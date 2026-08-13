@@ -1,45 +1,45 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { QRCodeSVG } from 'qrcode.react';
-import {
-  ShieldCheck,
-  PlusCircle,
-  Copy,
-  Clock,
-  Check,
-  Smartphone,
-  Key,
-  X,
-  Sparkles,
-} from 'lucide-react';
-import { mockAgents, mockEnrollmentTokens } from '../data/mockData';
+import { ShieldCheck, Plus, Copy, Check, QrCode } from 'lucide-react';
+import { mockAgents } from '../data/mockData';
 import { EnrollmentToken } from '../types';
+import { enrollmentService } from '../services/enrollment-service';
 import { PermissionGuard } from '../components/common/PermissionGuard';
 
 export const AgentsPage: React.FC = () => {
   const { t } = useTranslation();
-  const [tokens, setTokens] = useState<EnrollmentToken[]>(mockEnrollmentTokens);
+  const [tokens, setTokens] = useState<EnrollmentToken[]>([]);
   const [activeTokenModal, setActiveTokenModal] = useState<EnrollmentToken | null>(null);
   const [copied, setCopied] = useState(false);
+  const [secondsLeft, setSecondsLeft] = useState<number>(600);
+
+  useEffect(() => {
+    enrollmentService.listTokens().then(setTokens);
+  }, []);
+
+  useEffect(() => {
+    if (!activeTokenModal) return;
+
+    const timer = setInterval(() => {
+      const remaining = Math.max(
+        0,
+        Math.floor((new Date(activeTokenModal.expires_at).getTime() - Date.now()) / 1000)
+      );
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        setActiveTokenModal(null);
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [activeTokenModal]);
 
   const handleGenerateToken = async () => {
-    // Contract mapping: POST /api/v1/agent-enrollments
-    const newTokenCode = `PCP-ENROLL-${Math.floor(1000 + Math.random() * 9000)}-${Math.random()
-      .toString(36)
-      .substring(2, 6)
-      .toUpperCase()}`;
-
-    const newToken: EnrollmentToken = {
-      token_id: `tok_${Math.random().toString(36).substring(2, 8)}`,
-      organization_id: 'org_pcp_enterprise_01',
-      token_code: newTokenCode,
-      created_by: 'usr_owner_01',
-      expires_at: new Date(Date.now() + 600 * 1000).toISOString(), // 10 mins TTL
-      used: false,
-    };
-
-    setTokens([newToken, ...tokens]);
+    const newToken = await enrollmentService.createToken();
+    setTokens((prev) => [newToken, ...prev]);
     setActiveTokenModal(newToken);
+    setSecondsLeft(600);
   };
 
   const copyToClipboard = (text: string) => {
@@ -49,61 +49,67 @@ export const AgentsPage: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">{t('agents.title')}</h1>
           <p className="text-xs text-slate-500 font-medium">
-            Quản lý ứng dụng PCP Agent APK trên các thiết bị và phát hành mã Enroll 1 lần
+            Quản lý mã đăng ký Android APK Agent 1 lần và giám sát phiên kết nối
           </p>
         </div>
 
         <PermissionGuard permission="agent.enroll">
           <button
             onClick={handleGenerateToken}
-            className="px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-500/20 hover:opacity-95 transition-all flex items-center gap-2 active:scale-95"
+            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition-all active:scale-95"
           >
-            <PlusCircle size={16} /> {t('agents.createToken')} (POST /agent-enrollments)
+            <Plus size={16} /> {t('agents.createToken')}
           </button>
         </PermissionGuard>
       </div>
 
-      {/* Agents Table */}
-      <div className="bg-white border border-slate-100 shadow-pcp-card rounded-3xl overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-          <h2 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-            <ShieldCheck size={18} className="text-blue-600" /> Danh sách Android Agent đang kết nối
-          </h2>
+      {/* Connected Agents Table */}
+      <div className="bg-white border border-slate-200/80 shadow-pcp-card rounded-3xl overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h3 className="font-extrabold text-slate-900 text-sm flex items-center gap-2">
+            <ShieldCheck size={16} className="text-emerald-500" /> Danh sách APK Agent đang hoạt động ({mockAgents.length})
+          </h3>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
-              <tr className="bg-slate-50/70 border-b border-slate-100 text-[11px] font-extrabold uppercase text-slate-400 tracking-wider">
-                <th className="p-4">Agent ID</th>
-                <th className="p-4">Device ID</th>
-                <th className="p-4">Phiên bản APK</th>
-                <th className="p-4">Fingerprint Keystore</th>
-                <th className="p-4">Trạng thái</th>
-                <th className="p-4">Heartbeat gần nhất</th>
+              <tr className="bg-slate-50 border-b border-slate-100 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                <th className="px-6 py-3.5">Agent ID</th>
+                <th className="px-6 py-3.5">Thiết bị Bound</th>
+                <th className="px-6 py-3.5">Phiên bản APK</th>
+                <th className="px-6 py-3.5">Fingerprint Key</th>
+                <th className="px-6 py-3.5">Trạng thái</th>
+                <th className="px-6 py-3.5">Heartbeat Cuối</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs font-medium text-slate-700">
-              {mockAgents.map((agt) => (
-                <tr key={agt.agent_id} className="hover:bg-slate-50/80 transition-colors">
-                  <td className="p-4 font-mono font-bold text-blue-600">{agt.agent_id}</td>
-                  <td className="p-4 font-mono text-slate-800">{agt.device_id}</td>
-                  <td className="p-4 font-bold text-slate-900">{agt.app_version}</td>
-                  <td className="p-4 font-mono text-[11px] text-slate-500 truncate max-w-[200px]">
-                    {agt.public_key_fingerprint}
-                  </td>
-                  <td className="p-4">
-                    <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[11px] border border-emerald-200 inline-block">
-                      ACTIVE
+              {mockAgents.map((agent) => (
+                <tr key={agent.agent_id} className="hover:bg-slate-50/80 transition-colors">
+                  <td className="px-6 py-4 font-mono font-bold text-slate-900">{agent.agent_id}</td>
+                  <td className="px-6 py-4 font-mono text-blue-600 font-semibold">{agent.device_id}</td>
+                  <td className="px-6 py-4">
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-mono text-[11px]">
+                      v{agent.app_version}
                     </span>
                   </td>
-                  <td className="p-4 text-slate-500">{new Date(agt.last_heartbeat_at).toLocaleTimeString('vi-VN')}</td>
+                  <td className="px-6 py-4 font-mono text-slate-500 text-[11px]">
+                    {agent.public_key_fingerprint.substring(0, 16)}...
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> Active
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 text-slate-500 font-mono">
+                    {new Date(agent.last_heartbeat_at).toLocaleTimeString('vi-VN')}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -111,52 +117,54 @@ export const AgentsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Token Modal */}
+      {/* One-Time Token Modal */}
       {activeTokenModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-100 shadow-2xl rounded-3xl w-full max-w-md p-6 space-y-5 animate-fadeIn">
-            <div className="flex items-center justify-between">
-              <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                <Sparkles size={18} className="text-amber-500" /> {t('agents.tokenModalTitle')}
-              </h2>
-              <button onClick={() => setActiveTokenModal(null)} className="p-1.5 text-slate-400 hover:text-slate-700">
-                <X size={18} />
-              </button>
+          <div className="bg-white rounded-3xl shadow-2xl border border-slate-100 w-full max-w-md p-6 space-y-6 animate-fadeIn">
+            <div className="text-center space-y-2">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-blue-50 text-blue-600 border border-blue-100 flex items-center justify-center">
+                <QrCode size={24} />
+              </div>
+              <h3 className="font-extrabold text-slate-900 text-lg">{t('agents.tokenModalTitle')}</h3>
+              <p className="text-xs text-slate-500">{t('agents.tokenNotice')}</p>
             </div>
-
-            <p className="text-xs text-slate-600 leading-relaxed bg-blue-50/60 border border-blue-100 p-3 rounded-2xl">
-              {t('agents.tokenNotice')}
-            </p>
 
             {/* QR Code Container */}
-            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex flex-col items-center justify-center space-y-3">
-              <QRCodeSVG value={activeTokenModal.token_code} size={180} level="H" includeMargin />
-              <div className="flex items-center gap-1.5 text-xs font-bold text-amber-600">
-                <Clock size={14} /> <span>Hết hạn trong 10 phút (TTL)</span>
+            <div className="flex flex-col items-center justify-center p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <div className="p-3 bg-white rounded-2xl shadow-md border border-slate-200">
+                <QRCodeSVG value={activeTokenModal.token_code} size={160} level="H" />
               </div>
+              <p className="text-[11px] font-bold text-amber-600 mt-3 flex items-center gap-1">
+                ⏱ {t('agents.expiresIn')}: {Math.floor(secondsLeft / 60)}m {secondsLeft % 60}s
+              </p>
             </div>
 
-            {/* String Code */}
-            <div className="space-y-1">
-              <label className="block text-[11px] font-extrabold uppercase text-slate-400">
-                {t('agents.tokenCodeLabel')}
-              </label>
-              <div className="flex items-center gap-2">
+            {/* Token String Box */}
+            <div className="space-y-1.5">
+              <label className="block text-xs font-bold text-slate-700">{t('agents.tokenCodeLabel')}</label>
+              <div className="flex gap-2">
                 <input
                   type="text"
                   readOnly
                   value={activeTokenModal.token_code}
-                  className="flex-1 px-3.5 py-2.5 bg-slate-100 border border-slate-200 rounded-xl font-mono font-bold text-sm text-slate-900 outline-none select-all"
+                  className="flex-1 bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-800 focus:outline-none"
                 />
                 <button
                   onClick={() => copyToClipboard(activeTokenModal.token_code)}
-                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-md transition-colors flex items-center gap-1.5"
+                  className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 transition-colors"
                 >
-                  {copied ? <Check size={16} /> : <Copy size={16} />}
-                  <span>{copied ? 'Đã chép' : 'Sao chép'}</span>
+                  {copied ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                  <span>{copied ? 'Copied' : t('agents.copyToken')}</span>
                 </button>
               </div>
             </div>
+
+            <button
+              onClick={() => setActiveTokenModal(null)}
+              className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition-colors"
+            >
+              Đóng cửa sổ
+            </button>
           </div>
         </div>
       )}

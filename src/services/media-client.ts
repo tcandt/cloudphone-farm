@@ -1,6 +1,7 @@
 import { StreamProfile, StreamSession } from '../types';
 
 export interface MediaClient {
+  sessionId: string;
   startSession(deviceId: string, profile?: StreamProfile): Promise<StreamSession>;
   attach(element: HTMLCanvasElement | HTMLVideoElement): void;
   setProfile(profile: StreamProfile): Promise<void>;
@@ -9,6 +10,7 @@ export interface MediaClient {
 }
 
 export class MockMediaClient implements MediaClient {
+  public sessionId: string;
   private activeDeviceId: string | null = null;
   private currentElement: HTMLCanvasElement | HTMLVideoElement | null = null;
   private animFrameId: number | null = null;
@@ -20,6 +22,10 @@ export class MockMediaClient implements MediaClient {
   };
   private isRunning = false;
 
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
+
   async startSession(deviceId: string, profile?: StreamProfile): Promise<StreamSession> {
     this.activeDeviceId = deviceId;
     if (profile) {
@@ -28,7 +34,7 @@ export class MockMediaClient implements MediaClient {
     this.isRunning = true;
 
     const session: StreamSession = {
-      stream_session_id: `str_${Math.random().toString(36).substring(2, 10)}`,
+      stream_session_id: this.sessionId,
       device_id: deviceId,
       organization_id: 'org_demo_01',
       user_id: 'usr_op_01',
@@ -123,13 +129,11 @@ export class MockMediaClient implements MediaClient {
         const x = marginX + col * (iconSize + marginX);
         const y = 60 + row * (iconSize + 28);
 
-        // App Icon
         ctx.fillStyle = app.color;
         ctx.beginPath();
         ctx.roundRect(x, y, iconSize, iconSize, 12);
         ctx.fill();
 
-        // App Label
         ctx.fillStyle = '#cbd5e1';
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'center';
@@ -141,11 +145,9 @@ export class MockMediaClient implements MediaClient {
       ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
       ctx.fillRect(0, height - 40, width, 40);
 
-      // Nav icons (Back, Home, Recents)
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2;
 
-      // Back (Triangle)
       const navY = height - 20;
       ctx.beginPath();
       ctx.moveTo(width * 0.25 + 6, navY - 6);
@@ -153,12 +155,10 @@ export class MockMediaClient implements MediaClient {
       ctx.lineTo(width * 0.25 + 6, navY + 6);
       ctx.stroke();
 
-      // Home (Circle)
       ctx.beginPath();
       ctx.arc(width * 0.5, navY, 6, 0, Math.PI * 2);
       ctx.stroke();
 
-      // Recents (Square)
       ctx.strokeRect(width * 0.75 - 5, navY - 5, 10, 10);
 
       // Render Touch Ripples
@@ -179,7 +179,6 @@ export class MockMediaClient implements MediaClient {
         ctx.stroke();
       });
 
-      // Stream Info overlay at bottom
       ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
       ctx.fillRect(8, 36, 120, 20);
       ctx.fillStyle = '#4ade80';
@@ -193,4 +192,43 @@ export class MockMediaClient implements MediaClient {
   }
 }
 
-export const defaultMediaClient = new MockMediaClient();
+interface MediaClientEntry {
+  client: MediaClient;
+  refCount: number;
+}
+
+export class DefaultMediaClientRegistry {
+  private instances = new Map<string, MediaClientEntry>();
+
+  acquire(sessionId: string): MediaClient {
+    let entry = this.instances.get(sessionId);
+    if (!entry) {
+      const client = new MockMediaClient(sessionId);
+      entry = { client, refCount: 0 };
+      this.instances.set(sessionId, entry);
+    }
+    entry.refCount += 1;
+    return entry.client;
+  }
+
+  async release(sessionId: string): Promise<void> {
+    const entry = this.instances.get(sessionId);
+    if (!entry) return;
+
+    entry.refCount -= 1;
+    if (entry.refCount <= 0) {
+      await entry.client.stop();
+      this.instances.delete(sessionId);
+    }
+  }
+
+  async closeAll(): Promise<void> {
+    for (const [id, entry] of this.instances.entries()) {
+      await entry.client.stop();
+      this.instances.delete(id);
+    }
+  }
+}
+
+export const defaultMediaRegistry = new DefaultMediaClientRegistry();
+export const defaultMediaClient = defaultMediaRegistry.acquire('str_default_global');

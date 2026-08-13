@@ -11,6 +11,11 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+
+# Secrets & Local credentials
+secrets/*
+!secrets/.gitkeep
 
 # Editor directories and files
 .vscode/*
@@ -22,3 +27,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Testing
+playwright-report/
+test-results/

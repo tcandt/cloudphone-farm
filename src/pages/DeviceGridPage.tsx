@@ -180,7 +180,11 @@ export const DeviceGridPage: React.FC = () => {
 
       {/* Control Modal */}
       {activeControlDevice && (
-        <DeviceControlModal device={activeControlDevice} onClose={() => setActiveControlDevice(null)} />
+        <DeviceControlModal
+          device={activeControlDevice}
+          isOpen={!!activeControlDevice}
+          onClose={() => setActiveControlDevice(null)}
+        />
       )}
     </div>
   );

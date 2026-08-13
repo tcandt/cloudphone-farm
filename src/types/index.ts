@@ -79,14 +79,38 @@ export interface ControlLease {
 
 export type CommandStatus = 'pending' | 'ack' | 'executing' | 'succeeded' | 'failed';
 
+export type DeviceCommandType =
+  | 'gesture.touch'
+  | 'gesture.swipe'
+  | 'input.text'
+  | 'global.back'
+  | 'global.home'
+  | 'global.recents'
+  | 'screen.capture'
+  | 'device.reboot'
+  | 'device.lock'
+  | 'screen.rotate'
+  | 'apk.install'
+  | 'network.proxy.apply';
+
+export interface DispatchCommandRequest {
+  deviceId: string;
+  type: DeviceCommandType;
+  payload: Record<string, unknown>;
+  controlLeaseId?: string;
+  idempotencyKey: string;
+  issuedAt: string;
+  expiresAt: string;
+}
+
 export interface DeviceCommand {
   command_id: string;
   device_id: string;
   organization_id: string;
   actor_id: string;
   actor_name: string;
-  command_type: 'touch' | 'swipe' | 'global_action' | 'text_input' | 'reboot' | 'install_apk' | 'change_proxy';
-  payload: Record<string, any>;
+  command_type: DeviceCommandType;
+  payload: Record<string, unknown>;
   status: CommandStatus;
   error_message?: string;
   created_at: string;

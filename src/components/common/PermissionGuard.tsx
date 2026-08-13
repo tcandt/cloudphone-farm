@@ -1,6 +1,6 @@
 import React from 'react';
 import { PermissionCode } from '../../types';
-import { mockCurrentUserSession } from '../../data/mockData';
+import { useAuth } from '../../context/AuthContext';
 import { Lock } from 'lucide-react';
 
 interface PermissionGuardProps {
@@ -10,9 +10,10 @@ interface PermissionGuardProps {
 }
 
 export const PermissionGuard: React.FC<PermissionGuardProps> = ({ permission, fallback, children }) => {
-  const hasPermission = mockCurrentUserSession.permissions.includes(permission);
+  const { hasPermission } = useAuth();
+  const allowed = hasPermission(permission);
 
-  if (!hasPermission) {
+  if (!allowed) {
     if (fallback !== undefined) {
       return <>{fallback}</>;
     }
@@ -21,7 +22,7 @@ export const PermissionGuard: React.FC<PermissionGuardProps> = ({ permission, fa
       <div className="relative group inline-block">
         <div className="opacity-40 pointer-events-none">{children}</div>
         <div className="absolute inset-0 flex items-center justify-center bg-slate-900/10 rounded-xl cursor-not-allowed">
-          <span className="p-1 bg-slate-800 text-amber-400 rounded-md shadow-md" title={`Cần quyền: ${permission}`}>
+          <span className="p-1 bg-slate-800 text-amber-400 rounded-md shadow-md" title={`Required Permission: ${permission}`}>
             <Lock size={14} />
           </span>
         </div>
