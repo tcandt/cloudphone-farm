@@ -1,0 +1,103 @@
+openapi: 3.1.0
+info:
+  title: Phone Control Platform API
+  version: 1.0.0-prototype
+  description: |
+    Phone Control Platform authoritative REST & WebSocket API specification.
+    Serves organization management, device registry, WebRTC stream orchestration, control leases, and audit logging.
+
+servers:
+  - url: /api/v1
+    description: Production API Server Base Path
+
+paths:
+  /auth/login:
+    post:
+      summary: User Login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Session created successfully
+        '401':
+          description: Invalid credentials
+
+  /devices:
+    get:
+      summary: List Tenant Devices
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: group_id
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Collection of devices
+
+  /devices/{id}/stream-sessions:
+    post:
+      summary: Request Stream Session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Stream session established
+
+  /devices/{id}/control-leases:
+    post:
+      summary: Acquire Exclusive Control Lease
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '201':
+          description: Control lease granted
+        '409':
+          description: Control lease conflict (device occupied)
+
+  /agent-enrollments:
+    post:
+      summary: Generate One-Time Agent Enrollment Token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                bound_group_id:
+                  type: string
+      responses:
+        '201':
+          description: One-time token generated (10-min TTL)
+
+  /audit-logs:
+    get:
+      summary: Query Audit Logs
+      responses:
+        '200':
+          description: Paginated audit log records
