@@ -368,6 +368,10 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     // 4. Non-JSON primitive rejection (undefined inside object)
     const invalidObj = { val: undefined };
     expect(() => canonicalJsonStringify(invalidObj)).toThrow('INVALID_PAYLOAD');
+
+    // 5. Non-finite number rejection (NaN or Infinity)
+    const NaNObj = { val: NaN };
+    expect(() => canonicalJsonStringify(NaNObj)).toThrow('INVALID_PAYLOAD');
   });
 
   it('Verifies AuthService zero-trust production HttpAuthService contract via mocked HTTP responses', async () => {

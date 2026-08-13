@@ -28,7 +28,14 @@ export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
 export function canonicalJsonStringify(val: unknown, stack = new WeakSet<object>()): string {
-  if (val === null || typeof val === 'boolean' || typeof val === 'number' || typeof val === 'string') {
+  if (val === null || typeof val === 'boolean' || typeof val === 'string') {
+    return JSON.stringify(val);
+  }
+
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val)) {
+      throw new CommandExecutionError('INVALID_PAYLOAD', 'Payload contains non-finite number (NaN or Infinity).');
+    }
     return JSON.stringify(val);
   }
 
@@ -231,8 +238,12 @@ export class CommandEngine {
         throw new CommandExecutionError('CAPABILITY_UNSUPPORTED', 'Touch gesture interaction is unsupported on this device.');
       }
       const p = req.payload as { x?: number; y?: number };
-      if (typeof p.x !== 'number' || typeof p.y !== 'number' || p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1) {
-        throw new CommandExecutionError('INVALID_PAYLOAD', 'Touch gesture coordinates (x, y) must be numbers between 0 and 1.');
+      if (
+        typeof p.x !== 'number' || !Number.isFinite(p.x) ||
+        typeof p.y !== 'number' || !Number.isFinite(p.y) ||
+        p.x < 0 || p.x > 1 || p.y < 0 || p.y > 1
+      ) {
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Touch gesture coordinates (x, y) must be finite numbers between 0 and 1.');
       }
     } else if (req.type === 'gesture.swipe') {
       if (!device.capabilities.control.supported || !device.capabilities.control.swipe) {
@@ -240,16 +251,16 @@ export class CommandEngine {
       }
       const p = req.payload as { x1?: number; y1?: number; x2?: number; y2?: number };
       if (
-        typeof p.x1 !== 'number' ||
-        typeof p.y1 !== 'number' ||
-        typeof p.x2 !== 'number' ||
-        typeof p.y2 !== 'number' ||
+        typeof p.x1 !== 'number' || !Number.isFinite(p.x1) ||
+        typeof p.y1 !== 'number' || !Number.isFinite(p.y1) ||
+        typeof p.x2 !== 'number' || !Number.isFinite(p.x2) ||
+        typeof p.y2 !== 'number' || !Number.isFinite(p.y2) ||
         p.x1 < 0 || p.x1 > 1 ||
         p.y1 < 0 || p.y1 > 1 ||
         p.x2 < 0 || p.x2 > 1 ||
         p.y2 < 0 || p.y2 > 1
       ) {
-        throw new CommandExecutionError('INVALID_PAYLOAD', 'Swipe gesture coordinates (x1, y1, x2, y2) must be numbers between 0 and 1.');
+        throw new CommandExecutionError('INVALID_PAYLOAD', 'Swipe gesture coordinates (x1, y1, x2, y2) must be finite numbers between 0 and 1.');
       }
     } else if (req.type === 'input.text') {
       if (!device.capabilities.control.supported || device.capabilities.control.text_input === 'none') {
