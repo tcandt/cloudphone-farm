@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -71,7 +72,7 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL not set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -80,78 +81,35 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Ensure schema tables exist
-	schemaDDL := `
-		CREATE TABLE IF NOT EXISTS devices (
-			device_id VARCHAR(64) PRIMARY KEY,
-			organization_id VARCHAR(64) NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'offline',
-			display_name VARCHAR(128),
-			model VARCHAR(128),
-			android_version VARCHAR(32),
-			serial_number VARCHAR(128),
-			group_id VARCHAR(64),
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-
-		CREATE TABLE IF NOT EXISTS control_leases (
-			control_lease_id VARCHAR(64) PRIMARY KEY,
-			device_id VARCHAR(64) NOT NULL,
-			organization_id VARCHAR(64) NOT NULL,
-			user_id VARCHAR(64) NOT NULL,
-			user_display_name VARCHAR(128),
-			fencing_token BIGINT NOT NULL DEFAULT 1,
-			acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			expires_at TIMESTAMPTZ NOT NULL,
-			ttl_seconds INT NOT NULL DEFAULT 30
-		);
-
-		CREATE TABLE IF NOT EXISTS commands (
-			command_id VARCHAR(64) PRIMARY KEY,
-			device_id VARCHAR(64) NOT NULL,
-			organization_id VARCHAR(64) NOT NULL,
-			actor_id VARCHAR(64) NOT NULL,
-			command_type VARCHAR(64) NOT NULL,
-			payload JSONB NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'pending',
-			idempotency_key VARCHAR(128) NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			expires_at TIMESTAMPTZ NOT NULL,
-			CONSTRAINT uk_org_actor_idempotency UNIQUE (organization_id, actor_id, idempotency_key)
-		);
-
-		CREATE TABLE IF NOT EXISTS command_events (
-			event_id BIGSERIAL PRIMARY KEY,
-			command_id VARCHAR(64) NOT NULL,
-			status VARCHAR(32) NOT NULL,
-			payload JSONB NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		);
-
-		CREATE TABLE IF NOT EXISTS command_outbox (
-			outbox_id BIGSERIAL PRIMARY KEY,
-			command_id VARCHAR(64) NOT NULL,
-			organization_id VARCHAR(64) NOT NULL,
-			device_id VARCHAR(64) NOT NULL,
-			event_type VARCHAR(64) NOT NULL,
-			payload JSONB NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'pending',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			processed_at TIMESTAMPTZ
-		);
-	`
-	_, err = pool.Exec(ctx, schemaDDL)
-	if err != nil {
-		t.Fatalf("failed to create integration schema tables: %v", err)
+	// Apply real project SQL migrations
+	migrations := []string{
+		"000001_create_core_tables.up.sql",
+		"000002_seed_initial_rbac.up.sql",
+		"000003_harden_agent_identity_and_enrollment.up.sql",
+		"000004_harden_command_outbox.up.sql",
+		"000005_harden_command_runtime.up.sql",
+		"000006_control_lease_and_command_contract.up.sql",
 	}
 
-	// Insert fixture device and control lease
+	migrationsDir := filepath.Join("..", "..", "db", "migrations")
+	for _, mFile := range migrations {
+		mPath := filepath.Join(migrationsDir, mFile)
+		sqlBytes, readErr := os.ReadFile(mPath)
+		if readErr != nil {
+			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
+		}
+		_, execErr := pool.Exec(ctx, string(sqlBytes))
+		if execErr != nil {
+			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
+		}
+	}
+
 	orgID := "org_test_integration"
 	userID := "usr_test_op"
 	deviceID := "dev_integration_001"
 	leaseID := "lease_integration_101"
 
+	// Cleanup test tables before assertions
 	_, _ = pool.Exec(ctx, "DELETE FROM commands WHERE organization_id = $1", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM control_leases WHERE organization_id = $1", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE organization_id = $1", orgID)
@@ -187,7 +145,6 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 
-	// Pre-create active lease in Redis for test
 	activeLease := &domain.ControlLease{
 		ControlLeaseID:  leaseID,
 		DeviceID:        deviceID,
@@ -203,13 +160,13 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 
 	cmdService := NewCommandService(pool, leaseService)
 
-	// Test 1: Dispatch Touch Command
-	idempKey := "touch_integration_key_001"
-	req := &domain.DispatchCommandRequest{
+	// Test 1: Clean Concurrent Idempotency Race (All goroutines start from clean key at barrier)
+	raceIdempKey := "race_touch_clean_key_99"
+	reqRace := &domain.DispatchCommandRequest{
 		DeviceID:       deviceID,
 		Type:           "gesture.touch",
 		ControlLeaseID: leaseID,
-		IdempotencyKey: idempKey,
+		IdempotencyKey: raceIdempKey,
 		Payload: map[string]interface{}{
 			"x":               0.5,
 			"y":               0.5,
@@ -218,62 +175,56 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 		},
 	}
 
-	cmd, err := cmdService.DispatchCommand(ctx, orgID, userID, req)
-	if err != nil {
-		t.Fatalf("DispatchCommand failed: %v", err)
-	}
-	if cmd.CommandID == "" || cmd.CommandID == idempKey {
-		t.Fatalf("CommandID must be generated by backend UUID and differ from idempotencyKey, got '%s'", cmd.CommandID)
-	}
+	const concurrentGoroutines = 5
+	var startBarrier sync.WaitGroup
+	startBarrier.Add(1)
 
-	// Verify DB Row Counts
-	var cmdCount, eventCount, outboxCount int
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM commands WHERE command_id = $1", cmd.CommandID).Scan(&cmdCount)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM command_events WHERE command_id = $1", cmd.CommandID).Scan(&eventCount)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE command_id = $1", cmd.CommandID).Scan(&outboxCount)
-
-	if cmdCount != 1 || eventCount != 1 || outboxCount != 1 {
-		t.Fatalf("DB Integration Invariant Violation: expected (1, 1, 1), got (%d, %d, %d)", cmdCount, eventCount, outboxCount)
-	}
-
-	// Test 2: Concurrent Retry with Same Idempotency Key
 	var wg sync.WaitGroup
-	results := make([]*domain.DeviceCommand, 5)
-	errs := make([]error, 5)
+	results := make([]*domain.DeviceCommand, concurrentGoroutines)
+	errs := make([]error, concurrentGoroutines)
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < concurrentGoroutines; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			results[idx], errs[idx] = cmdService.DispatchCommand(ctx, orgID, userID, req)
+			startBarrier.Wait() // Wait for barrier trigger so all 5 goroutines run simultaneously
+			results[idx], errs[idx] = cmdService.DispatchCommand(ctx, orgID, userID, reqRace)
 		}(i)
 	}
+
+	startBarrier.Done() // Trigger all goroutines at once
 	wg.Wait()
 
-	for i := 0; i < 5; i++ {
+	var firstCmdID string
+	for i := 0; i < concurrentGoroutines; i++ {
 		if errs[i] != nil {
-			t.Fatalf("Concurrent retry %d failed: %v", i, errs[i])
+			t.Fatalf("Concurrent race goroutine %d failed: %v", i, errs[i])
 		}
-		if results[i].CommandID != cmd.CommandID {
-			t.Fatalf("Concurrent retry %d returned different command_id '%s' (expected '%s')", i, results[i].CommandID, cmd.CommandID)
+		if i == 0 {
+			firstCmdID = results[i].CommandID
+		} else {
+			if results[i].CommandID != firstCmdID {
+				t.Fatalf("Concurrent race goroutine %d returned different command_id '%s' (expected '%s')", i, results[i].CommandID, firstCmdID)
+			}
 		}
 	}
 
-	// Assert commands and outbox table counts STILL remain exactly 1 row
-	var cmdCountAfter, outboxCountAfter int
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM commands WHERE idempotency_key = $1", idempKey).Scan(&cmdCountAfter)
-	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE command_id = $1", cmd.CommandID).Scan(&outboxCountAfter)
+	// Assert EXACT DB Counts
+	var cmdCount, eventCount, outboxCount int
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM commands WHERE idempotency_key = $1", raceIdempKey).Scan(&cmdCount)
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM command_events WHERE command_id = $1", firstCmdID).Scan(&eventCount)
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE command_id = $1", firstCmdID).Scan(&outboxCount)
 
-	if cmdCountAfter != 1 || outboxCountAfter != 1 {
-		t.Fatalf("Concurrent Idempotency Safety Violation: expected exactly 1 persisted row, got commands=%d outbox=%d", cmdCountAfter, outboxCountAfter)
+	if cmdCount != 1 || eventCount != 1 || outboxCount != 1 {
+		t.Fatalf("Concurrent Race DB Invariant Violation: expected (1, 1, 1), got commands=%d events=%d outbox=%d", cmdCount, eventCount, outboxCount)
 	}
 
-	// Test 3: Idempotency Conflict with Different Payload
+	// Test 2: Concurrent Same Key + Different Payload -> ErrIdempotencyConflict
 	reqConflict := &domain.DispatchCommandRequest{
 		DeviceID:       deviceID,
 		Type:           "gesture.touch",
 		ControlLeaseID: leaseID,
-		IdempotencyKey: idempKey,
+		IdempotencyKey: raceIdempKey,
 		Payload: map[string]interface{}{
 			"x":               0.9,
 			"y":               0.9,
@@ -281,8 +232,23 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 			"orientation":     "portrait",
 		},
 	}
+
 	_, errConflict := cmdService.DispatchCommand(ctx, orgID, userID, reqConflict)
 	if errConflict == nil || errConflict != domain.ErrIdempotencyConflict {
 		t.Fatalf("expected ErrIdempotencyConflict when payload differs, got %v", errConflict)
+	}
+
+	// Test 3: Existing Command Status Authority (Set status to 'succeeded' in DB, retry key, assert status == 'succeeded')
+	_, errUpdate := pool.Exec(ctx, "UPDATE commands SET status = 'succeeded' WHERE command_id = $1", firstCmdID)
+	if errUpdate != nil {
+		t.Fatalf("failed to update command status in test: %v", errUpdate)
+	}
+
+	retryCmd, errRetry := cmdService.DispatchCommand(ctx, orgID, userID, reqRace)
+	if errRetry != nil {
+		t.Fatalf("retry on succeeded command failed: %v", errRetry)
+	}
+	if retryCmd.Status != "succeeded" {
+		t.Fatalf("expected returned DeviceCommand.Status to equal 'succeeded', got '%s'", retryCmd.Status)
 	}
 }

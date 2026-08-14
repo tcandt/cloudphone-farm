@@ -160,8 +160,20 @@ class WebRtcPeerConnectionManager(
             override fun onAddTrack(receiver: RtpReceiver?, mediaStreams: Array<out org.webrtc.MediaStream>?) {}
         })
 
-        // Attach WebRTC ScreenCapturerAndroid to VideoTrack
-        attachScreenCapturer(projectionResultData)
+        // Attach WebRTC ScreenCapturerAndroid to VideoTrack (Fail-Closed)
+        val attachResult = attachScreenCapturer(projectionResultData)
+        if (attachResult.isFailure) {
+            val err = attachResult.exceptionOrNull()?.message ?: "Screen capture startup failed"
+            Log.e(TAG, "Rejecting media session initialization for SessionID=$activeSessionId: $err")
+
+            val stopPayload = JSONObject().apply {
+                put("session_id", activeSessionId)
+                put("reason", err)
+            }
+            signalPublisher("media.session.stop", stopPayload)
+            closeSession()
+            return
+        }
 
         ScreenCaptureManager.markReady(activeSessionId)
 
@@ -174,13 +186,15 @@ class WebRtcPeerConnectionManager(
         Log.i(TAG, "WebRTC PeerConnection and ScreenCapturer initialized for SessionID=$activeSessionId. Sent media.session.ready")
     }
 
-    private fun attachScreenCapturer(projectionResultData: Intent) {
-        try {
+    private fun attachScreenCapturer(projectionResultData: Intent): Result<Unit> {
+        return try {
+            val initialGeom = DisplayGeometryProvider.getGeometry(context)
+
             videoCapturer = ScreenCapturerAndroid(projectionResultData, object : MediaProjectionCallback() {})
             surfaceTextureHelper = SurfaceTextureHelper.create("PCP_WebRTC_Thread", rootEglBase.eglBaseContext)
             videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
+                ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoSource is null"))
 
-            val initialGeom = DisplayGeometryProvider.getGeometry(context)
             lastOrientation = initialGeom.orientation
             val (targetW, targetH) = if (initialGeom.orientation == DisplayOrientation.LANDSCAPE) {
                 Pair(1280, 720)
@@ -194,16 +208,37 @@ class WebRtcPeerConnectionManager(
             videoCapturer?.startCapture(targetW, targetH, 30)
 
             videoTrack = peerConnectionFactory?.createVideoTrack("video_track_0", videoSource)
+                ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoTrack is null"))
             videoTrack?.setEnabled(true)
 
             peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
+                ?: return Result.failure(IllegalStateException("Failed to add video track to PeerConnection"))
             Log.i(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH}) to WebRTC PeerConnection successfully")
 
             // Register DisplayListener for orientation change handling
             registerDisplayListener()
+            Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Error attaching ScreenCapturerAndroid: ${e.message}", e)
+            cleanupCapturerResources()
+            Result.failure(e)
+        }
+    }
+
+    private fun cleanupCapturerResources() {
+        try {
             unregisterDisplayListener()
+            videoCapturer?.stopCapture()
+            videoCapturer?.dispose()
+            videoCapturer = null
+            videoTrack?.dispose()
+            videoTrack = null
+            videoSource?.dispose()
+            videoSource = null
+            surfaceTextureHelper?.dispose()
+            surfaceTextureHelper = null
+        } catch (e: Exception) {
+            Log.w(TAG, "Error during capturer cleanup: ${e.message}")
         }
     }
 
@@ -214,10 +249,28 @@ class WebRtcPeerConnectionManager(
                 override fun onDisplayAdded(displayId: Int) {}
                 override fun onDisplayRemoved(displayId: Int) {}
                 override fun onDisplayChanged(displayId: Int) {
-                    val currentGeom = DisplayGeometryProvider.getGeometry(context)
-                    if (currentGeom.orientation != lastOrientation) {
-                        Log.i(TAG, "Display orientation changed: $lastOrientation -> ${currentGeom.orientation}")
-                        lastOrientation = currentGeom.orientation
+                    try {
+                        val currentGeom = DisplayGeometryProvider.getGeometry(context)
+                        if (currentGeom.orientation != lastOrientation) {
+                            Log.i(TAG, "Display orientation changed: $lastOrientation -> ${currentGeom.orientation}")
+                            lastOrientation = currentGeom.orientation
+                            val (newW, newH) = if (currentGeom.orientation == DisplayOrientation.LANDSCAPE) {
+                                Pair(1280, 720)
+                            } else {
+                                Pair(720, 1280)
+                            }
+                            if (newW != lastCaptureWidth || newH != lastCaptureHeight) {
+                                lastCaptureWidth = newW
+                                lastCaptureHeight = newH
+                                videoCapturer?.changeCaptureFormat(newW, newH, 30)
+                                Log.i(TAG, "Changed capture format to ${newW}x${newH}@30fps")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "DisplayGeometryProvider error during onDisplayChanged: ${e.message}")
+                    }
+                }
+            }
                         val (newW, newH) = if (currentGeom.orientation == DisplayOrientation.LANDSCAPE) {
                             Pair(1280, 720)
                         } else {

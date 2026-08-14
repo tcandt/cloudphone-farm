@@ -188,7 +188,7 @@ class CommandProcessor(
                     return
                 }
 
-                Log.d(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
+                Log.i(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
 
                 val deferred = CompletableDeferred<Boolean>()
                 service.performTouch(point.x, point.y) { success ->
