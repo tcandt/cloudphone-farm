@@ -9,12 +9,14 @@ export interface MediaClient {
   stop(): Promise<void>;
   simulateTouch(x: number, y: number): void;
   getWebRtcClient?(): WebRtcMediaClient | null;
+  onStateChange?(listener: (state: string, error?: string, serverSessionId?: string) => void): () => void;
 }
 
 export class ProductionWebRtcMediaClient implements MediaClient {
   public sessionId: string;
   private webRtcClient: WebRtcMediaClient | null = null;
   private videoElement: HTMLVideoElement | null = null;
+  private stateListeners = new Set<(state: string, error?: string, serverSessionId?: string) => void>();
   private profile: StreamProfile = {
     resolution: '720p',
     fps: 30,
@@ -25,6 +27,16 @@ export class ProductionWebRtcMediaClient implements MediaClient {
     this.sessionId = sessionId;
   }
 
+  onStateChange(listener: (state: string, error?: string, serverSessionId?: string) => void): () => void {
+    this.stateListeners.add(listener);
+    if (this.webRtcClient) {
+      listener(this.webRtcClient.getState(), undefined, this.webRtcClient.getSessionId());
+    }
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  }
+
   async startSession(deviceId: string, profile?: StreamProfile): Promise<StreamSession> {
     if (profile) {
       this.profile = profile;
@@ -33,6 +45,11 @@ export class ProductionWebRtcMediaClient implements MediaClient {
     if (!this.webRtcClient) {
       this.webRtcClient = new WebRtcMediaClient({
         deviceId,
+        onStateChange: (state, error, serverSessionId) => {
+          for (const listener of this.stateListeners) {
+            listener(state, error, serverSessionId);
+          }
+        },
         onStreamReady: (stream) => {
           if (this.videoElement) {
             this.videoElement.srcObject = stream;
@@ -44,14 +61,14 @@ export class ProductionWebRtcMediaClient implements MediaClient {
     }
 
     const session: StreamSession = {
-      stream_session_id: this.sessionId,
+      stream_session_id: this.webRtcClient.getSessionId() || this.sessionId,
       device_id: deviceId,
-      organization_id: 'org_tenant_01',
-      user_id: 'usr_op_01',
+      organization_id: 'org_authenticated',
+      user_id: 'usr_authenticated',
       profile: this.profile,
-      status: 'connected',
+      status: 'signaling',
       started_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+      expires_at: new Date(Date.now() + 900 * 1000).toISOString(),
     };
 
     return session;
@@ -100,6 +117,7 @@ export class MockMediaClient implements MediaClient {
   private currentElement: HTMLCanvasElement | HTMLVideoElement | null = null;
   private animFrameId: number | null = null;
   private touches: { x: number; y: number; time: number }[] = [];
+  private stateListeners = new Set<(state: string, error?: string, serverSessionId?: string) => void>();
   private profile: StreamProfile = {
     resolution: '480p',
     fps: 30,
@@ -111,12 +129,24 @@ export class MockMediaClient implements MediaClient {
     this.sessionId = sessionId;
   }
 
+  onStateChange(listener: (state: string, error?: string, serverSessionId?: string) => void): () => void {
+    this.stateListeners.add(listener);
+    listener('CONNECTED', undefined, this.sessionId);
+    return () => {
+      this.stateListeners.delete(listener);
+    };
+  }
+
   async startSession(deviceId: string, profile?: StreamProfile): Promise<StreamSession> {
     this.activeDeviceId = deviceId;
     if (profile) {
       this.profile = profile;
     }
     this.isRunning = true;
+
+    for (const l of this.stateListeners) {
+      l('CONNECTED', undefined, this.sessionId);
+    }
 
     const session: StreamSession = {
       stream_session_id: this.sessionId,
@@ -151,6 +181,9 @@ export class MockMediaClient implements MediaClient {
     }
     this.activeDeviceId = null;
     this.currentElement = null;
+    for (const l of this.stateListeners) {
+      l('CLOSED', undefined, this.sessionId);
+    }
   }
 
   simulateTouch(x: number, y: number): void {

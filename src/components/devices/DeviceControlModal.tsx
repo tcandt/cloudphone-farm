@@ -13,6 +13,7 @@ import {
   Clock,
   Shield,
   Wifi,
+  AlertCircle,
 } from 'lucide-react';
 
 interface DeviceControlModalProps {
@@ -36,10 +37,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const [leaseSecondsLeft, setLeaseSecondsLeft] = useState<number>(0);
   const [textPayload, setTextPayload] = useState('');
   const [commandLog, setCommandLog] = useState<CommandLogItem[]>([]);
+  const [webrtcState, setWebrtcState] = useState<string>('CONNECTING');
+  const [webrtcError, setWebrtcError] = useState<string | null>(null);
+  const [activeServerSessionId, setActiveServerSessionId] = useState<string>('');
   const mediaClientRef = useRef<MediaClient | null>(null);
 
   // Unique stream session ID per viewer instance
-  const [sessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
+  const [viewerSessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
 
   const addLog = (msg: string) => {
     setCommandLog((prev) => [
@@ -48,14 +52,22 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     ]);
   };
 
-  // Initialize MediaClient for device stream
+  // Initialize MediaClient for device stream & subscribe to WebRTC state machine
   useEffect(() => {
     if (!isOpen) return;
 
-    const mediaClient = defaultMediaRegistry.acquire(sessionId);
+    const mediaClient = defaultMediaRegistry.acquire(viewerSessionId);
     mediaClientRef.current = mediaClient;
 
     let mounted = true;
+
+    const unsubscribe = mediaClient.onStateChange?.((state, err, serverSessId) => {
+      if (mounted) {
+        setWebrtcState(state);
+        if (err) setWebrtcError(err);
+        if (serverSessId) setActiveServerSessionId(serverSessId);
+      }
+    });
 
     async function initStream() {
       await mediaClient.startSession(device.device_id, {
@@ -78,9 +90,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
     return () => {
       mounted = false;
-      defaultMediaRegistry.release(sessionId);
+      unsubscribe?.();
+      defaultMediaRegistry.release(viewerSessionId);
     };
-  }, [device, isOpen, sessionId]);
+  }, [device, isOpen, viewerSessionId]);
 
   // Handle Lease Timer Countdown
   useEffect(() => {
@@ -235,6 +248,8 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   if (!isOpen) return null;
 
+  const displaySessionId = activeServerSessionId || viewerSessionId;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
       <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl">
@@ -249,6 +264,9 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 <h3 className="font-extrabold text-base text-white">{device.display_name}</h3>
                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold text-[10px] border border-emerald-500/20">
                   {device.status.toUpperCase()}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-bold text-[10px] border border-blue-500/20">
+                  {webrtcState === 'VIDEO_RECEIVING' ? '● LIVE 30fps' : webrtcState}
                 </span>
               </div>
               <p className="text-xs text-slate-400 font-mono">
@@ -285,9 +303,17 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 width={360}
                 height={640}
                 onClick={handleCanvasClick}
-                data-session-id={sessionId}
+                data-session-id={displaySessionId}
                 className="absolute inset-0 w-full h-full cursor-crosshair object-contain"
               />
+
+              {webrtcState === 'FAILED' && (
+                <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center space-y-2 z-20">
+                  <AlertCircle size={32} className="text-rose-500" />
+                  <p className="text-xs font-bold text-rose-400">WebRTC Media Error</p>
+                  <p className="text-[11px] text-slate-400 max-w-[200px] font-mono">{webrtcError || 'Media connection failed'}</p>
+                </div>
+              )}
 
               {!lease && (
                 <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer z-10" onClick={acquireLease}>
@@ -309,7 +335,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             </div>
 
             <p className="text-[10px] text-slate-500 mt-3 font-mono flex items-center gap-1">
-              <Wifi size={12} className="text-emerald-400" /> Session ID: {sessionId}
+              <Wifi size={12} className="text-emerald-400" /> Server Session ID: {displaySessionId}
             </p>
           </div>
 

@@ -12,7 +12,7 @@ export type WebRtcState =
 
 export interface WebRtcMediaClientOptions {
   deviceId: string;
-  onStateChange?: (state: WebRtcState, error?: string) => void;
+  onStateChange?: (state: WebRtcState, error?: string, serverSessionId?: string) => void;
   onStreamReady?: (stream: MediaStream) => void;
 }
 
@@ -24,8 +24,13 @@ export class WebRtcMediaClient {
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
   private mediaStream: MediaStream | null = null;
   private isOfferCreated = false;
+  private listeners = new Set<(state: WebRtcState, error?: string, serverSessionId?: string) => void>();
 
-  constructor(private options: WebRtcMediaClientOptions) {}
+  constructor(private options: WebRtcMediaClientOptions) {
+    if (options.onStateChange) {
+      this.listeners.add(options.onStateChange);
+    }
+  }
 
   public getState(): WebRtcState {
     return this.state;
@@ -37,6 +42,14 @@ export class WebRtcMediaClient {
 
   public getMediaStream(): MediaStream | null {
     return this.mediaStream;
+  }
+
+  public subscribeState(listener: (state: WebRtcState, error?: string, serverSessionId?: string) => void): () => void {
+    this.listeners.add(listener);
+    listener(this.state, undefined, this.sessionId);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   public startSession(): void {
@@ -261,7 +274,13 @@ export class WebRtcMediaClient {
 
   private setState(newState: WebRtcState, error?: string): void {
     this.state = newState;
-    this.options.onStateChange?.(newState, error);
+    for (const listener of this.listeners) {
+      try {
+        listener(newState, error, this.sessionId);
+      } catch (err) {
+        console.error('[WebRtcMediaClient] Listener error:', err);
+      }
+    }
   }
 
   public close(): void {
