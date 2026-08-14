@@ -285,6 +285,7 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 
 	cmdRepo := pgrepo.NewCommandRepository(pool)
 	orgID := "org_test_fastack"
+	userID := "usr_test_fastack"
 	deviceID := "dev_test_fastack"
 	agentID := "agent_test_fastack"
 	connID := "conn_gen_1"
@@ -294,6 +295,11 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM command_delivery_attempts WHERE organization_id = $1", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM command_events WHERE command_id IN (SELECT command_id FROM commands WHERE organization_id = $1)", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM commands WHERE organization_id = $1", orgID)
+	_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE organization_id = $1", orgID)
+
+	_, _ = pool.Exec(ctx, `INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'FastACK Test Org', 'org-test-fastack') ON CONFLICT DO NOTHING`, orgID)
+	_, _ = pool.Exec(ctx, `INSERT INTO users (user_id, email, password_hash, display_name) VALUES ($1, 'fastack@example.com', 'hash123', 'FastACK Operator') ON CONFLICT DO NOTHING`, userID)
+	_, _ = pool.Exec(ctx, `INSERT INTO devices (device_id, organization_id, status, name, serial_number, model, platform_version) VALUES ($1, $2, 'online', 'FastACK Device', 'SN_FASTACK', 'Samsung S7', '11.0') ON CONFLICT DO NOTHING`, deviceID, orgID)
 
 	// 1. Test Fast-ACK Promotion: PREPARED -> DISPATCHED when valid ACK arrives before outbox update
 	cmd1ID := "cmd_fastack_001"
