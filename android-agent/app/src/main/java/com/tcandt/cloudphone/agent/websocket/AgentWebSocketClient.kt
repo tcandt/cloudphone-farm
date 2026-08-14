@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.tcandt.cloudphone.agent.command.CommandProcessor
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
 import com.tcandt.cloudphone.agent.security.AgentKeyStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +88,12 @@ class AgentWebSocketClient(
                         "command.dispatch" -> {
                             commandProcessor?.enqueueCommand(payload)
                         }
+                        "media.session.start" -> {
+                            handleMediaSessionStart(payload)
+                        }
+                        "media.session.stop" -> {
+                            handleMediaSessionStop(payload)
+                        }
                         else -> {
                             Log.d(TAG, "Received frame of type: $type")
                         }
@@ -136,6 +143,53 @@ class AgentWebSocketClient(
         Log.i(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
 
         startSignedHttpHeartbeat()
+    }
+
+    private fun handleMediaSessionStart(payload: JSONObject) {
+        val sessionId = payload.optString("session_id")
+        val width = payload.optInt("width", 720)
+        val height = payload.optInt("height", 1280)
+        val bitrate = payload.optInt("bitrate", 2_500_000)
+        val fps = payload.optInt("fps", 30)
+
+        Log.i(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
+        val success = ScreenCaptureManager.startCapture(context, width, height, bitrate, fps)
+
+        val respPayload = JSONObject().apply {
+            put("session_id", sessionId)
+            put("status", if (success) "started" else "failed")
+            if (!success) {
+                put("error_message", "MediaProjection permission consent missing on device")
+            }
+        }
+
+        val envelope = JSONObject().apply {
+            put("type", "media.session.started")
+            put("message_id", "msg_${System.nanoTime()}")
+            put("payload", respPayload)
+        }
+
+        webSocket?.send(envelope.toString())
+    }
+
+    private fun handleMediaSessionStop(payload: JSONObject) {
+        val sessionId = payload.optString("session_id")
+        Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
+
+        ScreenCaptureManager.stopCapture(context)
+
+        val respPayload = JSONObject().apply {
+            put("session_id", sessionId)
+            put("status", "stopped")
+        }
+
+        val envelope = JSONObject().apply {
+            put("type", "media.session.stopped")
+            put("message_id", "msg_${System.nanoTime()}")
+            put("payload", respPayload)
+        }
+
+        webSocket?.send(envelope.toString())
     }
 
     private fun startSignedHttpHeartbeat() {

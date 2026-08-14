@@ -26,6 +26,13 @@ const (
 	MessageTypePing                   WSMessageType = "ping"
 	MessageTypePong                   WSMessageType = "pong"
 	MessageTypeError                  WSMessageType = "error"
+	MessageTypeMediaSessionStart      WSMessageType = "media.session.start"
+	MessageTypeMediaSessionStarted    WSMessageType = "media.session.started"
+	MessageTypeMediaSessionStop       WSMessageType = "media.session.stop"
+	MessageTypeMediaSessionStopped    WSMessageType = "media.session.stopped"
+	MessageTypeMediaSignalOffer       WSMessageType = "media.signal.offer"
+	MessageTypeMediaSignalAnswer      WSMessageType = "media.signal.answer"
+	MessageTypeMediaSignalCandidate   WSMessageType = "media.signal.candidate"
 )
 
 type WSEnvelope struct {
