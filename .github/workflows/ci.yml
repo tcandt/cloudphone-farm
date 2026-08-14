@@ -78,9 +78,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
+      - name: Setup Gradle 8.4
         uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.4'
 
-      - name: Build Android Agent APK
+      - name: Verify Android Agent (lint, test, assemble)
         working-directory: android-agent
-        run: gradle assembleDebug --no-daemon
+        run: gradle lintDebug testDebugUnitTest assembleDebug --no-daemon

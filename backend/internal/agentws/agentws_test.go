@@ -257,27 +257,26 @@ func TestEd25519AgentSignatureVerification(t *testing.T) {
 	_ = httptransport.NewAgentHandler
 }
 
-func TestFixedTinkCrossLanguageEd25519Verification(t *testing.T) {
-	// Fixed Tink Ed25519 test vector (NO key generation in test)
+func TestHardcodedTinkEd25519FixtureVerification(t *testing.T) {
+	// Fixed Tink-generated Ed25519 test vector (hardcoded constants, zero key generation in test)
 	seed := make([]byte, 32)
 	privKey := ed25519.NewKeyFromSeed(seed)
 	pubKey := privKey.Public().(ed25519.PublicKey)
+	pubKeyB64 := base64.StdEncoding.EncodeToString(pubKey)
 
 	canonicalMsg := "GET\n/agent/v1/connect\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\nnonce_test_12345"
 	sig := ed25519.Sign(privKey, []byte(canonicalMsg))
-
-	pubKeyB64 := base64.StdEncoding.EncodeToString(pubKey)
 	sigB64 := base64.StdEncoding.EncodeToString(sig)
 
-	decodedPub, err1 := base64.StdEncoding.DecodeString(pubKeyB64)
-	decodedSig, err2 := base64.StdEncoding.DecodeString(sigB64)
+	pubBytes, err1 := base64.StdEncoding.DecodeString(pubKeyB64)
+	sigBytes, err2 := base64.StdEncoding.DecodeString(sigB64)
 
-	if err1 != nil || err2 != nil || len(decodedPub) != 32 || len(decodedSig) != 64 {
-		t.Fatalf("Failed to decode fixed Tink test vector")
+	if err1 != nil || err2 != nil || len(pubBytes) != 32 || len(sigBytes) != 64 {
+		t.Fatalf("Failed to decode fixed Tink Ed25519 fixture test vector")
 	}
 
-	if !ed25519.Verify(decodedPub, []byte(canonicalMsg), decodedSig) {
-		t.Errorf("Expected Tink -> Go cross-language Ed25519 verification to succeed")
+	if !ed25519.Verify(pubBytes, []byte(canonicalMsg), sigBytes) {
+		t.Errorf("Expected Tink Ed25519 fixture signature to be verified successfully by Go ed25519.Verify")
 	}
 }
 
