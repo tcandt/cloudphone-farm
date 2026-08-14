@@ -53,7 +53,7 @@ func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, use
 		if errors.Is(err, postgres.ErrUserNotFound) {
 			return nil, ErrInvalidCredentials
 		}
-		return nil, fmt.Errorf("failed to fetch user: %w", err)
+		return nil, fmt.Errorf("database query error: %w", err)
 	}
 
 	// 2. Verify Argon2id password (constant-time, generic error response)
@@ -110,6 +110,9 @@ func (s *AuthService) Login(ctx context.Context, email, password, ipAddress, use
 
 	// 6. Store in Redis authoritative session store
 	if err := s.sessionRepo.CreateSession(ctx, tokenHash, sessionData, s.ttl); err != nil {
+		if errors.Is(err, redis.ErrRedisDown) {
+			return nil, redis.ErrRedisDown
+		}
 		return nil, fmt.Errorf("failed to store authoritative session in Redis: %w", err)
 	}
 
@@ -142,7 +145,7 @@ func (s *AuthService) Logout(ctx context.Context, rawToken string) error {
 	return nil
 }
 
-// GetSessionByToken retrieves the authenticated principal using the raw session token
+// GetSessionByToken retrieves the authenticated principal using the raw session token, preserving dependency errors
 func (s *AuthService) GetSessionByToken(ctx context.Context, rawToken string) (*Principal, error) {
 	if rawToken == "" {
 		return nil, ErrUnauthenticated
@@ -151,6 +154,12 @@ func (s *AuthService) GetSessionByToken(ctx context.Context, rawToken string) (*
 	tokenHash := crypto.HashToken(rawToken)
 	sessionData, err := s.sessionRepo.GetSession(ctx, tokenHash)
 	if err != nil {
+		if errors.Is(err, redis.ErrRedisDown) {
+			return nil, redis.ErrRedisDown
+		}
+		if errors.Is(err, redis.ErrSessionNotFound) {
+			return nil, ErrUnauthenticated
+		}
 		return nil, ErrUnauthenticated
 	}
 

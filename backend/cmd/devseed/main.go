@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -80,5 +79,5 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("Development database seed completed successfully! Default login: owner@phonecontrol.io / pcp_secure_pass_2026")
+	slog.Info("Development database seed completed successfully!", "user", "owner@phonecontrol.io")
 }

@@ -66,6 +66,9 @@ export class HttpAuthService implements AuthService {
   }
 }
 
-export const authService: AuthService = import.meta.env.DEV
-  ? new MockAuthService()
-  : new HttpAuthService();
+const apiMode = import.meta.env.VITE_API_MODE ?? (import.meta.env.DEV ? 'mock' : 'http');
+
+export const authService: AuthService =
+  apiMode === 'mock'
+    ? new MockAuthService()
+    : new HttpAuthService();
