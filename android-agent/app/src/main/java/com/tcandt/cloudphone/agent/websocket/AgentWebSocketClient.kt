@@ -1,0 +1,144 @@
+package com.tcandt.cloudphone.agent.websocket
+
+import android.content.Context
+import android.util.Log
+import com.tcandt.cloudphone.agent.command.CommandProcessor
+import com.tcandt.cloudphone.agent.security.AgentKeyStore
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import org.json.JSONObject
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+
+class AgentWebSocketClient(
+    private val context: Context,
+    private val serverUrl: String,
+    private val agentId: String
+) {
+    private val client = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .pingInterval(15, TimeUnit.SECONDS)
+        .build()
+
+    private var webSocket: WebSocket? = null
+    private val keyStore = AgentKeyStore(context)
+    private var commandProcessor: CommandProcessor? = null
+
+    companion object {
+        private const val TAG = "AgentWebSocketClient"
+    }
+
+    fun connect() {
+        commandProcessor = CommandProcessor(context) { commandId, status, error, sequence ->
+            sendStatusMessage(commandId, status, error, sequence)
+        }
+
+        val timestamp = (System.currentTimeMillis() / 1000).toString()
+        val nonce = "nonce_${UUID.randomUUID().toString().substring(0, 8)}"
+        val canonicalMessage = "GET\n/agent/v1/connect\n\n$timestamp\n$nonce"
+        val signature = keyStore.signMessage(canonicalMessage)
+
+        val request = Request.Builder()
+            .url(serverUrl)
+            .addHeader("X-Agent-ID", agentId)
+            .addHeader("X-Agent-Timestamp", timestamp)
+            .addHeader("X-Agent-Nonce", nonce)
+            .addHeader("X-Agent-Signature", signature)
+            .build()
+
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.i(TAG, "Connected to Phone Control Platform WSS Server: $serverUrl")
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val envelope = JSONObject(text)
+                    val type = envelope.optString("type")
+                    val payload = envelope.optJSONObject("payload") ?: JSONObject()
+
+                    when (type) {
+                        "server.challenge" -> {
+                            handleChallenge(webSocket, payload)
+                        }
+                        "command.dispatch" -> {
+                            commandProcessor?.processCommand(payload)
+                        }
+                        else -> {
+                            Log.d(TAG, "Received frame of type: $type")
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to parse incoming WS message: ${e.message}", e)
+                }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                Log.e(TAG, "WebSocket error: ${t.message}", t)
+                scheduleReconnect()
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.w(TAG, "WebSocket connection closed: $reason ($code)")
+                scheduleReconnect()
+            }
+        })
+    }
+
+    private fun handleChallenge(webSocket: WebSocket, challengePayload: JSONObject) {
+        val nonce = challengePayload.optString("nonce")
+        val timestamp = (System.currentTimeMillis() / 1000).toString()
+        val canonicalChallenge = "CHALLENGE\n$nonce\n$timestamp"
+        val signature = keyStore.signMessage(canonicalChallenge)
+
+        val responsePayload = JSONObject().apply {
+            put("agent_id", agentId)
+            put("nonce", nonce)
+            put("timestamp", timestamp)
+            put("signature", signature)
+        }
+
+        val envelope = JSONObject().apply {
+            put("type", "agent.challenge_response")
+            put("message_id", "msg_${System.nanoTime()}")
+            put("payload", responsePayload)
+        }
+
+        webSocket.send(envelope.toString())
+        Log.i(TAG, "Sent agent.challenge_response to server")
+    }
+
+    private fun sendStatusMessage(commandId: String, status: String, error: String?, sequence: Int) {
+        val payload = JSONObject().apply {
+            put("command_id", commandId)
+            put("status", status)
+            put("sequence", sequence)
+            if (!error.isNullOrEmpty()) {
+                put("error_message", error)
+            }
+            put("timestamp", System.currentTimeMillis() / 1000)
+        }
+
+        val envelope = JSONObject().apply {
+            put("type", "command.status")
+            put("message_id", "msg_${System.nanoTime()}")
+            put("payload", payload)
+        }
+
+        webSocket?.send(envelope.toString())
+        Log.i(TAG, "Sent command.status envelope to server (status=$status, seq=$sequence)")
+    }
+
+    private fun scheduleReconnect() {
+        Log.i(TAG, "Scheduling WSS reconnect in 3 seconds...")
+        Thread.sleep(3000)
+        connect()
+    }
+
+    fun disconnect() {
+        webSocket?.close(1000, "App Service Stopped")
+    }
+}

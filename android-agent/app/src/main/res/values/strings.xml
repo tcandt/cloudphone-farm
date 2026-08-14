@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Phone Control Agent</string>
+    <string name="accessibility_service_description">Phục vụ điều khiển cảm ứng và thao tác từ xa cho Phone Control Platform.</string>
+</resources>

@@ -143,7 +143,7 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 	`
 	if _, err := tx.Exec(ctx, insertCmdSQL, cmdID, orgID, req.DeviceID, userID, req.Type, string(payloadBytes), req.IdempotencyKey, expiresAt, now); err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && (pgErr.ConstraintName == "uk_org_actor_idempotency" || pgErr.ConstraintName == "commands_organization_id_actor_id_idempotency_key_key" || pgErr.ConstraintName == "") {
 			// Idempotency constraint violation on (organization_id, actor_id, idempotency_key)
 			return s.handleExistingIdempotency(ctx, orgID, userID, req)
 		}
