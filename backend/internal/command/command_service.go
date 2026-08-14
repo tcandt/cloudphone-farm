@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -143,10 +142,9 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'pending', $7, $8, $9)
 	`
 	if _, err := tx.Exec(ctx, insertCmdSQL, cmdID, orgID, req.DeviceID, userID, req.Type, string(payloadBytes), req.IdempotencyKey, expiresAt, now); err != nil {
-		// Check PostgreSQL Unique Violation Error Code 23505
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
-			// Query existing command for idempotency lookup & collision check
+			// Idempotency constraint violation on (organization_id, actor_id, idempotency_key)
 			return s.handleExistingIdempotency(ctx, orgID, userID, req)
 		}
 		return nil, fmt.Errorf("failed to insert command into postgres: %w", err)
@@ -217,18 +215,34 @@ func (s *CommandService) handleExistingIdempotency(ctx context.Context, orgID, u
 	var existingPayload map[string]interface{}
 	_ = json.Unmarshal(rawPayload, &existingPayload)
 
-	// Check device_id, type match
+	// Check device_id and command_type match
 	if existing.DeviceID != req.DeviceID || existing.CommandType != req.Type {
 		return nil, domain.ErrIdempotencyConflict
 	}
 
-	// Verify request payload keys match (ignoring system-added lease & fencing token)
+	// Two-way payload semantic comparison (stripping system fields control_lease_id and fencing_token)
+	normReq := make(map[string]string)
 	for k, v := range req.Payload {
-		if k == "control_lease_id" || k == "fencing_token" {
-			continue
+		if k != "control_lease_id" && k != "fencing_token" {
+			normReq[k] = fmt.Sprintf("%v", v)
 		}
-		existingVal, ok := existingPayload[k]
-		if !ok || !reflect.DeepEqual(fmt.Sprintf("%v", v), fmt.Sprintf("%v", existingVal)) {
+	}
+
+	normExist := make(map[string]string)
+	for k, v := range existingPayload {
+		if k != "control_lease_id" && k != "fencing_token" {
+			normExist[k] = fmt.Sprintf("%v", v)
+		}
+	}
+
+	// 2-way length and key-value equality check
+	if len(normReq) != len(normExist) {
+		return nil, domain.ErrIdempotencyConflict
+	}
+
+	for k, v := range normReq {
+		existVal, ok := normExist[k]
+		if !ok || existVal != v {
 			return nil, domain.ErrIdempotencyConflict
 		}
 	}
