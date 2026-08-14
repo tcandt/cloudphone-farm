@@ -17,13 +17,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	agentservice "github.com/tcandt/cloudphone-farm/backend/internal/agent"
+	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	"github.com/tcandt/cloudphone-farm/backend/internal/command"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
 	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
+	wstransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/ws"
 )
 
 func main() {
@@ -70,6 +73,14 @@ func main() {
 	deviceRepo := pgrepo.NewDeviceRepository(pgPool, cfg.DeviceOnlineThresholdSeconds, cfg.DeviceOfflineThresholdSeconds)
 	enrollRepo := pgrepo.NewEnrollmentRepository(pgPool)
 	presenceRepo := redisrepo.NewPresenceRepository(rdb, 30*time.Second)
+	outboxRepo := pgrepo.NewOutboxRepository(pgPool)
+	cmdRepo := pgrepo.NewCommandRepository(pgPool)
+
+	// Agent WebSocket Hub & Command Outbox Dispatcher
+	wsHub := agentws.NewHub()
+	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub)
+	outboxDispatcher.Start(ctx)
+	defer outboxDispatcher.Stop()
 
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	deviceService := devservice.NewDeviceService(deviceRepo)
@@ -80,6 +91,7 @@ func main() {
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
+	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo)
 
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
 	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
@@ -100,7 +112,7 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CorsAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID", "X-Agent-Fingerprint", "X-Agent-ID"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID", "X-Agent-Fingerprint", "X-Agent-ID", "X-Agent-Timestamp", "X-Agent-Nonce", "X-Agent-Signature"},
 		ExposedHeaders:   []string{"Link", "X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -109,6 +121,9 @@ func main() {
 	// Health Check Handlers (Public)
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/ready", healthHandler.Ready)
+
+	// Persistent Agent WebSocket Endpoint (Separate from /api/v1)
+	r.Get("/agent/v1/connect", agentWSHandler.Connect)
 
 	// API Gateway routes
 	r.Route("/api/v1", func(r chi.Router) {

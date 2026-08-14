@@ -77,6 +77,16 @@ func TestMigrationSQLFilesValidity(t *testing.T) {
 	if !strings.Contains(m3Content, "public_key_fingerprint") || !strings.Contains(m3Content, "consumed_at") {
 		t.Error("Migration 000003 missing required public_key_fingerprint or consumed_at columns")
 	}
+
+	// Verify Migration 000004
+	m4SQL, err := os.ReadFile("../../db/migrations/000004_harden_command_outbox.up.sql")
+	if err != nil {
+		t.Fatalf("Failed to read 000004_harden_command_outbox.up.sql: %v", err)
+	}
+	m4Content := string(m4SQL)
+	if !strings.Contains(m4Content, "attempt_count") || !strings.Contains(m4Content, "dispatched_at") {
+		t.Error("Migration 000004 missing required attempt_count or dispatched_at columns")
+	}
 }
 
 func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
