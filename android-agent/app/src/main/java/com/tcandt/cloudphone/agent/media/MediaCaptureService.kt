@@ -24,6 +24,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class MediaCaptureService : Service() {
 
@@ -36,6 +37,8 @@ class MediaCaptureService : Service() {
 
     private var currentWidth = 720
     private var currentHeight = 1280
+    private var currentBitrate = 2_500_000
+    private var currentFps = 30
 
     companion object {
         private const val TAG = "MediaCaptureService"
@@ -63,6 +66,13 @@ class MediaCaptureService : Service() {
             ScreenCaptureManager.onProjectionStoppedBySystem()
             stopForeground(true)
             stopSelf()
+        }
+
+        override fun onCapturedContentResize(width: Int, height: Int) {
+            Log.i(TAG, "MediaProjection.Callback.onCapturedContentResize triggered -> ${width}x${height}")
+            if (width > 0 && height > 0 && (width != currentWidth || height != currentHeight)) {
+                reconfigureEncoderForNewResolution(width, height)
+            }
         }
     }
 
@@ -96,7 +106,7 @@ class MediaCaptureService : Service() {
             ACTION_UPDATE_RESOLUTION -> {
                 val newWidth = intent.getIntExtra(EXTRA_WIDTH, currentWidth)
                 val newHeight = intent.getIntExtra(EXTRA_HEIGHT, currentHeight)
-                updateVirtualDisplayResolution(newWidth, newHeight)
+                reconfigureEncoderForNewResolution(newWidth, newHeight)
             }
             ACTION_STOP_CAPTURE -> {
                 stopMediaProjectionEncoder(stopProjection = true)
@@ -146,6 +156,8 @@ class MediaCaptureService : Service() {
         try {
             currentWidth = width
             currentHeight = height
+            currentBitrate = bitrate
+            currentFps = fps
 
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
@@ -175,7 +187,7 @@ class MediaCaptureService : Service() {
             encoderInputSurface = mediaCodec!!.createInputSurface()
             mediaCodec!!.start()
 
-            // Create VirtualDisplay feeding into MediaCodec Surface
+            // Create VirtualDisplay feeding into MediaCodec Surface (ONCE per session)
             val dpi = resources.displayMetrics.densityDpi
             virtualDisplay = mediaProjection!!.createVirtualDisplay(
                 "PCP_VirtualDisplay",
@@ -199,13 +211,56 @@ class MediaCaptureService : Service() {
         }
     }
 
-    private fun updateVirtualDisplayResolution(newWidth: Int, newHeight: Int) {
-        if (virtualDisplay != null && (currentWidth != newWidth || currentHeight != newHeight)) {
-            currentWidth = newWidth
-            currentHeight = newHeight
+    private fun reconfigureEncoderForNewResolution(newWidth: Int, newHeight: Int) {
+        if (newWidth <= 0 || newHeight <= 0) return
+        if (currentWidth == newWidth && currentHeight == newHeight) return
+
+        Log.i(TAG, "Reconfiguring MediaCodec AVC Surface for new screen resolution: ${currentWidth}x${currentHeight} -> ${newWidth}x${newHeight}")
+        currentWidth = newWidth
+        currentHeight = newHeight
+
+        try {
+            // 1. Stop current encoder thread loop
+            isEncoderRunning = false
+            runBlocking {
+                encoderThreadJob?.cancel()
+                encoderThreadJob = null
+            }
+
+            // 2. Release old surface and old encoder
+            encoderInputSurface?.release()
+            encoderInputSurface = null
+
+            mediaCodec?.stop()
+            mediaCodec?.release()
+            mediaCodec = null
+
+            // 3. Create new MediaCodec AVC encoder for new resolution
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, newWidth, newHeight).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, currentBitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, currentFps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+            }
+
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
+                configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            }
+
+            encoderInputSurface = mediaCodec!!.createInputSurface()
+            mediaCodec!!.start()
+
+            // 4. Update existing VirtualDisplay via .resize() and .setSurface() (DO NOT recreate VirtualDisplay)
             val dpi = resources.displayMetrics.densityDpi
             virtualDisplay?.resize(newWidth, newHeight, dpi)
-            Log.i(TAG, "Resized VirtualDisplay dynamically to ${newWidth}x${newHeight} without recreating MediaProjection")
+            virtualDisplay?.setSurface(encoderInputSurface)
+
+            isEncoderRunning = true
+            startEncoderLoop()
+
+            Log.i(TAG, "Successfully reconfigured MediaCodec and VirtualDisplay Surface for ${newWidth}x${newHeight}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error reconfiguring MediaCodec for resolution ${newWidth}x${newHeight}: ${e.message}", e)
         }
     }
 

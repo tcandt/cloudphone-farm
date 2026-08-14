@@ -1,6 +1,8 @@
 package com.tcandt.cloudphone.agent
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -8,7 +10,9 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
 import com.tcandt.cloudphone.agent.security.AgentKeyStore
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +30,17 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var configStore: AgentConfigStore
     private lateinit var keyStore: AgentKeyStore
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.i("SetupActivity", "POST_NOTIFICATIONS runtime permission granted")
+        } else {
+            Log.w("SetupActivity", "POST_NOTIFICATIONS runtime permission denied by user")
+            Toast.makeText(this, "Notification permission required for stream consent prompts", Toast.LENGTH_LONG).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_setup)
@@ -39,6 +54,8 @@ class SetupActivity : AppCompatActivity() {
         val tvStatus = findViewById<TextView>(R.id.tvStatus)
 
         etServerUrl.setText(configStore.getServerUrl())
+
+        checkNotificationPermission()
 
         if (configStore.isEnrolled()) {
             tvStatus.text = "Device Enrolled!\nAgent ID: ${configStore.getAgentId()}\nDevice ID: ${configStore.getDeviceId()}"
@@ -59,6 +76,14 @@ class SetupActivity : AppCompatActivity() {
 
             CoroutineScope(Dispatchers.IO).launch {
                 performEnrollment(serverUrl, tokenCode, tvStatus, btnEnroll)
+            }
+        }
+    }
+
+    private fun checkNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
     }
