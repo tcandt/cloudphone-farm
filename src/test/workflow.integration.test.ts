@@ -157,12 +157,13 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     expect(receivedEvents.length).toBe(0);
   });
 
-  it('Verifies 10x full production WebRtcMediaClient lifecycle leaves ZERO active resources on EVERY cycle', async () => {
+  it('Verifies 10x full production WebRtcMediaClient lifecycle leaves ZERO active resources on EVERY cycle including rVFC', async () => {
     let activeWS = 0;
     let activePC = 0;
     let activeTracks = 0;
     let activeIntervals = 0;
     let activeTimeouts = 0;
+    let activeFrameCallbacks = 0;
 
     const OriginalWS = globalThis.WebSocket;
     const OriginalPC = globalThis.RTCPeerConnection;
@@ -170,6 +171,8 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     const OriginalClearInterval = globalThis.clearInterval;
     const OriginalSetTimeout = globalThis.setTimeout;
     const OriginalClearTimeout = globalThis.clearTimeout;
+    const originalRVFC = HTMLVideoElement.prototype.requestVideoFrameCallback;
+    const originalCVFC = HTMLVideoElement.prototype.cancelVideoFrameCallback;
 
     // Mock Track
     class MockTrack {
@@ -277,6 +280,30 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       OriginalClearTimeout(id);
     }) as unknown as typeof clearTimeout;
 
+    // Mock requestVideoFrameCallback / cancelVideoFrameCallback cleanly
+    Object.defineProperty(HTMLVideoElement.prototype, 'requestVideoFrameCallback', {
+      writable: true,
+      configurable: true,
+      value: function (cb: (now: number, metadata: Record<string, unknown>) => void): number {
+        activeFrameCallbacks++;
+        const timerId = OriginalSetTimeout(() => {
+          cb(performance.now(), {});
+        }, 16);
+        return timerId as unknown as number;
+      },
+    });
+
+    Object.defineProperty(HTMLVideoElement.prototype, 'cancelVideoFrameCallback', {
+      writable: true,
+      configurable: true,
+      value: function (id: number): void {
+        if (id) {
+          activeFrameCallbacks = Math.max(0, activeFrameCallbacks - 1);
+          OriginalClearTimeout(id as unknown as ReturnType<typeof setTimeout>);
+        }
+      },
+    });
+
     const mockElement = document.createElement('video');
 
     try {
@@ -285,6 +312,8 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
           deviceId: 'dev_sm_g930f_01',
         });
 
+        // Test multiple bind/ontrack calls to ensure no concurrent rVFC loop leak
+        client.bindVideoElement(mockElement);
         client.bindVideoElement(mockElement);
         client.startSession();
 
@@ -328,6 +357,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
         expect(activeTracks).toBe(0);
         expect(activeIntervals).toBe(0);
         expect(activeTimeouts).toBe(0);
+        expect(activeFrameCallbacks).toBe(0);
         expect(client.getActiveReconnectTaskCount()).toBe(0);
         expect(mockElement.srcObject).toBeNull();
       }
@@ -338,10 +368,16 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       globalThis.clearInterval = OriginalClearInterval;
       globalThis.setTimeout = OriginalSetTimeout;
       globalThis.clearTimeout = OriginalClearTimeout;
+      if (originalRVFC) {
+        HTMLVideoElement.prototype.requestVideoFrameCallback = originalRVFC;
+      }
+      if (originalCVFC) {
+        HTMLVideoElement.prototype.cancelVideoFrameCallback = originalCVFC;
+      }
     }
   });
 
-  it('Verifies WebRTC Failure Matrix: first-frame stall, ICE recovery vs reconnect, and backoff cancellation', async () => {
+  it('Verifies consent-safe WebRTC session state remains WAITING_DEVICE_CONSENT when MediaProjection prompt is delayed', async () => {
     vi.useFakeTimers();
 
     const OriginalWS = globalThis.WebSocket;
@@ -360,7 +396,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     } as unknown as typeof WebSocket;
 
     globalThis.RTCPeerConnection = class MockPC {
-      public iceConnectionState = 'connected';
+      public iceConnectionState = 'new';
       public onicecandidate: unknown = null;
       public oniceconnectionstatechange: unknown = null;
       public ontrack: unknown = null;
@@ -377,31 +413,282 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
 
       client.startSession();
 
-      // 1. Simulate session created
+      // 1. Simulate session created (user is looking at MediaProjection consent dialog)
       const wsInst = (client as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
       if (wsInst && wsInst.onmessage) {
         wsInst.onmessage({
           data: JSON.stringify({
             type: 'media.session.created',
-            payload: { session_id: 'sess_fail_01', device_id: 'dev_sm_g930f_01' },
+            payload: { session_id: 'sess_consent_30s', device_id: 'dev_sm_g930f_01' },
           }),
         });
       }
 
       expect(client.getState()).toBe('WAITING_DEVICE_CONSENT');
 
-      // 2. Advance 5 seconds with ZERO frames -> transitions to DEGRADED
+      // 2. Advance 35 seconds without media.session.ready -> state MUST remain WAITING_DEVICE_CONSENT
+      vi.advanceTimersByTime(35000);
+      expect(client.getState()).toBe('WAITING_DEVICE_CONSENT');
+
+      // 3. Verify no first-frame timer or reconnect tasks were triggered
+      expect(client.getActiveReconnectTaskCount()).toBe(0);
+
+      client.close();
+      expect(client.getState()).toBe('CLOSED');
+    } finally {
+      globalThis.WebSocket = OriginalWS;
+      globalThis.RTCPeerConnection = OriginalPC;
+      vi.useRealTimers();
+    }
+  });
+
+  it('Verifies first-frame watchdog triggers DEGRADED and RECONNECTING only after transport reaches CONNECTED state', async () => {
+    vi.useFakeTimers();
+
+    const OriginalWS = globalThis.WebSocket;
+    const OriginalPC = globalThis.RTCPeerConnection;
+
+    let onIceStateChangeHandler: (() => void) | null = null;
+
+    globalThis.WebSocket = class MockWS {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      public readyState = 1;
+      public onopen: (() => void) | null = null;
+      public onmessage: ((evt: { data: string }) => void) | null = null;
+      public onclose: ((evt: { code: number; reason: string }) => void) | null = null;
+      public onerror: ((err: unknown) => void) | null = null;
+      send() {}
+      close() {}
+    } as unknown as typeof WebSocket;
+
+    globalThis.RTCPeerConnection = class MockPC {
+      public iceConnectionState = 'new';
+      public onicecandidate: unknown = null;
+      public ontrack: unknown = null;
+      public set oniceconnectionstatechange(cb: () => void) {
+        onIceStateChangeHandler = cb;
+      }
+      addTransceiver() {
+        return {};
+      }
+      createOffer() {
+        return Promise.resolve({ type: 'offer', sdp: 'mock_sdp' });
+      }
+      setLocalDescription() {
+        return Promise.resolve();
+      }
+      close() {}
+    } as unknown as typeof RTCPeerConnection;
+
+    try {
+      const client = new WebRtcMediaClient({
+        deviceId: 'dev_sm_g930f_01',
+      });
+
+      client.startSession();
+
+      const wsInst = (client as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+      if (wsInst && wsInst.onmessage) {
+        wsInst.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.created',
+            payload: { session_id: 'sess_connected_watchdog', device_id: 'dev_sm_g930f_01' },
+          }),
+        });
+        wsInst.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.ready',
+            payload: { session_id: 'sess_connected_watchdog' },
+          }),
+        });
+      }
+
+      expect(client.getState()).toBe('NEGOTIATING');
+
+      // ICE connects -> state becomes CONNECTED and starts first-frame timer
+      const pcInst = (client as unknown as { pc: { iceConnectionState: string } }).pc;
+      if (pcInst) {
+        pcInst.iceConnectionState = 'connected';
+        if (onIceStateChangeHandler) {
+          (onIceStateChangeHandler as () => void)();
+        }
+      }
+
+      expect(client.getState()).toBe('CONNECTED');
+
+      // 5s with no frames -> DEGRADED
       vi.advanceTimersByTime(5100);
       expect(client.getState()).toBe('DEGRADED');
 
-      // 3. Advance to 10 seconds with ZERO frames -> triggers first_frame_timeout reconnect
+      // 5s more with no frames -> RECONNECTING (first_frame_timeout)
       vi.advanceTimersByTime(5100);
       expect(client.getState()).toBe('RECONNECTING');
+      expect(client.getActiveReconnectTaskCount()).toBe(1);
 
-      // 4. Verify explicit close during backoff cancels reconnect task immediately
       client.close();
       expect(client.getState()).toBe('CLOSED');
-      expect(client.getActiveReconnectTaskCount()).toBe(0);
+    } finally {
+      globalThis.WebSocket = OriginalWS;
+      globalThis.RTCPeerConnection = OriginalPC;
+      vi.useRealTimers();
+    }
+  });
+
+  it('Verifies deterministic ICE Grace Recovery vs Reconnect and Failure Matrix', async () => {
+    vi.useFakeTimers();
+
+    const OriginalWS = globalThis.WebSocket;
+    const OriginalPC = globalThis.RTCPeerConnection;
+
+    let onIceStateChangeHandler: (() => void) | null = null;
+
+    globalThis.WebSocket = class MockWS {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      public readyState = 1;
+      public onopen: (() => void) | null = null;
+      public onmessage: ((evt: { data: string }) => void) | null = null;
+      public onclose: ((evt: { code: number; reason: string }) => void) | null = null;
+      public onerror: ((err: unknown) => void) | null = null;
+      send() {}
+      close() {}
+    } as unknown as typeof WebSocket;
+
+    globalThis.RTCPeerConnection = class MockPC {
+      public iceConnectionState = 'new';
+      public onicecandidate: unknown = null;
+      public ontrack: unknown = null;
+      public set oniceconnectionstatechange(cb: () => void) {
+        onIceStateChangeHandler = cb;
+      }
+      addTransceiver() {
+        return {};
+      }
+      createOffer() {
+        return Promise.resolve({ type: 'offer', sdp: 'mock_sdp' });
+      }
+      setLocalDescription() {
+        return Promise.resolve();
+      }
+      close() {}
+    } as unknown as typeof RTCPeerConnection;
+
+    try {
+      const triggerIceStateChange = () => {
+        if (onIceStateChangeHandler) {
+          (onIceStateChangeHandler as () => void)();
+        }
+      };
+
+      // Test A: ICE connected -> disconnected -> recovers < 7s -> same session, no reconnect
+      const clientA = new WebRtcMediaClient({ deviceId: 'dev_sm_g930f_01' });
+      clientA.startSession();
+
+      const wsInstA = (clientA as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+      if (wsInstA && wsInstA.onmessage) {
+        wsInstA.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.created',
+            payload: { session_id: 'sess_ice_01', device_id: 'dev_sm_g930f_01' },
+          }),
+        });
+        wsInstA.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.ready',
+            payload: { session_id: 'sess_ice_01' },
+          }),
+        });
+      }
+
+      const pcInstA = (clientA as unknown as { pc: { iceConnectionState: string } }).pc;
+      if (pcInstA) {
+        pcInstA.iceConnectionState = 'connected';
+        triggerIceStateChange();
+      }
+      expect(clientA.getState()).toBe('CONNECTED');
+
+      // ICE disconnects
+      if (pcInstA) {
+        pcInstA.iceConnectionState = 'disconnected';
+        triggerIceStateChange();
+      }
+      expect(clientA.getState()).toBe('DEGRADED');
+
+      // Advance 4s (<7s grace window)
+      vi.advanceTimersByTime(4000);
+
+      // ICE recovers cleanly
+      if (pcInstA) {
+        pcInstA.iceConnectionState = 'connected';
+        triggerIceStateChange();
+      }
+      expect(clientA.getState()).toBe('CONNECTED');
+      expect(clientA.getSessionId()).toBe('sess_ice_01');
+      expect(clientA.getActiveReconnectTaskCount()).toBe(0);
+      clientA.close();
+
+      // Test B: ICE connected -> disconnected -> remains > 7s -> RECONNECTING
+      const clientB = new WebRtcMediaClient({ deviceId: 'dev_sm_g930f_01' });
+      clientB.startSession();
+
+      const wsInstB = (clientB as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+      if (wsInstB && wsInstB.onmessage) {
+        wsInstB.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.created',
+            payload: { session_id: 'sess_ice_02', device_id: 'dev_sm_g930f_01' },
+          }),
+        });
+        wsInstB.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.ready',
+            payload: { session_id: 'sess_ice_02' },
+          }),
+        });
+      }
+
+      const pcInstB = (clientB as unknown as { pc: { iceConnectionState: string } }).pc;
+      if (pcInstB) {
+        pcInstB.iceConnectionState = 'connected';
+        triggerIceStateChange();
+      }
+
+      // ICE disconnects
+      if (pcInstB) {
+        pcInstB.iceConnectionState = 'disconnected';
+        triggerIceStateChange();
+      }
+
+      // Advance 7.5s (>7s grace window)
+      vi.advanceTimersByTime(7500);
+      expect(clientB.getState()).toBe('RECONNECTING');
+      expect(clientB.getActiveReconnectTaskCount()).toBe(1);
+      clientB.close();
+
+      // Test C: ICE failed -> immediate controlled reconnect
+      const clientC = new WebRtcMediaClient({ deviceId: 'dev_sm_g930f_01' });
+      clientC.startSession();
+
+      const wsInstC = (clientC as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+      if (wsInstC && wsInstC.onmessage) {
+        wsInstC.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.created',
+            payload: { session_id: 'sess_ice_03', device_id: 'dev_sm_g930f_01' },
+          }),
+        });
+      }
+
+      const pcInstC = (clientC as unknown as { pc: { iceConnectionState: string } }).pc;
+      if (pcInstC) {
+        pcInstC.iceConnectionState = 'failed';
+        triggerIceStateChange();
+      }
+
+      expect(clientC.getState()).toBe('RECONNECTING');
+      expect(clientC.getActiveReconnectTaskCount()).toBe(1);
+      clientC.close();
     } finally {
       globalThis.WebSocket = OriginalWS;
       globalThis.RTCPeerConnection = OriginalPC;

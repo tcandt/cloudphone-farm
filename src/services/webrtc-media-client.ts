@@ -223,7 +223,6 @@ export class WebRtcMediaClient {
 
         this.initPeerConnection(iceServers);
         this.setState('WAITING_DEVICE_CONSENT');
-        this.startFirstFrameTimer();
         break;
       }
 
@@ -298,7 +297,11 @@ export class WebRtcMediaClient {
   }
 
   private startFirstFrameTimer(): void {
-    if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
+    if (this.firstFrameTimer) {
+      clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = null;
+    }
+    if (this.lastVideoFrameAt > 0) return;
 
     // 5s first frame check -> DEGRADED
     this.firstFrameTimer = setTimeout(() => {
@@ -352,7 +355,12 @@ export class WebRtcMediaClient {
           this.iceGraceTimer = null;
           console.log('[WebRtcMediaClient] ICE recovered cleanly before grace timer expiry');
         }
-        this.setState(this.lastVideoFrameAt > 0 ? 'VIDEO_RECEIVING' : 'CONNECTED');
+        if (this.lastVideoFrameAt > 0) {
+          this.setState('VIDEO_RECEIVING');
+        } else {
+          this.setState('CONNECTED');
+          this.startFirstFrameTimer();
+        }
       } else if (iceState === 'disconnected') {
         console.warn('[WebRtcMediaClient] ICE connection disconnected. Starting 7s grace timer.');
         if (this.state === 'CONNECTED' || this.state === 'VIDEO_RECEIVING') {

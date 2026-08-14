@@ -27,7 +27,7 @@ export interface CommandDeliveryChangeEvent {
 
 export type OperatorEvent = CommandStatusChangeEvent | CommandDeliveryChangeEvent;
 
-const VALID_EXEC_STATUSES = new Set(['ack', 'executing', 'succeeded', 'failed', 'expired', 'completed']);
+const VALID_EXEC_STATUSES = new Set(['ack', 'executing', 'succeeded', 'failed', 'expired']);
 const VALID_DELIVERY_STATUSES = new Set(['prepared', 'dispatched', 'failed']);
 
 export class OperatorEventClient {
