@@ -351,24 +351,24 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       static OPEN = 1;
       static CONNECTING = 0;
       public readyState = 1;
-      public onopen: any = null;
-      public onmessage: any = null;
-      public onclose: any = null;
-      public onerror: any = null;
+      public onopen: (() => void) | null = null;
+      public onmessage: ((evt: { data: string }) => void) | null = null;
+      public onclose: ((evt: { code: number; reason: string }) => void) | null = null;
+      public onerror: ((err: unknown) => void) | null = null;
       send() {}
       close() {}
-    } as any;
+    } as unknown as typeof WebSocket;
 
     globalThis.RTCPeerConnection = class MockPC {
       public iceConnectionState = 'connected';
-      public onicecandidate: any = null;
-      public oniceconnectionstatechange: any = null;
-      public ontrack: any = null;
+      public onicecandidate: unknown = null;
+      public oniceconnectionstatechange: unknown = null;
+      public ontrack: unknown = null;
       addTransceiver() {
         return {};
       }
       close() {}
-    } as any;
+    } as unknown as typeof RTCPeerConnection;
 
     try {
       const client = new WebRtcMediaClient({
