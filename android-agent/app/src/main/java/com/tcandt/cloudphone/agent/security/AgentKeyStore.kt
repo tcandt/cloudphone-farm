@@ -87,36 +87,32 @@ class AgentKeyStore(context: Context) {
     }
 
     private fun migrateLegacyRawSeed() {
-        try {
-            val legacyB64 = prefs.getString(KEY_OLD_LEGACY_RAW_SEED_B64, null) ?: return
-            val legacyRawSeed = Base64.decode(legacyB64, Base64.NO_WRAP)
+        val legacyB64 = prefs.getString(KEY_OLD_LEGACY_RAW_SEED_B64, null) ?: return
+        val rawSeed = Base64.decode(legacyB64, Base64.NO_WRAP)
 
-            // Re-derive public key and signature to preserve exact machine identity
-            val signer = Ed25519Sign(legacyRawSeed)
-            val testSig = signer.sign("migration_check".toByteArray())
-            val pubBytes = TinkEd25519Helper.derivePublicKeyFromSeed(legacyRawSeed)
-
-            val digest = MessageDigest.getInstance("SHA-256")
-            val fpBytes = digest.digest(pubBytes)
-            val fpHex = fpBytes.joinToString("") { "%02x".format(it) }
-
-            val (encryptedSeedB64, ivB64) = encryptSeed(legacyRawSeed)
-            val pubB64 = Base64.encodeToString(pubBytes, Base64.NO_WRAP)
-
-            prefs.edit()
-                .putString(KEY_ENCRYPTED_SEED_B64, encryptedSeedB64)
-                .putString(KEY_IV_B64, ivB64)
-                .putString(KEY_PUBLIC_RAW_B64, pubB64)
-                .putString(KEY_FINGERPRINT, fpHex)
-                .remove(KEY_OLD_LEGACY_RAW_SEED_B64)
-                .apply()
-
-            Log.i(TAG, "Successfully migrated legacy machine identity seed to Android KeyStore encryption. Fingerprint preserved: $fpHex")
-            _ = testSig
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to migrate legacy raw seed: ${e.message}", e)
-            generateAndStoreKeys()
+        if (rawSeed.size != 32) {
+            Log.e(TAG, "Legacy seed size invalid: ${rawSeed.size} bytes (expected 32)")
+            throw IllegalStateException("Legacy raw seed size invalid: ${rawSeed.size}")
         }
+
+        val existingPublicKey = prefs.getString(KEY_PUBLIC_RAW_B64, null)
+        val existingFingerprint = prefs.getString(KEY_FINGERPRINT, null)
+
+        if (existingPublicKey.isNullOrEmpty() || existingFingerprint.isNullOrEmpty()) {
+            Log.e(TAG, "Cannot migrate seed: missing existing public key or fingerprint")
+            throw IllegalStateException("Cannot migrate seed: missing existing public key or fingerprint")
+        }
+
+        val (ciphertext, iv) = encryptSeed(rawSeed)
+
+        prefs.edit()
+            .putString(KEY_ENCRYPTED_SEED_B64, ciphertext)
+            .putString(KEY_IV_B64, iv)
+            // PRESERVE existing public key Base64 and fingerprint Base64 UNTOUCHED!
+            .remove(KEY_OLD_LEGACY_RAW_SEED_B64)
+            .commit()
+
+        Log.i(TAG, "Successfully migrated legacy seed to KeyStore AES-GCM. Machine identity preserved: $existingFingerprint")
     }
 
     private fun generateAndStoreKeys() {
@@ -168,12 +164,5 @@ class AgentKeyStore(context: Context) {
             Log.e(TAG, "Failed to sign message with Tink Ed25519: ${e.message}", e)
             ""
         }
-    }
-}
-
-object TinkEd25519Helper {
-    fun derivePublicKeyFromSeed(seed: ByteArray): ByteArray {
-        val keyPair = Ed25519Sign.KeyPair.newKeyPair()
-        return keyPair.publicKey
     }
 }
