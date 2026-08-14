@@ -361,7 +361,7 @@ components:
     cookieAuth:
       type: apiKey
       in: cookie
-      name: pcp_session
+      name: __Host-pcp_session
 
   schemas:
     ErrorResponse:

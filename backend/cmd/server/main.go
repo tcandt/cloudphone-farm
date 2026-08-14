@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,8 +16,12 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
+	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
+	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
+	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 )
 
 func main() {
@@ -33,7 +38,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize PostgreSQL pool (non-blocking if DB is temporarily unreachable)
+	// Initialize PostgreSQL pool
 	var pgPool *pgxpool.Pool
 	pgCtx, pgCancel := context.WithTimeout(ctx, 3*time.Second)
 	pool, err := pgxpool.New(pgCtx, cfg.PostgresURL)
@@ -57,6 +62,16 @@ func main() {
 		slog.Info("Redis client initialized")
 	}
 
+	// Repositories & Services
+	userRepo := pgrepo.NewUserRepository(pgPool)
+	sessionRepo := redisrepo.NewSessionRepository(rdb)
+	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
+
+	// Handlers & Middlewares
+	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
+	authHandler := httptransport.NewAuthHandler(authService, cfg)
+	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
+
 	// Create Chi router
 	r := chi.NewRouter()
 
@@ -66,6 +81,8 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
+	r.Use(custommw.SecurityHeadersMiddleware)
+	r.Use(custommw.CSRFMiddleware(cfg.CorsAllowedOrigins))
 
 	// CORS configuration
 	r.Use(cors.Handler(cors.Options{
@@ -77,17 +94,34 @@ func main() {
 		MaxAge:           300,
 	}))
 
-	// Health Check Handlers
-	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
+	// Health Check Handlers (Public)
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/ready", healthHandler.Ready)
 
 	// API Gateway routes
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"message":"pong","status":"active"}`))
+		// Public Auth Routes
+		r.Post("/auth/login", authHandler.Login)
+		r.Post("/auth/logout", authHandler.Logout)
+
+		// Protected Routes
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware.Handler)
+			r.Use(custommw.TenantMiddleware)
+
+			r.Get("/auth/session", authHandler.Session)
+
+			r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
+				principal, _ := auth.GetPrincipal(r.Context())
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"message": "pong",
+					"status":  "active",
+					"user_id": principal.UserID,
+					"org_id":  principal.OrganizationID,
+				})
+			})
 		})
 	})
 

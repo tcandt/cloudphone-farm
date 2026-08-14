@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
+	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
 func main() {
@@ -31,16 +32,53 @@ func main() {
 	}
 	defer pool.Close()
 
-	seedSQL, err := os.ReadFile("db/devseed/dev_seed.sql")
+	// 1. Seed Dev Organization
+	orgSQL := `
+		INSERT INTO organizations (organization_id, name, slug) VALUES
+		('org_pcp_enterprise_01', 'Enterprise Cloud Farm', 'enterprise-cloud-farm')
+		ON CONFLICT (organization_id) DO NOTHING;
+	`
+	if _, err := pool.Exec(ctx, orgSQL); err != nil {
+		slog.Error("Failed to seed dev organization", "error", err)
+		os.Exit(1)
+	}
+
+	// 2. Generate real Argon2id hash for dev owner password
+	devPassword := os.Getenv("DEV_SEED_OWNER_PASSWORD")
+	if devPassword == "" {
+		devPassword = "pcp_secure_pass_2026"
+	}
+
+	realHash, err := crypto.HashPassword(devPassword)
 	if err != nil {
-		slog.Error("Failed to read dev_seed.sql", "error", err)
+		slog.Error("Failed to hash dev owner password", "error", err)
 		os.Exit(1)
 	}
 
-	if _, err := pool.Exec(ctx, string(seedSQL)); err != nil {
-		slog.Error("Failed to execute dev_seed.sql", "error", err)
+	userSQL := `
+		INSERT INTO users (user_id, email, password_hash, display_name) VALUES
+		('usr_owner_01', 'owner@phonecontrol.io', $1, 'Minh Tuấn (Owner)')
+		ON CONFLICT (user_id) DO UPDATE SET password_hash = EXCLUDED.password_hash;
+	`
+	if _, err := pool.Exec(ctx, userSQL, realHash); err != nil {
+		slog.Error("Failed to seed dev user", "error", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("Development database seed completed successfully!")
+	// 3. Seed Membership & Role assignment
+	membershipSQL := `
+		INSERT INTO organization_memberships (membership_id, organization_id, user_id, status) VALUES
+		('mem_owner_01', 'org_pcp_enterprise_01', 'usr_owner_01', 'active')
+		ON CONFLICT (membership_id) DO NOTHING;
+
+		INSERT INTO user_roles (membership_id, role_id) VALUES
+		('mem_owner_01', 'role_sys_owner')
+		ON CONFLICT DO NOTHING;
+	`
+	if _, err := pool.Exec(ctx, membershipSQL); err != nil {
+		slog.Error("Failed to seed dev membership", "error", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Development database seed completed successfully! Default login: owner@phonecontrol.io / pcp_secure_pass_2026")
 }
