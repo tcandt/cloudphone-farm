@@ -298,7 +298,7 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 	// 1. Test Fast-ACK Promotion: PREPARED -> DISPATCHED when valid ACK arrives before outbox update
 	cmd1ID := "cmd_fastack_001"
 	_, err = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload, status, idempotency_key, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)",
-		cmd1ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", "idemp_fastack_001", time.Now().Add(10*time.Minute))
+		cmd1ID, orgID, deviceID, userID, "global.home", "{}", "pending", "idemp_fastack_001", time.Now().Add(10*time.Minute))
 	if err != nil {
 		t.Fatalf("failed to insert test command 1: %v", err)
 	}
@@ -324,7 +324,7 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 	// 2. Test No-Attempt Status Rejection (fail closed)
 	cmd2ID := "cmd_fastack_002"
 	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload, status, idempotency_key, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)",
-		cmd2ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", "idemp_fastack_002", time.Now().Add(10*time.Minute))
+		cmd2ID, orgID, deviceID, userID, "global.home", "{}", "pending", "idemp_fastack_002", time.Now().Add(10*time.Minute))
 
 	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd2ID, agentID, connID, gen, "executing", "", 1)
 	if err == nil {
@@ -334,7 +334,7 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 	// 3. Test Failed-Attempt Status Rejection (fail closed)
 	cmd3ID := "cmd_fastack_003"
 	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload, status, idempotency_key, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)",
-		cmd3ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", "idemp_fastack_003", time.Now().Add(10*time.Minute))
+		cmd3ID, orgID, deviceID, userID, "global.home", "{}", "pending", "idemp_fastack_003", time.Now().Add(10*time.Minute))
 	_ = cmdRepo.RecordDeliveryAttempt(ctx, orgID, cmd3ID, deviceID, 1, agentID, connID, gen, "prepared")
 	_ = cmdRepo.UpdateDeliveryAttemptStatus(ctx, cmd3ID, 1, "failed", "socket_error")
 
@@ -346,7 +346,7 @@ func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
 	// 4. Test Generation Mismatch Rejection
 	cmd4ID := "cmd_fastack_004"
 	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload, status, idempotency_key, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)",
-		cmd4ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", "idemp_fastack_004", time.Now().Add(10*time.Minute))
+		cmd4ID, orgID, deviceID, userID, "global.home", "{}", "pending", "idemp_fastack_004", time.Now().Add(10*time.Minute))
 	_ = cmdRepo.RecordDeliveryAttempt(ctx, orgID, cmd4ID, deviceID, 1, agentID, connID, gen, "dispatched")
 
 	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd4ID, agentID, "conn_gen_2", 1002, "executing", "", 1)
