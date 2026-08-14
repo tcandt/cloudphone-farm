@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -28,13 +29,13 @@ type EnrollmentTokenRecord struct {
 }
 
 type EnrollmentTokenMetadata struct {
-	TokenID        string     `json:"token_id"`
-	OrganizationID string     `json:"organization_id"`
-	CreatedBy      string     `json:"created_by"`
-	CreatedAt      time.Time  `json:"created_at"`
-	ExpiresAt      time.Time  `json:"expires_at"`
-	Status         string     `json:"status"` // active, consumed, revoked, expired
-	BoundGroupID   *string    `json:"bound_group_id,omitempty"`
+	TokenID        string    `json:"token_id"`
+	OrganizationID string    `json:"organization_id"`
+	CreatedBy      string    `json:"created_by"`
+	CreatedAt      time.Time `json:"created_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Status         string    `json:"status"` // active, consumed, revoked, expired
+	BoundGroupID   *string   `json:"bound_group_id,omitempty"`
 }
 
 type AgentEnrollmentPayload struct {
@@ -207,12 +208,12 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 		return nil, fmt.Errorf("failed to upsert device record: %w", err)
 	}
 
-	// 3. Register / Upsert Device Agent
+	// 3. Register / Upsert Device Agent (ON CONFLICT target fix: agent_id)
 	agentID := fmt.Sprintf("agt_%s", payload.PublicKeyFingerprint[:min(12, len(payload.PublicKeyFingerprint))])
 	agentSQL := `
 		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
-		ON CONFLICT (organization_id, agent_id) DO UPDATE SET
+		ON CONFLICT (agent_id) DO UPDATE SET
 			public_key = EXCLUDED.public_key,
 			public_key_fingerprint = EXCLUDED.public_key_fingerprint,
 			apk_version = EXCLUDED.apk_version,
@@ -232,14 +233,22 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 		return nil, fmt.Errorf("failed to mark enrollment token as consumed: %w", err)
 	}
 
-	// 5. Audit Log
+	// 5. Audit Log (Schema compliant insert with JSONB details)
 	auditSQL := `
-		INSERT INTO audit_logs (audit_id, organization_id, action_code, actor_id, resource_type, resource_id, details)
-		VALUES ($1, $2, 'agent.enroll', $3, 'device_agent', $4, $5)
+		INSERT INTO audit_logs (organization_id, action, actor_id, resource_type, resource_id, details)
+		VALUES ($1, 'agent.enroll', $2, 'device_agent', $3, $4::jsonb)
 	`
-	auditID := fmt.Sprintf("aud_%d", time.Now().UnixNano())
-	details := fmt.Sprintf("Agent enrolled for device %s (Model: %s)", deviceID, payload.DeviceModel)
-	_, _ = tx.Exec(ctx, auditSQL, auditID, orgID, agentID, agentID, details)
+	detailsMap := map[string]interface{}{
+		"message":   fmt.Sprintf("Agent enrolled for device %s", deviceID),
+		"device_id": deviceID,
+		"model":     payload.DeviceModel,
+		"serial":    payload.DeviceSerialNumber,
+	}
+	detailsJSON, _ := json.Marshal(detailsMap)
+
+	if _, err := tx.Exec(ctx, auditSQL, orgID, createdBy, agentID, string(detailsJSON)); err != nil {
+		return nil, fmt.Errorf("failed to insert enrollment audit log: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit enrollment transaction: %w", err)
@@ -252,6 +261,35 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 	}, nil
 }
 
+// GetAgentByID fetches device agent details including PublicKey by agent_id
+func (r *EnrollmentRepository) GetAgentByID(ctx context.Context, agentID string) (*domain.DeviceAgent, error) {
+	if r.pool == nil {
+		return nil, errors.New("postgres connection pool uninitialized")
+	}
+
+	query := `
+		SELECT agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, status, revoked_at
+		FROM device_agents
+		WHERE agent_id = $1
+	`
+	var a domain.DeviceAgent
+	var revoked *time.Time
+
+	err := r.pool.QueryRow(ctx, query, agentID).Scan(&a.AgentID, &a.OrganizationID, &a.DeviceID, &a.PublicKey, &a.PublicKeyFingerprint, &a.ApkVersion, &a.Status, &revoked)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("agent not found")
+		}
+		return nil, fmt.Errorf("failed to fetch agent by ID: %w", err)
+	}
+
+	if revoked != nil || a.Status == "revoked" {
+		return nil, errors.New("agent credential has been revoked")
+	}
+
+	return &a, nil
+}
+
 // GetAgentByFingerprint fetches device agent details by public key fingerprint
 func (r *EnrollmentRepository) GetAgentByFingerprint(ctx context.Context, fingerprint string) (*domain.DeviceAgent, error) {
 	if r.pool == nil {
@@ -259,14 +297,14 @@ func (r *EnrollmentRepository) GetAgentByFingerprint(ctx context.Context, finger
 	}
 
 	query := `
-		SELECT agent_id, organization_id, device_id, public_key_fingerprint, apk_version, status, revoked_at
+		SELECT agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, status, revoked_at
 		FROM device_agents
 		WHERE public_key_fingerprint = $1
 	`
 	var a domain.DeviceAgent
 	var revoked *time.Time
 
-	err := r.pool.QueryRow(ctx, query, fingerprint).Scan(&a.AgentID, &a.OrganizationID, &a.DeviceID, &a.PublicKeyFingerprint, &a.ApkVersion, &a.Status, &revoked)
+	err := r.pool.QueryRow(ctx, query, fingerprint).Scan(&a.AgentID, &a.OrganizationID, &a.DeviceID, &a.PublicKey, &a.PublicKeyFingerprint, &a.ApkVersion, &a.Status, &revoked)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, errors.New("agent not found")
@@ -281,9 +319,20 @@ func (r *EnrollmentRepository) GetAgentByFingerprint(ctx context.Context, finger
 	return &a, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table
+func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp float64, battery int, network string) error {
+	if r.pool == nil {
+		return nil
 	}
-	return b
+
+	query := `
+		INSERT INTO device_heartbeats (organization_id, device_id, cpu_usage, memory_usage, battery_level, temperature_c, network_type, received_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+	`
+	_, err := r.pool.Exec(ctx, query, orgID, deviceID, cpu, ram, battery, temp, network)
+	if err != nil {
+		return fmt.Errorf("failed to record device heartbeat telemetry in PostgreSQL: %w", err)
+	}
+
+	return nil
 }

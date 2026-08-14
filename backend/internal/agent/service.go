@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -44,15 +46,15 @@ type TokenIssuedDTO struct {
 }
 
 type EnrollRequestDTO struct {
-	TokenCode            string   `json:"token_code"`
-	PublicKeyBytes       []byte   `json:"public_key_bytes"`
-	ApkVersion           string   `json:"apk_version"`
-	ProtocolVersion      string   `json:"protocol_version"`
-	DeviceSerialNumber   string   `json:"device_serial_number"`
-	DeviceModel          string   `json:"device_model"`
-	DeviceAndroidVersion string   `json:"device_android_version"`
-	DeviceDisplayName    string   `json:"device_display_name"`
-	Capabilities         []string `json:"capabilities"`
+	TokenCode            string      `json:"token_code"`
+	PublicKeyBytes       []byte      `json:"public_key_bytes"`
+	ApkVersion           string      `json:"apk_version"`
+	ProtocolVersion      string      `json:"protocol_version"`
+	DeviceSerialNumber   string      `json:"device_serial_number"`
+	DeviceModel          string      `json:"device_model"`
+	DeviceAndroidVersion string      `json:"device_android_version"`
+	DeviceDisplayName    string      `json:"device_display_name"`
+	Capabilities         interface{} `json:"capabilities"`
 }
 
 type HeartbeatRequestDTO struct {
@@ -130,8 +132,26 @@ func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*
 		return nil, errors.New("missing required enrollment parameters")
 	}
 
+	// Validate Ed25519 public key size (must be exactly 32 bytes)
+	if len(req.PublicKeyBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public key must be valid Ed25519 key of exactly %d bytes", ed25519.PublicKeySize)
+	}
+
 	fingerprint := crypto.ComputePublicKeyFingerprint(req.PublicKeyBytes)
 	tokenHash := crypto.HashToken(req.TokenCode)
+
+	var capsJSON []byte
+	if req.Capabilities != nil {
+		capsJSON, _ = json.Marshal(req.Capabilities)
+	}
+	if len(capsJSON) == 0 {
+		defaultCaps := domain.DeviceCapabilities{}
+		defaultCaps.Capture.Supported = true
+		defaultCaps.Control.Supported = true
+		defaultCaps.Control.Touch = true
+		defaultCaps.Control.Swipe = true
+		capsJSON, _ = json.Marshal(defaultCaps)
+	}
 
 	payload := pgrepo.AgentEnrollmentPayload{
 		TokenCode:            req.TokenCode,
@@ -144,6 +164,7 @@ func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*
 		DeviceModel:          req.DeviceModel,
 		DeviceAndroidVersion: req.DeviceAndroidVersion,
 		DeviceDisplayName:    req.DeviceDisplayName,
+		CapabilitiesJSON:     capsJSON,
 	}
 
 	return s.enrollRepo.ConsumeTokenAndRegisterDeviceAgent(ctx, payload)
@@ -159,10 +180,13 @@ func (s *AgentService) ProcessHeartbeat(ctx context.Context, agent *domain.Devic
 		LastSeenAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// 1. Update 30s TTL Redis Presence
+	// 1. Update 30s TTL Redis Presence (Atomic Lua CAS)
 	if err := s.presenceRepo.UpdatePresence(ctx, agent.OrganizationID, agent.DeviceID, presence); err != nil {
 		return err
 	}
+
+	// 2. Persist sampled telemetry to PostgreSQL device_heartbeats table
+	_ = s.enrollRepo.RecordDeviceHeartbeat(ctx, agent.OrganizationID, agent.DeviceID, req.CPUUsage, req.RAMUsage, req.TemperatureC, req.Battery, req.Network)
 
 	return nil
 }

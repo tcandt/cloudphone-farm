@@ -6,6 +6,7 @@ type DeviceAgent struct {
 	AgentID              string     `json:"agent_id"`
 	OrganizationID       string     `json:"organization_id"`
 	DeviceID             string     `json:"device_id"`
+	PublicKey            []byte     `json:"-"`
 	PublicKeyFingerprint string     `json:"public_key_fingerprint"`
 	ApkVersion           string     `json:"apk_version"`
 	Status               string     `json:"status"`

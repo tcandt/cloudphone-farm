@@ -3,23 +3,30 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agent"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
+	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
 type AgentHandler struct {
 	agentService *agent.AgentService
+	rdb          *redis.Client
 }
 
-func NewAgentHandler(agentService *agent.AgentService) *AgentHandler {
-	return &AgentHandler{agentService: agentService}
+func NewAgentHandler(agentService *agent.AgentService, rdb *redis.Client) *AgentHandler {
+	return &AgentHandler{
+		agentService: agentService,
+		rdb:          rdb,
+	}
 }
 
 func (h *AgentHandler) CreateToken(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +133,49 @@ func (h *AgentHandler) EnrollAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Redis Rate Limiter: 10 attempts/min per IP, 5 attempts/min per token
+	if h.rdb != nil {
+		ip := r.RemoteAddr
+		ipKey := fmt.Sprintf("pcp:ratelimit:enroll:ip:%s", ip)
+		cnt, err := h.rdb.Incr(r.Context(), ipKey).Result()
+		if err == nil {
+			if cnt == 1 {
+				h.rdb.Expire(r.Context(), ipKey, 60*time.Second)
+			}
+			if cnt > 10 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"code":      "RATE_LIMIT_EXCEEDED",
+					"message":   "Too many enrollment attempts from this IP",
+					"timestamp": time.Now().UTC().Format(time.RFC3339),
+				})
+				return
+			}
+		}
+
+		if req.TokenCode != "" {
+			tokHash := crypto.HashToken(req.TokenCode)
+			tokKey := fmt.Sprintf("pcp:ratelimit:enroll:tok:%s", tokHash)
+			cntTok, err := h.rdb.Incr(r.Context(), tokKey).Result()
+			if err == nil {
+				if cntTok == 1 {
+					h.rdb.Expire(r.Context(), tokKey, 60*time.Second)
+				}
+				if cntTok > 5 {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"code":      "RATE_LIMIT_EXCEEDED",
+						"message":   "Too many enrollment attempts for this token code",
+						"timestamp": time.Now().UTC().Format(time.RFC3339),
+					})
+					return
+				}
+			}
+		}
+	}
+
 	res, err := h.agentService.EnrollAgent(r.Context(), req)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -137,10 +187,10 @@ func (h *AgentHandler) EnrollAgent(w http.ResponseWriter, r *http.Request) {
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			})
 		} else {
-			w.WriteHeader(http.StatusInternalServerError)
+			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"code":      "INTERNAL_SERVER_ERROR",
-				"message":   "Agent enrollment failed",
+				"code":      "ENROLLMENT_FAILED",
+				"message":   err.Error(),
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			})
 		}

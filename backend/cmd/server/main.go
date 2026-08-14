@@ -79,10 +79,10 @@ func main() {
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
-	agentHandler := httptransport.NewAgentHandler(agentService)
+	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
-	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo)
+	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
 
 	// Create Chi router
 	r := chi.NewRouter()
