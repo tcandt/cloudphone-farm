@@ -8,7 +8,7 @@ $repoRoot = Resolve-Path "$PSScriptRoot\.."
 Set-Location $repoRoot
 
 $gitSha = (git rev-parse HEAD).Trim()
-$gitStatusClean = ((git status --porcelain).Length -eq 0)
+$gitStatusClean = (-not (git status --porcelain))
 
 # Build or check backend server binary
 $backendBinary = "$repoRoot\backend\server.exe"
