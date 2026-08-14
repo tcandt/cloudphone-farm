@@ -99,7 +99,7 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 			var payloadMap map[string]interface{}
 			if err := json.Unmarshal(env.Payload, &payloadMap); err == nil {
 				if sessionID, ok := payloadMap["session_id"].(string); ok && sessionID != "" {
-					if err := c.hub.RelayMediaSignal(sessionID, message); err != nil {
+					if err := c.hub.RelayMediaSignalFromAgent(c, sessionID, message); err != nil {
 						slog.Debug("Failed to relay media signal to Web subscriber", "session_id", sessionID, "type", env.Type, "error", err)
 					} else {
 						slog.Info("Relayed media signal from agent to Web subscriber", "session_id", sessionID, "type", env.Type)

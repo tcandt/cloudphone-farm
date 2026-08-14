@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 var (
@@ -13,18 +14,30 @@ var (
 	ErrSessionNotFound    = errors.New("media session subscriber not found")
 )
 
+type MediaSession struct {
+	SessionID      string
+	OrganizationID string
+	DeviceID       string
+	AgentID        string
+	UserID         string
+	ConnectionID   string
+	Generation     int64
+	ExpiresAt      time.Time
+	Subscriber     chan []byte
+}
+
 type Hub struct {
-	connections      map[string]*Connection // Keyed by deviceKey (org_id:device_id)
-	generations      map[string]int64      // Generation tracking per deviceKey
-	mediaSubscribers map[string]chan []byte // Keyed by session_id
-	mu               sync.RWMutex
+	connections   map[string]*Connection   // Keyed by deviceKey (org_id:device_id)
+	generations   map[string]int64        // Generation tracking per deviceKey
+	mediaSessions map[string]*MediaSession // Keyed by session_id
+	mu            sync.RWMutex
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		connections:      make(map[string]*Connection),
-		generations:      make(map[string]int64),
-		mediaSubscribers: make(map[string]chan []byte),
+		connections:   make(map[string]*Connection),
+		generations:   make(map[string]int64),
+		mediaSessions: make(map[string]*MediaSession),
 	}
 }
 
@@ -97,36 +110,47 @@ func (h *Hub) DispatchToDevice(orgID, deviceID string, data []byte) error {
 	}
 }
 
-func (h *Hub) RegisterMediaSubscriber(sessionID string, ch chan []byte) {
+func (h *Hub) RegisterMediaSession(session *MediaSession) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	h.mediaSubscribers[sessionID] = ch
-	slog.Info("Registered WebRTC media subscriber channel", "session_id", sessionID)
+	h.mediaSessions[session.SessionID] = session
+	slog.Info("Registered authenticated WebRTC MediaSession record", "session_id", session.SessionID, "org_id", session.OrganizationID, "device_id", session.DeviceID, "user_id", session.UserID)
 }
 
-func (h *Hub) UnregisterMediaSubscriber(sessionID string) {
+func (h *Hub) UnregisterMediaSession(sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	delete(h.mediaSubscribers, sessionID)
-	slog.Info("Unregistered WebRTC media subscriber channel", "session_id", sessionID)
+	delete(h.mediaSessions, sessionID)
+	slog.Info("Unregistered WebRTC MediaSession record", "session_id", sessionID)
 }
 
-func (h *Hub) RelayMediaSignal(sessionID string, data []byte) error {
+func (h *Hub) RelayMediaSignalFromAgent(conn *Connection, sessionID string, data []byte) error {
 	h.mu.RLock()
-	ch, exists := h.mediaSubscribers[sessionID]
+	session, exists := h.mediaSessions[sessionID]
 	h.mu.RUnlock()
 
-	if !exists || ch == nil {
+	if !exists || session == nil {
 		return ErrSessionNotFound
 	}
 
+	// Strict identity and tenant verification: Agent connection must match session registry
+	if conn.OrganizationID != session.OrganizationID || conn.DeviceID != session.DeviceID {
+		slog.Warn("Tenant/Device mismatch for MediaSession relay attempt. Rejecting.", "session_id", sessionID, "agent_org", conn.OrganizationID, "sess_org", session.OrganizationID, "agent_dev", conn.DeviceID, "sess_dev", session.DeviceID)
+		return errors.New("unauthorized media session relay attempt")
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		slog.Warn("MediaSession expired. Rejecting relay.", "session_id", sessionID)
+		return errors.New("media session expired")
+	}
+
 	select {
-	case ch <- data:
+	case session.Subscriber <- data:
 		return nil
 	default:
-		slog.Warn("Media subscriber channel full, dropping frame", "session_id", sessionID)
+		slog.Warn("MediaSession subscriber channel full, dropping frame", "session_id", sessionID)
 		return ErrBufferOverflow
 	}
 }

@@ -32,10 +32,20 @@ type BrowserMediaHandler struct {
 }
 
 func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceService, allowedOrigins []string) *BrowserMediaHandler {
-	coturnSecret := os.Getenv("COTURN_SHARED_SECRET")
+	var coturnSecret string
+	secretPath := os.Getenv("COTURN_SHARED_SECRET_FILE")
+	if secretPath != "" {
+		if bytes, err := os.ReadFile(secretPath); err == nil && len(bytes) > 0 {
+			coturnSecret = strings.TrimSpace(string(bytes))
+		}
+	}
+	if coturnSecret == "" {
+		coturnSecret = os.Getenv("COTURN_SHARED_SECRET")
+	}
 	if coturnSecret == "" {
 		coturnSecret = "pcp_coturn_secret_key"
 	}
+
 	coturnHost := os.Getenv("COTURN_HOST")
 	if coturnHost == "" {
 		coturnHost = "turn.phonecontrol.io"
@@ -117,6 +127,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	sessionID := fmt.Sprintf("sess_%s", uuid.New().String()[:8])
 	browserChan := make(chan []byte, 128)
+	expiresAt := time.Now().Add(15 * time.Minute)
 
 	// 3. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
 	unixExpiry := time.Now().Add(10 * time.Minute).Unix()
@@ -138,13 +149,21 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	// Register browser subscriber in agentws Hub
-	h.hub.RegisterMediaSubscriber(sessionID, browserChan)
-	defer h.hub.UnregisterMediaSubscriber(sessionID)
+	// 4. Register authenticated MediaSession record in agentws Hub
+	mediaSession := &agentws.MediaSession{
+		SessionID:      sessionID,
+		OrganizationID: orgID,
+		DeviceID:       deviceID,
+		UserID:         principal.UserID,
+		ExpiresAt:      expiresAt,
+		Subscriber:     browserChan,
+	}
+	h.hub.RegisterMediaSession(mediaSession)
+	defer h.hub.UnregisterMediaSession(sessionID)
 
 	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID)
 
-	// 4. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
+	// 5. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
 	createdPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"device_id":   deviceID,
@@ -155,7 +174,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	createdBytes, _ := json.Marshal(createdEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
 
-	// 5. Dispatch media.session.start to Device Agent via Hub
+	// 6. Dispatch media.session.start to Device Agent via Hub
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -180,7 +199,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Goroutine 1: Relay messages from Browser -> Device Agent (Validating session_id)
+	// Goroutine 1: Relay messages from Browser -> Device Agent (Fail-closed session_id validation)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -205,11 +224,15 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			}
 
 			var payloadMap map[string]interface{}
-			if err := json.Unmarshal(env.Payload, &payloadMap); err == nil {
-				if reqSessID, ok := payloadMap["session_id"].(string); ok && reqSessID != sessionID {
-					slog.Warn("SessionID mismatch in incoming browser signaling message. Dropping.", "expected", sessionID, "got", reqSessID)
-					continue
-				}
+			if err := json.Unmarshal(env.Payload, &payloadMap); err != nil {
+				slog.Warn("Browser message payload unmarshal error. Dropping.", "session_id", sessionID)
+				continue
+			}
+
+			reqSessID, ok := payloadMap["session_id"].(string)
+			if !ok || reqSessID == "" || reqSessID != sessionID {
+				slog.Warn("Browser message missing or invalid session_id. Dropping message.", "expected", sessionID, "got", reqSessID)
+				continue
 			}
 
 			switch env.Type {

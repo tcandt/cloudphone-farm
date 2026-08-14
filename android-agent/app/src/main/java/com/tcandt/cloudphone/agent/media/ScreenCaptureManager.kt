@@ -202,7 +202,7 @@ object ScreenCaptureManager {
     }
 
     fun onEncoderFormatConfirmed() {
-        if (currentState == ScreenCaptureState.STARTING || currentState == ScreenCaptureState.READY) {
+        if (currentState == ScreenCaptureState.READY || currentState == ScreenCaptureState.NEGOTIATING) {
             currentState = ScreenCaptureState.CAPTURING
             Log.i(TAG, "Transitioning state -> CAPTURING (SessionID=$activeSessionId)")
             sessionListener?.onSessionStarted(activeSessionId)
