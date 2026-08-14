@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
@@ -122,32 +124,11 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, fmt.Errorf("%w: command type %s not allowed", domain.ErrUnauthorizedCommand, req.Type)
 	}
 
-	// 3. Check Idempotency Key against existing commands
-	var existingCmdID, existingDeviceID, existingType string
-	var existingPayloadBytes []byte
-	var existingCreatedAt time.Time
-	idempErr := s.pool.QueryRow(ctx, `
-		SELECT command_id, device_id, command_type, payload, created_at
-		FROM commands
-		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
-	`, orgID, userID, req.IdempotencyKey).Scan(&existingCmdID, &existingDeviceID, &existingType, &existingPayloadBytes, &existingCreatedAt)
-
+	// 3. Fast-path Idempotency Key check against existing commands
+	cmd, idempErr := s.handleExistingIdempotentCommand(ctx, orgID, userID, req)
 	if idempErr == nil {
-		// Existing command found for this idempotency key
-		if existingDeviceID == req.DeviceID && existingType == req.Type && comparePayloadFingerprint(existingPayloadBytes, req.Payload) {
-			var unmarshaledPayload map[string]interface{}
-			_ = json.Unmarshal(existingPayloadBytes, &unmarshaledPayload)
-			return &domain.DeviceCommand{
-				CommandID:      existingCmdID,
-				DeviceID:       existingDeviceID,
-				OrganizationID: orgID,
-				ActorID:        userID,
-				CommandType:    existingType,
-				Payload:        unmarshaledPayload,
-				Status:         "pending",
-				CreatedAt:      existingCreatedAt,
-			}, nil
-		}
+		return cmd, nil
+	} else if errors.Is(idempErr, domain.ErrIdempotencyConflict) {
 		return nil, domain.ErrIdempotencyConflict
 	}
 
@@ -200,6 +181,11 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 	`
 	_, err = tx.Exec(ctx, insertCmdSQL, cmdID, req.DeviceID, orgID, userID, req.Type, payloadBytes, req.IdempotencyKey, now, expiresAt)
 	if err != nil {
+		// Handle concurrent unique constraint violation on uk_org_actor_idempotency (PostgreSQL code 23505)
+		if isUniqueViolation(err) {
+			_ = tx.Rollback(ctx)
+			return s.handleExistingIdempotentCommand(ctx, orgID, userID, req)
+		}
 		return nil, fmt.Errorf("failed to insert command record: %w", err)
 	}
 
@@ -242,6 +228,50 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 	}, nil
 }
 
+func (s *CommandService) handleExistingIdempotentCommand(ctx context.Context, orgID, userID string, req *domain.DispatchCommandRequest) (*domain.DeviceCommand, error) {
+	var existingCmdID, existingDeviceID, existingType, existingStatus string
+	var existingPayloadBytes []byte
+	var existingCreatedAt time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT command_id, device_id, command_type, payload, status, created_at
+		FROM commands
+		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
+	`, orgID, userID, req.IdempotencyKey).Scan(&existingCmdID, &existingDeviceID, &existingType, &existingPayloadBytes, &existingStatus, &existingCreatedAt)
+
+	if err != nil {
+		return nil, fmt.Errorf("idempotency lookup error: %w", err)
+	}
+
+	if existingDeviceID == req.DeviceID && existingType == req.Type && comparePayloadFingerprint(existingPayloadBytes, req.Payload) {
+		var unmarshaledPayload map[string]interface{}
+		_ = json.Unmarshal(existingPayloadBytes, &unmarshaledPayload)
+		return &domain.DeviceCommand{
+			CommandID:      existingCmdID,
+			DeviceID:       existingDeviceID,
+			OrganizationID: orgID,
+			ActorID:        userID,
+			CommandType:    existingType,
+			Payload:        unmarshaledPayload,
+			Status:         existingStatus,
+			CreatedAt:      existingCreatedAt,
+		}, nil
+	}
+
+	return nil, domain.ErrIdempotencyConflict
+}
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505"
+	}
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "23505") || strings.Contains(errStr, "unique constraint") || strings.Contains(errStr, "uk_org_actor_idempotency")
+}
+
 func parseNumber(val interface{}) (float64, bool) {
 	switch v := val.(type) {
 	case float64:
@@ -278,7 +308,6 @@ func cleanUserPayload(input map[string]interface{}) map[string]interface{} {
 		if k == "control_lease_id" || k == "fencing_token" {
 			continue
 		}
-		// Normalize numbers to float64 for JSON unmarshal compatibility
 		if num, ok := parseNumber(v); ok {
 			out[k] = num
 		} else {

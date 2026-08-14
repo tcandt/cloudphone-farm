@@ -148,8 +148,16 @@ class CommandProcessor(
             return
         }
 
-        // Fetch current physical screen geometry and orientation
-        val geometry = DisplayGeometryProvider.getGeometry(context)
+        // Fetch current physical screen geometry and orientation with fail-closed protection
+        val geometry = try {
+            DisplayGeometryProvider.getGeometry(context)
+        } catch (e: IllegalStateException) {
+            val errStr = e.message ?: "Failed to retrieve physical display geometry"
+            Log.e(TAG, "Rejecting command $commandId: $errStr")
+            journal.saveRecord(commandId, fencingToken, "failed", errStr)
+            statusPublisher(commandId, "failed", errStr, 3)
+            return
+        }
 
         // Orientation guard
         val targetOrientation = payload.optString("orientation", "")

@@ -11,6 +11,21 @@ jobs:
     name: Build, Lint & Test (Frontend & Go Backend)
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pcp
+          POSTGRES_PASSWORD: pcp_password
+          POSTGRES_DB: phone_farm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -53,6 +68,8 @@ jobs:
 
       - name: Execute Go Backend Unit & Migration Tests
         working-directory: backend
+        env:
+          DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
         run: go test -v ./...
 
       - name: Build Go Backend Server Binary

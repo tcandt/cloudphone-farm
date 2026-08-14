@@ -46,13 +46,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const [_webrtcError, setWebrtcError] = useState<string | null>(null);
   const [activeServerSessionId, setActiveServerSessionId] = useState<string>('');
   const [geometry, setGeometry] = useState<VideoContentGeometry | null>(null);
-  const [geometryRevision, setGeometryRevision] = useState(0);
 
   const mediaClientRef = useRef<MediaClient | null>(null);
   const gestureRecognizerRef = useRef<PointerGestureRecognizer>(new PointerGestureRecognizer());
   const leaseRef = useRef<ControlLease | null>(null);
   const lastPointerUpTimeRef = useRef<number>(0);
   const isRenewingLeaseRef = useRef<boolean>(false);
+  const geometryRevisionRef = useRef<number>(0);
 
   // Keep leaseRef updated for async callbacks & unmount cleanup
   useEffect(() => {
@@ -67,18 +67,37 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   }, []);
 
   const updateGeometry = useCallback(() => {
-    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
-      ? videoRef.current
-      : (canvasRef.current || videoRef.current);
-    if (!targetEl) return;
-    const newGeom = computeVideoGeometry(targetEl, geometryRevision + 1);
-    if (newGeom) {
-      setGeometry(newGeom);
-      setGeometryRevision((r) => r + 1);
-    }
-  }, [geometryRevision]);
+    const isMockMode = getApiMode() === 'mock';
+    const videoEl = videoRef.current;
+    const targetEl = (isMockMode && canvasRef.current)
+      ? canvasRef.current
+      : (videoEl && videoEl.videoWidth > 0 ? videoEl : (isMockMode ? canvasRef.current : null));
 
-  // Update video geometry immediately on mount / open
+    if (!targetEl) return;
+
+    const nextRev = geometryRevisionRef.current + 1;
+    const newGeom = computeVideoGeometry(targetEl, nextRev);
+    if (!newGeom) return;
+
+    setGeometry((prevGeom) => {
+      if (
+        prevGeom &&
+        prevGeom.videoWidth === newGeom.videoWidth &&
+        prevGeom.videoHeight === newGeom.videoHeight &&
+        prevGeom.elementWidth === newGeom.elementWidth &&
+        prevGeom.elementHeight === newGeom.elementHeight &&
+        prevGeom.offsetX === newGeom.offsetX &&
+        prevGeom.offsetY === newGeom.offsetY &&
+        prevGeom.orientation === newGeom.orientation
+      ) {
+        return prevGeom; // Return same reference if geometry did not change
+      }
+      geometryRevisionRef.current = nextRev;
+      return newGeom;
+    });
+  }, []);
+
+  // Update video geometry on open without state loop
   useEffect(() => {
     if (isOpen) {
       updateGeometry();
@@ -217,10 +236,22 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       return;
     }
 
-    const isStreamActive = webrtcState === 'CONNECTED' || webrtcState === 'VIDEO_RECEIVING' || webrtcState === 'ready' || webrtcState === 'started';
+    const isMockMode = getApiMode() === 'mock';
+    const isStreamActive = isMockMode
+      ? (webrtcState === 'CONNECTED' || webrtcState === 'VIDEO_RECEIVING' || webrtcState === 'ready' || webrtcState === 'started')
+      : (webrtcState === 'VIDEO_RECEIVING');
+
     if (!isStreamActive) {
       addLog(`Cannot dispatch gesture: VIDEO_STREAM_NOT_RECEIVING (State: ${webrtcState})`);
       return;
+    }
+
+    if (!isMockMode) {
+      const videoEl = videoRef.current;
+      if (!videoEl || videoEl.videoWidth <= 0 || videoEl.videoHeight <= 0) {
+        addLog('Cannot dispatch gesture: VIDEO_GEOMETRY_UNAVAILABLE (first frame not received)');
+        return;
+      }
     }
 
     if (!geometry || geometry.videoWidth <= 0 || geometry.videoHeight <= 0) {
@@ -252,9 +283,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   // Pointer Event Handlers using Video Content Geometry Engine
   const handlePointerDown = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
-    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
-      ? videoRef.current
-      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
+    const isMockMode = getApiMode() === 'mock';
+    const videoEl = videoRef.current;
+    const targetEl = (isMockMode && canvasRef.current)
+      ? canvasRef.current
+      : (videoEl && videoEl.videoWidth > 0 ? videoEl : (isMockMode ? canvasRef.current : null));
+
+    if (!targetEl) return;
     const activeGeom = geometry || computeVideoGeometry(targetEl);
     if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
@@ -271,9 +306,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
-    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
-      ? videoRef.current
-      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
+    const isMockMode = getApiMode() === 'mock';
+    const videoEl = videoRef.current;
+    const targetEl = (isMockMode && canvasRef.current)
+      ? canvasRef.current
+      : (videoEl && videoEl.videoWidth > 0 ? videoEl : (isMockMode ? canvasRef.current : null));
+
+    if (!targetEl) return;
     const activeGeom = geometry || computeVideoGeometry(targetEl);
     if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
@@ -283,9 +322,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   const handlePointerUp = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
     lastPointerUpTimeRef.current = Date.now();
-    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
-      ? videoRef.current
-      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
+    const isMockMode = getApiMode() === 'mock';
+    const videoEl = videoRef.current;
+    const targetEl = (isMockMode && canvasRef.current)
+      ? canvasRef.current
+      : (videoEl && videoEl.videoWidth > 0 ? videoEl : (isMockMode ? canvasRef.current : null));
+
+    if (!targetEl) return;
     const activeGeom = geometry || computeVideoGeometry(targetEl);
     if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
@@ -305,9 +348,13 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     if (Date.now() - lastPointerUpTimeRef.current < 200) {
       return; // Ignore fallback click if pointerup already dispatched gesture
     }
-    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
-      ? videoRef.current
-      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
+    const isMockMode = getApiMode() === 'mock';
+    const videoEl = videoRef.current;
+    const targetEl = (isMockMode && canvasRef.current)
+      ? canvasRef.current
+      : (videoEl && videoEl.videoWidth > 0 ? videoEl : (isMockMode ? canvasRef.current : null));
+
+    if (!targetEl) return;
     const activeGeom = geometry || computeVideoGeometry(targetEl);
     if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();

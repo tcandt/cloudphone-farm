@@ -18,26 +18,31 @@ data class DisplayGeometry(
 )
 
 object DisplayGeometryProvider {
+    @Throws(IllegalStateException::class)
     fun getGeometry(context: Context): DisplayGeometry {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-        var widthPx = 720
-        var heightPx = 1280
+            ?: throw IllegalStateException("WindowManager service is not available")
 
-        if (wm != null) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val metrics = wm.currentWindowMetrics
-                val bounds = metrics.bounds
-                widthPx = bounds.width()
-                heightPx = bounds.height()
-            } else {
-                @Suppress("DEPRECATION")
-                val display = wm.defaultDisplay
-                val realSize = Point()
-                @Suppress("DEPRECATION")
-                display.getRealSize(realSize)
-                widthPx = realSize.x
-                heightPx = realSize.y
-            }
+        var widthPx = 0
+        var heightPx = 0
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val metrics = wm.currentWindowMetrics
+            val bounds = metrics.bounds
+            widthPx = bounds.width()
+            heightPx = bounds.height()
+        } else {
+            @Suppress("DEPRECATION")
+            val display = wm.defaultDisplay ?: throw IllegalStateException("Default display is null")
+            val realSize = Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(realSize)
+            widthPx = realSize.x
+            heightPx = realSize.y
+        }
+
+        if (widthPx <= 0 || heightPx <= 0) {
+            throw IllegalStateException("Invalid display dimensions (${widthPx}x${heightPx})")
         }
 
         val configOrientation = context.resources.configuration.orientation
