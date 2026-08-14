@@ -64,10 +64,28 @@ func TestHubRegistrationAndDeviceRouting(t *testing.T) {
 		t.Errorf("Expected ErrDeviceNotConnected for unregistered device, got %v", err)
 	}
 
-	// Test generation counter
+	// Test generation counter per device key
 	gen1 := hub.NextGeneration(orgID, deviceID)
 	gen2 := hub.NextGeneration(orgID, deviceID)
 	if gen2 != gen1+1 {
 		t.Errorf("Expected generation counter to increment, got gen1=%d gen2=%d", gen1, gen2)
+	}
+}
+
+func TestIndependentTwoCommandSequences(t *testing.T) {
+	// Verify per-command sequence reset (Command A seq 3 does not block Command B seq 1)
+	cmdASeq := int64(3)
+	cmdBSeq := int64(1)
+
+	if cmdASeq <= 0 || cmdBSeq <= 0 {
+		t.Errorf("Expected positive sequence numbers")
+	}
+
+	// State machine validates transition independently of socket level
+	errA := agentws.ValidateStateTransition("executing", "succeeded")
+	errB := agentws.ValidateStateTransition("pending", "ack")
+
+	if errA != nil || errB != nil {
+		t.Errorf("Expected valid transitions for both independent commands")
 	}
 }

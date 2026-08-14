@@ -1,9 +1,11 @@
 package ws
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -131,12 +133,28 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// Register in Hub
 	h.hub.Register(agentConn)
 
-	// Status ACK Callback for Command State Machine
+	// Status ACK Callback for Command State Machine (Bound to Device Authority & Independent Long-Lived Context)
 	statusCallback := func(statusPayload agentws.CommandStatusPayload) error {
-		return h.cmdRepo.UpdateCommandStatus(r.Context(), statusPayload.CommandID, statusPayload.Status, statusPayload.ErrorMessage, statusPayload.Sequence)
+		longLivedCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := h.cmdRepo.UpdateCommandStatusFromAgent(
+			longLivedCtx,
+			agent.OrganizationID,
+			agent.DeviceID,
+			statusPayload.CommandID,
+			statusPayload.Status,
+			statusPayload.ErrorMessage,
+			statusPayload.Sequence,
+		)
+		if err != nil {
+			slog.Error("Failed to persist command status ACK from agent WS", "error", err, "command_id", statusPayload.CommandID, "device_id", agent.DeviceID, "org_id", agent.OrganizationID)
+		}
+		return err
 	}
 
-	// Start Async Writer & Reader Loops
-	go agentConn.WriteLoop(r.Context())
-	agentConn.ReadLoop(r.Context(), statusCallback)
+	// Start Async Writer & Reader Loops with Independent Context
+	wsCtx := context.Background()
+	go agentConn.WriteLoop(wsCtx)
+	agentConn.ReadLoop(wsCtx, statusCallback)
 }

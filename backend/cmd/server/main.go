@@ -99,12 +99,11 @@ func main() {
 	// Create Chi router
 	r := chi.NewRouter()
 
-	// Global Middlewares
+	// Global Middlewares (No HTTP Timeout on Root Router for Persistent WebSockets)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	r.Use(middleware.Timeout(30 * time.Second))
 	r.Use(custommw.SecurityHeadersMiddleware)
 	r.Use(custommw.CSRFMiddleware(cfg.CorsAllowedOrigins))
 
@@ -125,8 +124,10 @@ func main() {
 	// Persistent Agent WebSocket Endpoint (Separate from /api/v1 - Protected by Signed HTTP Upgrade)
 	r.With(agentAuthMiddleware.Handler).Get("/agent/v1/connect", agentWSHandler.Connect)
 
-	// API Gateway routes
+	// API Gateway routes (HTTP Request Timeout 30s scoped here)
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+
 		// Public Auth Routes
 		r.Post("/auth/login", authHandler.Login)
 		r.Post("/auth/logout", authHandler.Logout)

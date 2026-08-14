@@ -58,7 +58,7 @@ func (r *CommandRepository) GetCommandByID(ctx context.Context, commandID string
 	return &c, nil
 }
 
-// UpdateCommandStatus enforces strict state machine transitions, sequence persistence, and records command_events
+// UpdateCommandStatus enforces strict state machine transitions for internal server updates
 func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID string, newStatus string, errStr string, sequence int64) error {
 	if r.pool == nil {
 		return errors.New("postgres connection pool uninitialized")
@@ -70,7 +70,6 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Fetch current status and last_status_sequence FOR UPDATE
 	var currentStatus string
 	var lastSeq int64
 	selectSQL := `SELECT status, COALESCE(last_status_sequence, 0) FROM commands WHERE command_id = $1 FOR UPDATE`
@@ -81,9 +80,82 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 		return fmt.Errorf("failed to query command status for update: %w", err)
 	}
 
-	// 2. Sequence Protection Check per Command
 	if sequence > 0 && sequence <= lastSeq {
 		return nil // Stale sequence ignored
+	}
+
+	if err := agentws.ValidateStateTransition(currentStatus, newStatus); err != nil {
+		if errors.Is(err, agentws.ErrTerminalStateLocked) || currentStatus == newStatus {
+			return nil
+		}
+		return err
+	}
+
+	var updateSQL string
+	if agentws.IsTerminalState(newStatus) {
+		updateSQL = `UPDATE commands SET status = $1, error_message = $2, last_status_sequence = $3, executed_at = CURRENT_TIMESTAMP WHERE command_id = $4`
+		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, sequence, commandID)
+	} else {
+		updateSQL = `UPDATE commands SET status = $1, error_message = $2, last_status_sequence = $3 WHERE command_id = $4`
+		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, sequence, commandID)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to update command status: %w", err)
+	}
+
+	eventSQL := `
+		INSERT INTO command_events (command_id, status, payload)
+		VALUES ($1, $2, $3::jsonb)
+	`
+	evtPayload, _ := json.Marshal(map[string]interface{}{
+		"old_status": currentStatus,
+		"new_status": newStatus,
+		"sequence":   sequence,
+		"error":      errStr,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+	})
+	if _, err := tx.Exec(ctx, eventSQL, commandID, newStatus, string(evtPayload)); err != nil {
+		return fmt.Errorf("failed to insert command event log: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit command status transaction: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateCommandStatusFromAgent enforces device ownership (organization_id AND device_id), state transitions, and per-command sequence persistence
+func (r *CommandRepository) UpdateCommandStatusFromAgent(ctx context.Context, orgID, deviceID, commandID, newStatus, errStr string, sequence int64) error {
+	if r.pool == nil {
+		return errors.New("postgres connection pool uninitialized")
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin agent command update transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Fetch current status and last_status_sequence WITH DEVICE OWNERSHIP BOUNDARY CHECK FOR UPDATE
+	var currentStatus string
+	var lastSeq int64
+	selectSQL := `
+		SELECT status, COALESCE(last_status_sequence, 0)
+		FROM commands
+		WHERE command_id = $1 AND organization_id = $2 AND device_id = $3
+		FOR UPDATE
+	`
+	if err := tx.QueryRow(ctx, selectSQL, commandID, orgID, deviceID).Scan(&currentStatus, &lastSeq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("%w: command %s not owned by device %s in org %s", domain.ErrDeviceNotFound, commandID, deviceID, orgID)
+		}
+		return fmt.Errorf("failed to query device command status for update: %w", err)
+	}
+
+	// 2. Per-Command Sequence Protection Check
+	if sequence > 0 && sequence <= lastSeq {
+		return nil // Stale sequence ignored per-command
 	}
 
 	// 3. Validate strict state machine transition
@@ -104,10 +176,10 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, sequence, commandID)
 	}
 	if err != nil {
-		return fmt.Errorf("failed to update command status: %w", err)
+		return fmt.Errorf("failed to update command status from agent: %w", err)
 	}
 
-	// 5. Record command_event (Schema compliant: command_id, status, payload)
+	// 5. Record command_event
 	eventSQL := `
 		INSERT INTO command_events (command_id, status, payload)
 		VALUES ($1, $2, $3::jsonb)
@@ -117,6 +189,7 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 		"new_status": newStatus,
 		"sequence":   sequence,
 		"error":      errStr,
+		"source":     "agent_ws",
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 	})
 	if _, err := tx.Exec(ctx, eventSQL, commandID, newStatus, string(evtPayload)); err != nil {
@@ -124,7 +197,7 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("failed to commit command status transaction: %w", err)
+		return fmt.Errorf("failed to commit agent command status transaction: %w", err)
 	}
 
 	return nil
