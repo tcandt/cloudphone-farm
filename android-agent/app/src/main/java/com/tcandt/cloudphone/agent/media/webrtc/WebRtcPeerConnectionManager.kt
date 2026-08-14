@@ -9,7 +9,6 @@ import org.webrtc.DefaultVideoEncoderFactory
 import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
-import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
@@ -34,6 +33,8 @@ class WebRtcPeerConnectionManager(
     private var surfaceTextureHelper: SurfaceTextureHelper? = null
 
     private var activeSessionId: String = ""
+    private var isRemoteDescriptionSet: Boolean = false
+    private val pendingIceCandidates = mutableListOf<IceCandidate>()
 
     companion object {
         private const val TAG = "WebRtcPeerConnection"
@@ -62,10 +63,16 @@ class WebRtcPeerConnectionManager(
 
     fun startSession(sessionId: String, projectionResultData: Intent) {
         activeSessionId = sessionId
+        isRemoteDescriptionSet = false
+        pendingIceCandidates.clear()
 
         val iceServers = listOf(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+            PeerConnection.IceServer.builder("turn:stun.l.google.com:19302")
+                .setUsername("pcp_guest")
+                .setPassword("pcp_pass_guest")
+                .createIceServer()
         )
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
@@ -79,6 +86,20 @@ class WebRtcPeerConnectionManager(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.i(TAG, "WebRTC IceConnectionState changed: $state (SessionID=$activeSessionId)")
+                if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    val payload = JSONObject().apply {
+                        put("session_id", activeSessionId)
+                        put("status", "started")
+                    }
+                    signalPublisher("media.session.started", payload)
+                } else if (state == PeerConnection.IceConnectionState.FAILED || state == PeerConnection.IceConnectionState.DISCONNECTED) {
+                    val payload = JSONObject().apply {
+                        put("session_id", activeSessionId)
+                        put("status", "failed")
+                        put("error_message", "ICE Connection $state")
+                    }
+                    signalPublisher("media.session.started", payload)
+                }
             }
 
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
@@ -109,6 +130,14 @@ class WebRtcPeerConnectionManager(
 
         // Attach WebRTC ScreenCapturerAndroid to VideoTrack
         attachScreenCapturer(projectionResultData)
+
+        // Dispatch media.session.ready to backend/web
+        val readyPayload = JSONObject().apply {
+            put("session_id", activeSessionId)
+            put("status", "ready")
+        }
+        signalPublisher("media.session.ready", readyPayload)
+        Log.i(TAG, "WebRTC PeerConnection and ScreenCapturer initialized for SessionID=$activeSessionId. Sent media.session.ready")
     }
 
     private fun attachScreenCapturer(projectionResultData: Intent) {
@@ -130,11 +159,26 @@ class WebRtcPeerConnectionManager(
         }
     }
 
-    fun handleRemoteOffer(offerSdpText: String) {
+    fun handleRemoteOffer(sessionId: String, offerSdpText: String) {
+        if (sessionId.isNotEmpty() && activeSessionId.isNotEmpty() && sessionId != activeSessionId) {
+            Log.w(TAG, "SessionID mismatch in handleRemoteOffer ($sessionId vs $activeSessionId)")
+            return
+        }
+
+        if (peerConnection == null) {
+            Log.e(TAG, "Cannot handleRemoteOffer: PeerConnection is null")
+            return
+        }
+
         val remoteSdp = SessionDescription(SessionDescription.Type.OFFER, offerSdpText)
         peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
+                isRemoteDescriptionSet = true
                 Log.i(TAG, "Set WebRTC Remote Description (OFFER) successfully")
+
+                // Drain queued pending ICE candidates
+                drainPendingIceCandidates()
+
                 createAnswer()
             }
         }, remoteSdp)
@@ -162,10 +206,26 @@ class WebRtcPeerConnectionManager(
         }, mediaConstraints)
     }
 
-    fun handleRemoteCandidate(sdpMid: String, sdpMLineIndex: Int, candidateSdp: String) {
+    fun handleRemoteCandidate(sessionId: String, sdpMid: String, sdpMLineIndex: Int, candidateSdp: String) {
+        if (sessionId.isNotEmpty() && activeSessionId.isNotEmpty() && sessionId != activeSessionId) {
+            return
+        }
+
         val candidate = IceCandidate(sdpMid, sdpMLineIndex, candidateSdp)
-        peerConnection?.addIceCandidate(candidate)
-        Log.d(TAG, "Added remote ICE candidate: $sdpMid [$sdpMLineIndex]")
+        if (isRemoteDescriptionSet && peerConnection != null) {
+            peerConnection?.addIceCandidate(candidate)
+            Log.d(TAG, "Added remote ICE candidate: $sdpMid [$sdpMLineIndex]")
+        } else {
+            pendingIceCandidates.add(candidate)
+            Log.d(TAG, "Queued remote ICE candidate prior to RemoteDescription set")
+        }
+    }
+
+    private fun drainPendingIceCandidates() {
+        for (candidate in pendingIceCandidates) {
+            peerConnection?.addIceCandidate(candidate)
+        }
+        pendingIceCandidates.clear()
     }
 
     fun closeSession() {
@@ -182,6 +242,9 @@ class WebRtcPeerConnectionManager(
 
             peerConnection?.close()
             peerConnection = null
+
+            isRemoteDescriptionSet = false
+            pendingIceCandidates.clear()
 
             Log.i(TAG, "Closed WebRTC PeerConnection session cleanly for SessionID=$activeSessionId")
             activeSessionId = ""

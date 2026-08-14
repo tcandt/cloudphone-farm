@@ -10,18 +10,21 @@ import (
 var (
 	ErrDeviceNotConnected = errors.New("device agent is not connected to WebSocket hub")
 	ErrBufferOverflow     = errors.New("connection send channel buffer overflow")
+	ErrSessionNotFound    = errors.New("media session subscriber not found")
 )
 
 type Hub struct {
-	connections map[string]*Connection // Keyed by deviceKey (org_id:device_id)
-	generations map[string]int64      // Generation tracking per deviceKey
-	mu          sync.RWMutex
+	connections      map[string]*Connection // Keyed by deviceKey (org_id:device_id)
+	generations      map[string]int64      // Generation tracking per deviceKey
+	mediaSubscribers map[string]chan []byte // Keyed by session_id
+	mu               sync.RWMutex
 }
 
 func NewHub() *Hub {
 	return &Hub{
-		connections: make(map[string]*Connection),
-		generations: make(map[string]int64),
+		connections:      make(map[string]*Connection),
+		generations:      make(map[string]int64),
+		mediaSubscribers: make(map[string]chan []byte),
 	}
 }
 
@@ -91,5 +94,39 @@ func (h *Hub) DispatchToDevice(orgID, deviceID string, data []byte) error {
 		slog.Error("Disconnecting slow agent consumer due to send buffer overflow", "device_key", key, "connection_id", conn.ConnectionID)
 		go conn.Close()
 		return fmt.Errorf("%w: device %s buffer full", ErrBufferOverflow, key)
+	}
+}
+
+func (h *Hub) RegisterMediaSubscriber(sessionID string, ch chan []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	h.mediaSubscribers[sessionID] = ch
+	slog.Info("Registered WebRTC media subscriber channel", "session_id", sessionID)
+}
+
+func (h *Hub) UnregisterMediaSubscriber(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	delete(h.mediaSubscribers, sessionID)
+	slog.Info("Unregistered WebRTC media subscriber channel", "session_id", sessionID)
+}
+
+func (h *Hub) RelayMediaSignal(sessionID string, data []byte) error {
+	h.mu.RLock()
+	ch, exists := h.mediaSubscribers[sessionID]
+	h.mu.RUnlock()
+
+	if !exists || ch == nil {
+		return ErrSessionNotFound
+	}
+
+	select {
+	case ch <- data:
+		return nil
+	default:
+		slog.Warn("Media subscriber channel full, dropping frame", "session_id", sessionID)
+		return ErrBufferOverflow
 	}
 }

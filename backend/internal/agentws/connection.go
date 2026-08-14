@@ -11,38 +11,34 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 )
 
 type Connection struct {
 	ConnectionID   string
-	OrganizationID string
-	DeviceID       string
-	AgentID        string
 	Generation     int64
-	Agent          *domain.DeviceAgent
-
-	ws     *websocket.Conn
-	hub    *Hub
-	Send   chan []byte
-	once   sync.Once
-	closed chan struct{}
+	AgentID        string
+	DeviceID       string
+	OrganizationID string
+	hub            *Hub
+	ws             *websocket.Conn
+	Send           chan []byte
+	closed         chan struct{}
+	once           sync.Once
 }
 
 func NewConnection(hub *Hub, ws *websocket.Conn, agent *domain.DeviceAgent, generation int64) *Connection {
-	connID := fmt.Sprintf("conn_%s", uuid.New().String()[:12])
+	connID := fmt.Sprintf("conn_%d", time.Now().UnixNano())
 	return &Connection{
 		ConnectionID:   connID,
-		OrganizationID: agent.OrganizationID,
-		DeviceID:       agent.DeviceID,
-		AgentID:        agent.AgentID,
 		Generation:     generation,
-		Agent:          agent,
-		ws:             ws,
+		AgentID:        agent.AgentID,
+		DeviceID:       agent.DeviceID,
+		OrganizationID: agent.OrganizationID,
 		hub:            hub,
-		Send:           make(chan []byte, 128), // Bounded buffer 128
+		ws:             ws,
+		Send:           make(chan []byte, 256),
 		closed:         make(chan struct{}),
 	}
 }
@@ -96,6 +92,18 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 			if err := json.Unmarshal(env.Payload, &statusPayload); err == nil {
 				if statusCallback != nil {
 					_ = statusCallback(statusPayload)
+				}
+			}
+
+		case MessageTypeMediaSignalAnswer, MessageTypeMediaSignalCandidate, MessageTypeMediaSessionStarted, MessageTypeMediaSessionStopped:
+			var payloadMap map[string]interface{}
+			if err := json.Unmarshal(env.Payload, &payloadMap); err == nil {
+				if sessionID, ok := payloadMap["session_id"].(string); ok && sessionID != "" {
+					if err := c.hub.RelayMediaSignal(sessionID, message); err != nil {
+						slog.Debug("Failed to relay media signal to Web subscriber", "session_id", sessionID, "type", env.Type, "error", err)
+					} else {
+						slog.Info("Relayed media signal from agent to Web subscriber", "session_id", sessionID, "type", env.Type)
+					}
 				}
 			}
 		}

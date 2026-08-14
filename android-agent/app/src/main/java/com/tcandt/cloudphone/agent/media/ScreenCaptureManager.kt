@@ -37,6 +37,7 @@ object ScreenCaptureManager {
     private var pendingFps: Int = 30
 
     var sessionListener: SessionStateListener? = null
+    var onConsentGrantedHandler: ((sessionId: String, resultData: Intent) -> Unit)? = null
 
     interface SessionStateListener {
         fun onSessionStarted(sessionId: String)
@@ -161,7 +162,10 @@ object ScreenCaptureManager {
         Log.i(TAG, "Consent granted for Gen=$generation. Storing single-use MediaProjection token result")
         projectionResultCode = resultCode
         projectionResultData = resultData
-        startServiceInternal(context, generation)
+
+        // Option A Single Owner: Pass MediaProjection Intent directly to WebRTC Manager
+        currentState = ScreenCaptureState.STARTING
+        onConsentGrantedHandler?.invoke(activeSessionId, resultData)
     }
 
     fun onConsentDenied(context: Context, generation: Long) {
@@ -182,20 +186,8 @@ object ScreenCaptureManager {
         currentState = ScreenCaptureState.STARTING
         Log.i(TAG, "Transitioning state -> STARTING (SessionID=$activeSessionId, Gen=$generation)")
 
-        val intent = Intent(context, MediaCaptureService::class.java).apply {
-            action = MediaCaptureService.ACTION_START_CAPTURE
-            putExtra(MediaCaptureService.EXTRA_RESULT_CODE, projectionResultCode)
-            putExtra(MediaCaptureService.EXTRA_RESULT_DATA, projectionResultData)
-            putExtra(MediaCaptureService.EXTRA_WIDTH, pendingWidth)
-            putExtra(MediaCaptureService.EXTRA_HEIGHT, pendingHeight)
-            putExtra(MediaCaptureService.EXTRA_BITRATE, pendingBitrate)
-            putExtra(MediaCaptureService.EXTRA_FPS, pendingFps)
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(intent)
-        } else {
-            context.startService(intent)
+        if (projectionResultData != null) {
+            onConsentGrantedHandler?.invoke(activeSessionId, projectionResultData!!)
         }
     }
 
@@ -238,6 +230,7 @@ object ScreenCaptureManager {
             action = MediaCaptureService.ACTION_STOP_CAPTURE
         }
         context.startService(intent)
+        onServiceStoppedFully(activeSessionId, "operator_requested")
     }
 
     fun onServiceStoppedFully(sessionId: String, reason: String) {

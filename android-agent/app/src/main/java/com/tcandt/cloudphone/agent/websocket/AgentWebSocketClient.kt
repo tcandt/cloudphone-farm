@@ -58,6 +58,10 @@ class AgentWebSocketClient(
             sendWSEnvelope(type, payload)
         }
 
+        ScreenCaptureManager.onConsentGrantedHandler = { sessionId, projectionIntent ->
+            webRtcManager?.startSession(sessionId, projectionIntent)
+        }
+
         ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {
             override fun onSessionStarted(sessionId: String) {
                 val respPayload = JSONObject().apply {
@@ -225,16 +229,18 @@ class AgentWebSocketClient(
     }
 
     private fun handleMediaSignalOffer(payload: JSONObject) {
+        val sessionId = payload.optString("session_id")
         val sdp = payload.optString("sdp")
-        Log.i(TAG, "Received media.signal.offer from server/web")
-        webRtcManager?.handleRemoteOffer(sdp)
+        Log.i(TAG, "Received media.signal.offer from server/web for SessionID=$sessionId")
+        webRtcManager?.handleRemoteOffer(sessionId, sdp)
     }
 
     private fun handleMediaSignalCandidate(payload: JSONObject) {
+        val sessionId = payload.optString("session_id")
         val sdpMid = payload.optString("sdpMid")
         val sdpMLineIndex = payload.optInt("sdpMLineIndex", 0)
         val candidate = payload.optString("candidate")
-        webRtcManager?.handleRemoteCandidate(sdpMid, sdpMLineIndex, candidate)
+        webRtcManager?.handleRemoteCandidate(sessionId, sdpMid, sdpMLineIndex, candidate)
     }
 
     private fun sendWSEnvelope(type: String, payload: JSONObject) {
