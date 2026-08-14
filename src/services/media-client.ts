@@ -1,4 +1,5 @@
 import { StreamProfile, StreamSession } from '../types';
+import { WebRtcMediaClient } from './webrtc-media-client';
 
 export interface MediaClient {
   sessionId: string;
@@ -7,6 +8,88 @@ export interface MediaClient {
   setProfile(profile: StreamProfile): Promise<void>;
   stop(): Promise<void>;
   simulateTouch(x: number, y: number): void;
+  getWebRtcClient?(): WebRtcMediaClient | null;
+}
+
+export class ProductionWebRtcMediaClient implements MediaClient {
+  public sessionId: string;
+  private webRtcClient: WebRtcMediaClient | null = null;
+  private currentElement: HTMLVideoElement | HTMLCanvasElement | null = null;
+  private profile: StreamProfile = {
+    resolution: '720p',
+    fps: 30,
+    bitrate_kbps: 2500,
+  };
+
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
+
+  async startSession(deviceId: string, profile?: StreamProfile): Promise<StreamSession> {
+    if (profile) {
+      this.profile = profile;
+    }
+
+    if (!this.webRtcClient) {
+      this.webRtcClient = new WebRtcMediaClient({
+        deviceId,
+        onStreamReady: (stream) => {
+          if (this.currentElement && this.currentElement instanceof HTMLVideoElement) {
+            this.currentElement.srcObject = stream;
+            this.currentElement.play().catch(() => {});
+          }
+        },
+      });
+      this.webRtcClient.startSession();
+    }
+
+    const session: StreamSession = {
+      stream_session_id: this.sessionId,
+      device_id: deviceId,
+      organization_id: 'org_tenant_01',
+      user_id: 'usr_op_01',
+      profile: this.profile,
+      status: 'connected',
+      started_at: new Date().toISOString(),
+      expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
+    };
+
+    return session;
+  }
+
+  attach(element: HTMLCanvasElement | HTMLVideoElement): void {
+    this.currentElement = element;
+    if (element instanceof HTMLVideoElement && this.webRtcClient) {
+      const stream = this.webRtcClient.getMediaStream();
+      if (stream) {
+        element.srcObject = stream;
+        element.play().catch(() => {});
+      }
+    }
+  }
+
+  async setProfile(profile: StreamProfile): Promise<void> {
+    this.profile = profile;
+  }
+
+  async stop(): Promise<void> {
+    if (this.webRtcClient) {
+      this.webRtcClient.close();
+      this.webRtcClient = null;
+    }
+    if (this.currentElement && this.currentElement instanceof HTMLVideoElement) {
+      this.currentElement.srcObject = null;
+    }
+    this.currentElement = null;
+  }
+
+  simulateTouch(): void {
+    // Touch gestures dispatched via Command API
+  }
+
+  getWebRtcClient(): WebRtcMediaClient | null {
+    return this.webRtcClient;
+  }
 }
 
 export class MockMediaClient implements MediaClient {
@@ -85,11 +168,9 @@ export class MockMediaClient implements MediaClient {
       const width = canvas.width || 360;
       const height = canvas.height || 640;
 
-      // Draw simulated phone screen background
       ctx.fillStyle = '#0f172a';
       ctx.fillRect(0, 0, width, height);
 
-      // Status Bar at Top
       ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
       ctx.fillRect(0, 0, width, 28);
       ctx.fillStyle = '#ffffff';
@@ -100,84 +181,11 @@ export class MockMediaClient implements MediaClient {
       ctx.fillText(timeStr, 12, 18);
       ctx.fillText(`98% ⚡`, width - 45, 18);
 
-      // App Header / Wallpaper
       const gradient = ctx.createLinearGradient(0, 28, 0, height);
       gradient.addColorStop(0, '#1e293b');
       gradient.addColorStop(1, '#0f172a');
       ctx.fillStyle = gradient;
       ctx.fillRect(0, 28, width, height - 28);
-
-      // Simulated Phone App Icons / Grid
-      const iconSize = Math.min(width * 0.14, 48);
-      const cols = 4;
-      const marginX = (width - cols * iconSize) / (cols + 1);
-
-      const appIcons = [
-        { name: 'Phone', color: '#22c55e' },
-        { name: 'Messages', color: '#3b82f6' },
-        { name: 'Chrome', color: '#eab308' },
-        { name: 'Gallery', color: '#ec4899' },
-        { name: 'Camera', color: '#64748b' },
-        { name: 'Settings', color: '#94a3b8' },
-        { name: 'Agent', color: '#2563eb' },
-        { name: 'Logs', color: '#8b5cf6' },
-      ];
-
-      appIcons.forEach((app, idx) => {
-        const col = idx % cols;
-        const row = Math.floor(idx / cols);
-        const x = marginX + col * (iconSize + marginX);
-        const y = 60 + row * (iconSize + 28);
-
-        ctx.fillStyle = app.color;
-        ctx.beginPath();
-        ctx.roundRect(x, y, iconSize, iconSize, 12);
-        ctx.fill();
-
-        ctx.fillStyle = '#cbd5e1';
-        ctx.font = '10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(app.name, x + iconSize / 2, y + iconSize + 14);
-      });
-
-      // Bottom Navigation Bar
-      ctx.textAlign = 'left';
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-      ctx.fillRect(0, height - 40, width, 40);
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-
-      const navY = height - 20;
-      ctx.beginPath();
-      ctx.moveTo(width * 0.25 + 6, navY - 6);
-      ctx.lineTo(width * 0.25 - 4, navY);
-      ctx.lineTo(width * 0.25 + 6, navY + 6);
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(width * 0.5, navY, 6, 0, Math.PI * 2);
-      ctx.stroke();
-
-      ctx.strokeRect(width * 0.75 - 5, navY - 5, 10, 10);
-
-      // Render Touch Ripples
-      const nowTime = Date.now();
-      this.touches = this.touches.filter((t) => nowTime - t.time < 600);
-      this.touches.forEach((t) => {
-        const age = (nowTime - t.time) / 600;
-        const radius = age * 25 + 5;
-        const alpha = 1 - age;
-
-        ctx.strokeStyle = `rgba(59, 130, 246, ${alpha})`;
-        ctx.fillStyle = `rgba(59, 130, 246, ${alpha * 0.3})`;
-        ctx.lineWidth = 2;
-
-        ctx.beginPath();
-        ctx.arc(t.x * width, t.y * height, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-      });
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
       ctx.fillRect(8, 36, 120, 20);
@@ -203,7 +211,8 @@ export class DefaultMediaClientRegistry {
   acquire(sessionId: string): MediaClient {
     let entry = this.instances.get(sessionId);
     if (!entry) {
-      const client = new MockMediaClient(sessionId);
+      const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
+      const client = isTestEnv ? new MockMediaClient(sessionId) : new ProductionWebRtcMediaClient(sessionId);
       entry = { client, refCount: 0 };
       this.instances.set(sessionId, entry);
     }
@@ -223,10 +232,10 @@ export class DefaultMediaClientRegistry {
   }
 
   async closeAll(): Promise<void> {
-    for (const [id, entry] of this.instances.entries()) {
+    for (const entry of this.instances.values()) {
       await entry.client.stop();
-      this.instances.delete(id);
     }
+    this.instances.clear();
   }
 }
 

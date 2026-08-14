@@ -10,6 +10,7 @@ interface SingleStreamCardProps {
 
 const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(true);
   const [sessionId] = useState(() => `str_live_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
   const mediaClientRef = useRef<MediaClient | null>(null);
@@ -23,13 +24,18 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
 
     async function start() {
       await mediaClient.startSession(device.device_id, {
-        resolution: '480p',
+        resolution: '720p',
         fps: 30,
-        bitrate_kbps: 1200,
+        bitrate_kbps: 2000,
       });
 
-      if (mounted && canvasRef.current) {
-        mediaClient.attach(canvasRef.current);
+      if (mounted) {
+        if (videoRef.current) {
+          mediaClient.attach(videoRef.current);
+        }
+        if (canvasRef.current) {
+          mediaClient.attach(canvasRef.current);
+        }
       }
     }
 
@@ -74,13 +80,23 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
 
       <div className="bg-slate-950 rounded-2xl aspect-[9/16] flex items-center justify-center p-2 relative overflow-hidden">
         {isStreaming ? (
-          <canvas
-            ref={canvasRef}
-            width={360}
-            height={640}
-            data-session-id={sessionId}
-            className="w-full h-full object-contain"
-          />
+          <>
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              data-session-id={sessionId}
+              className="w-full h-full object-contain bg-black hidden"
+            />
+            <canvas
+              ref={canvasRef}
+              width={360}
+              height={640}
+              data-session-id={sessionId}
+              className="w-full h-full object-contain"
+            />
+          </>
         ) : (
           <div className="text-center text-slate-500 space-y-1">
             <VideoOff size={24} className="mx-auto text-slate-600" />
@@ -108,20 +124,24 @@ export const LiveMonitorPage: React.FC = () => {
       </div>
 
       {/* Authorized Consent Banner */}
-      <div className="p-4 bg-blue-50 border border-blue-200 rounded-3xl flex items-start gap-3 text-xs text-blue-900 leading-relaxed">
-        <ShieldCheck size={20} className="text-blue-600 flex-shrink-0 mt-0.5" />
-        <div>
-          <p className="font-extrabold text-blue-950">Chế độ Quan sát Độc lập (Dual Independent Streams)</p>
-          <p className="text-[11px] text-blue-800/90 mt-0.5">
-            Tính năng LIVE Monitor khởi tạo các phiên WebRTC MediaClient độc lập với Session ID riêng biệt. Việc dừng hoặc khởi chạy lại một luồng hoàn toàn không gây ảnh hưởng đến các phiên quan sát khác.
+      <div className="bg-gradient-to-r from-emerald-900/90 to-teal-900/90 border border-emerald-500/30 rounded-3xl p-5 text-white shadow-xl flex items-start gap-4">
+        <div className="p-3 bg-emerald-500/20 rounded-2xl shrink-0">
+          <ShieldCheck size={24} className="text-emerald-400" />
+        </div>
+        <div className="space-y-1">
+          <h2 className="font-extrabold text-sm flex items-center gap-2">
+            Multi-Device Stream Isolation & Explicit Consent Protocol Active
+          </h2>
+          <p className="text-xs text-emerald-100/80 leading-relaxed">
+            Tất cả luồng màn hình được giám sát đều yêu cầu người vận hành xác nhận quyền MediaProjection trực tiếp trên điện thoại vật lý.
           </p>
         </div>
       </div>
 
-      {/* Multi-Stream Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl">
-        {liveDevices.map((device) => (
-          <SingleStreamCard key={device.device_id} device={device} />
+      {/* Grid Streams */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+        {liveDevices.map((dev) => (
+          <SingleStreamCard key={dev.device_id} device={dev} />
         ))}
       </div>
     </div>
