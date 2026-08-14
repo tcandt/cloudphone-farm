@@ -32,7 +32,15 @@ $backendHash = (Get-FileHash $backendBinary -Algorithm SHA256).Hash
 
 # Always Rebuild Android Agent APK
 Write-Host "Rebuilding Android Agent APK (assembleDebug) from HEAD..."
-cmd /c "if exist `"C:\Program Files\Android\Android Studio\jbr\bin\java.exe`" (set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr) & cd /d `"$repoRoot\android-agent`" & gradlew.bat assembleDebug --no-daemon"
+if (Test-Path "C:\Program Files\Android\Android Studio\jbr\bin\java.exe") {
+    $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
+}
+Push-Location "$repoRoot\android-agent"
+try {
+    & .\gradlew.bat assembleDebug --no-daemon
+} finally {
+    Pop-Location
+}
 $apkBinary = "$repoRoot\android-agent\app\build\outputs\apk\debug\app-debug.apk"
 if (-not (Test-Path $apkBinary)) {
     Write-Host "[FAIL-CLOSED] APK build failed or output binary missing."
