@@ -114,9 +114,16 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM control_leases WHERE organization_id = $1", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE organization_id = $1", orgID)
 
+	// Insert tenant organization first (foreign key dependency)
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO organizations (organization_id, name, slug)
+		VALUES ($1, 'Integration Test Org', 'org-test-integration')
+		ON CONFLICT DO NOTHING
+	`, orgID)
+
 	_, err = pool.Exec(ctx, `
-		INSERT INTO devices (device_id, organization_id, status, name, model, android_version, serial_number)
-		VALUES ($1, $2, 'online', 'Integration Device', 'Samsung S7', '11.0', 'SN12345')
+		INSERT INTO devices (device_id, organization_id, status, name, serial_number, model, platform_version)
+		VALUES ($1, $2, 'online', 'Integration Device', 'SN12345', 'Samsung S7', '11.0')
 	`, deviceID, orgID)
 	if err != nil {
 		t.Fatalf("failed to insert test device: %v", err)
