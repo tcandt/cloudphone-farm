@@ -1,20 +1,54 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
-import { mockDevices } from '../data/mockData';
 import { defaultCommandEngine } from '../services/command-engine';
 import { DeviceControlModal } from '../components/devices/DeviceControlModal';
 import { PermissionGuard } from '../components/common/PermissionGuard';
-import { ArrowLeft, Play, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Play, AlertCircle, Loader2 } from 'lucide-react';
+import { DeviceEntity } from '../types';
+import { deviceService } from '../services/device-service';
 
 export const DeviceDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
-  const { t } = useTranslation();
   const [isControlModalOpen, setIsControlModalOpen] = useState(false);
+  const [device, setDevice] = useState<DeviceEntity | null>(null);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Derive device & command history directly during render
-  const device = mockDevices.find((d) => d.device_id === id) || null;
+  useEffect(() => {
+    if (!id) return;
+    let isMounted = true;
+
+    deviceService
+      .getById(id)
+      .then((data) => {
+        if (isMounted) {
+          setDevice(data);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setDevice(null);
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [id]);
+
   const commandHistory = device ? defaultCommandEngine.getCommands(device.device_id) : [];
+
+  if (loading) {
+    return (
+      <div className="p-16 flex items-center justify-center min-h-[60vh]">
+        <div className="flex items-center gap-2 text-slate-500 font-medium">
+          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+          <span>Đang tải thông tin chi tiết thiết bị...</span>
+        </div>
+      </div>
+    );
+  }
 
   if (!device) {
     return (
@@ -49,7 +83,7 @@ export const DeviceDetailPage: React.FC = () => {
           </Link>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">{device.display_name}</h1>
+              <h1 className="text-xl font-extrabold text-slate-900 tracking-tight">{device.display_name || device.name}</h1>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200">
                 {device.model}
               </span>
@@ -60,80 +94,105 @@ export const DeviceDetailPage: React.FC = () => {
           </div>
         </div>
 
-        <PermissionGuard permission="device.control.acquire">
+        <PermissionGuard requiredPermission="device.control.input">
           <button
             onClick={() => setIsControlModalOpen(true)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition-all active:scale-95"
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm text-xs flex items-center gap-2 transition-all"
           >
-            <Play size={16} /> {t('devices.acquireControl')}
+            <Play size={16} />
+            <span>Xin quyền điều khiển</span>
           </button>
         </PermissionGuard>
       </div>
 
-      {/* Device Specifications Card */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-pcp-card space-y-2">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Trạng thái kết nối</span>
-          <div className="flex items-center gap-2">
-            <span className="w-3 h-3 rounded-full bg-emerald-500 animate-ping"></span>
-            <span className="text-lg font-black text-slate-900 capitalize">{device.status}</span>
+      {/* Grid Specs */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Device Information */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">Thông tin thiết bị</h3>
+          <div className="space-y-2.5 text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate-500">Tên hiển thị:</span>
+              <span className="font-semibold text-slate-800">{device.display_name || device.name}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Trạng thái:</span>
+              <span
+                className={`font-bold uppercase text-[10px] px-2 py-0.5 rounded-full ${
+                  device.status === 'online'
+                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                    : 'bg-slate-100 text-slate-600 border border-slate-200'
+                }`}
+              >
+                {device.status}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Hệ điều hành:</span>
+              <span className="font-semibold text-slate-800">Android {device.platform_version || device.android_version}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">Mã Serial:</span>
+              <span className="font-mono text-slate-700">{device.serial_number}</span>
+            </div>
           </div>
-          <p className="text-xs text-slate-500 font-mono">Android {device.android_version}</p>
         </div>
 
-        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-pcp-card space-y-2">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Mạng Telemetry</span>
-          <div className="text-lg font-black text-slate-900 font-mono">{device.telemetry.network.toUpperCase()}</div>
-          <p className="text-xs text-slate-500">
-            Orient: <span className="font-semibold text-slate-700">{device.telemetry.orientation}°</span>
-          </p>
-        </div>
-
-        <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-pcp-card space-y-2">
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Pin Device</span>
-          <div className="flex items-center justify-between">
-            <span className="text-lg font-black text-slate-900">{device.telemetry.battery}% ⚡</span>
-          </div>
-          <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-            <div className="bg-emerald-500 h-2 rounded-full" style={{ width: `${device.telemetry.battery}%` }}></div>
-          </div>
-        </div>
-      </div>
-
-      {/* Command Dispatch History */}
-      <div className="bg-white border border-slate-200/80 shadow-pcp-card rounded-3xl overflow-hidden p-6 space-y-4">
-        <h3 className="font-extrabold text-slate-900 text-sm">Lịch sử lệnh điều khiển ({commandHistory.length})</h3>
-        {commandHistory.length === 0 ? (
-          <p className="text-xs text-slate-400 italic">Chưa có lệnh nào được thực thi cho thiết bị này.</p>
-        ) : (
-          <div className="space-y-2">
-            {commandHistory.map((cmd) => (
-              <div key={cmd.command_id} className="p-3 bg-slate-50 rounded-2xl border border-slate-100 flex items-center justify-between text-xs">
-                <div className="flex items-center gap-3">
-                  <span className="font-mono font-bold text-slate-700">{cmd.command_id}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 font-bold font-mono text-[10px]">
-                    {cmd.command_type}
-                  </span>
-                  <span className="text-slate-500 text-[11px]">{cmd.actor_name}</span>
-                </div>
-                <div className="flex items-center gap-3 font-mono">
-                  <span className="text-[10px] text-slate-400">{new Date(cmd.created_at).toLocaleTimeString('vi-VN')}</span>
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px]">
-                    {cmd.status}
-                  </span>
-                </div>
+        {/* Telemetry Status */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">Thông số Telemetry</h3>
+          {device.telemetry ? (
+            <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Mức Pin:</span>
+                <span className="font-bold text-slate-800">{device.telemetry.battery}%</span>
               </div>
-            ))}
-          </div>
-        )}
+              <div className="flex justify-between">
+                <span className="text-slate-500">Kết nối mạng:</span>
+                <span className="font-bold uppercase text-slate-800">{device.telemetry.network}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">CPU Usage:</span>
+                <span className="font-semibold text-slate-800">{device.telemetry.cpu_usage}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">RAM Usage:</span>
+                <span className="font-semibold text-slate-800">{device.telemetry.ram_usage}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Nhiệt độ:</span>
+                <span className="font-semibold text-slate-800">{device.telemetry.temperature_c}%</span>
+              </div>
+            </div>
+          ) : (
+            <div className="text-xs text-slate-400 italic">Chưa có dữ liệu telemetry</div>
+          )}
+        </div>
+
+        {/* Command History */}
+        <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm space-y-4">
+          <h3 className="text-sm font-bold text-slate-900 border-b border-slate-100 pb-2">Lịch sử Lệnh gần nhất</h3>
+          {commandHistory.length === 0 ? (
+            <p className="text-xs text-slate-400 italic">Chưa có lệnh nào được thực thi.</p>
+          ) : (
+            <div className="space-y-2 overflow-y-auto max-h-48 text-xs pr-1">
+              {commandHistory.slice(-5).map((cmd) => (
+                <div key={cmd.command_id} className="p-2 bg-slate-50 rounded-xl border border-slate-100">
+                  <div className="flex items-center justify-between font-mono text-[11px]">
+                    <span className="font-bold text-slate-800">{cmd.command_type}</span>
+                    <span className="text-[10px] text-emerald-600 font-bold uppercase">{cmd.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Device Control Modal */}
-      <DeviceControlModal
-        device={device}
-        isOpen={isControlModalOpen}
-        onClose={() => setIsControlModalOpen(false)}
-      />
+      {/* Control Modal */}
+      {isControlModalOpen && (
+        <DeviceControlModal device={device} onClose={() => setIsControlModalOpen(false)} />
+      )}
     </div>
   );
 };

@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
+	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
@@ -65,11 +66,15 @@ func main() {
 	// Repositories & Services
 	userRepo := pgrepo.NewUserRepository(pgPool)
 	sessionRepo := redisrepo.NewSessionRepository(rdb)
+	deviceRepo := pgrepo.NewDeviceRepository(pgPool, 30, 90)
+
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
+	deviceService := devservice.NewDeviceService(deviceRepo)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
+	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
 
 	// Create Chi router
@@ -110,6 +115,13 @@ func main() {
 			r.Use(custommw.TenantMiddleware)
 
 			r.Get("/auth/session", authHandler.Session)
+
+			// Device Registry Routes (Require device.read permission)
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("device.read"))
+				r.Get("/devices", deviceHandler.List)
+				r.Get("/devices/{id}", deviceHandler.GetByID)
+			})
 
 			r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {
 				principal, _ := auth.GetPrincipal(r.Context())

@@ -25,9 +25,10 @@ export interface DeviceCapabilities {
 export interface DeviceTelemetry {
   battery: number;
   network: 'wifi' | '5g' | '4g' | 'offline';
-  orientation: 0 | 90 | 180 | 270;
+  orientation?: 0 | 90 | 180 | 270;
   cpu_usage?: number;
   ram_usage?: number;
+  temperature_c?: number;
   updated_at: string;
 }
 
@@ -35,13 +36,16 @@ export interface DeviceEntity {
   device_id: string;
   organization_id: string;
   display_name: string;
+  name?: string;
   model: string;
   android_version: string;
+  platform_version?: string;
   serial_number: string;
   status: DeviceStatus;
   capabilities: DeviceCapabilities;
   telemetry: DeviceTelemetry;
   groups: string[];
+  group_id?: string | null;
   tags: string[];
   last_seen_at: string;
   active_stream_session_id?: string;

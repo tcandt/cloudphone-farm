@@ -4,14 +4,16 @@ import { useAuth } from '../../context/AuthContext';
 import { Lock } from 'lucide-react';
 
 interface PermissionGuardProps {
-  permission: PermissionCode;
+  permission?: PermissionCode;
+  requiredPermission?: PermissionCode;
   fallback?: React.ReactNode;
   children: React.ReactNode;
 }
 
-export const PermissionGuard: React.FC<PermissionGuardProps> = ({ permission, fallback, children }) => {
+export const PermissionGuard: React.FC<PermissionGuardProps> = ({ permission, requiredPermission, fallback, children }) => {
   const { hasPermission } = useAuth();
-  const allowed = hasPermission(permission);
+  const targetPermission = (permission || requiredPermission)!;
+  const allowed = hasPermission(targetPermission);
 
   if (!allowed) {
     if (fallback !== undefined) {

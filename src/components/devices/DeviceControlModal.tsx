@@ -17,7 +17,7 @@ import {
 
 interface DeviceControlModalProps {
   device: DeviceEntity;
-  isOpen: boolean;
+  isOpen?: boolean;
   onClose: () => void;
 }
 
@@ -27,7 +27,7 @@ interface CommandLogItem {
   time: string;
 }
 
-export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, isOpen, onClose }) => {
+export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, isOpen = true, onClose }) => {
   const { session } = useAuth();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [lease, setLease] = useState<ControlLease | null>(null);

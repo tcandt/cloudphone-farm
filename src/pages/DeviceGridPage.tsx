@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Play, Maximize2 } from 'lucide-react';
-import { mockDevices } from '../data/mockData';
+import { Play, Loader2 } from 'lucide-react';
 import { DeviceEntity } from '../types';
-import { useUiStore } from '../stores/useUiStore';
 import { DeviceControlModal } from '../components/devices/DeviceControlModal';
+import { deviceService } from '../services/device-service';
 
 const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: DeviceEntity) => void }> = ({
   device,
@@ -33,7 +32,7 @@ const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: Devi
       ctx.fillRect(0, 0, w, 20);
       ctx.fillStyle = '#ffffff';
       ctx.font = '9px sans-serif';
-      ctx.fillText(`98%`, w - 30, 14);
+      ctx.fillText(`${device.telemetry?.battery ?? 98}%`, w - 30, 14);
 
       // Grid wallpaper simulation
       ctx.fillStyle = '#1e293b';
@@ -43,11 +42,11 @@ const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: Devi
       ctx.fillStyle = '#38bdf8';
       ctx.font = 'bold 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(device.display_name, w / 2, h / 2 - 10);
+      ctx.fillText(device.display_name || device.name || 'Device', w / 2, h / 2 - 10);
 
       ctx.fillStyle = '#94a3b8';
       ctx.font = '10px sans-serif';
-      ctx.fillText(`${device.model} • Android ${device.android_version}`, w / 2, h / 2 + 10);
+      ctx.fillText(`${device.model} • Android ${device.platform_version || device.android_version}`, w / 2, h / 2 + 10);
 
       // FPS badge
       ctx.fillStyle = 'rgba(34, 197, 94, 0.2)';
@@ -68,46 +67,33 @@ const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: Devi
   }, [device]);
 
   return (
-    <div className="bg-white border border-slate-100 shadow-pcp-card rounded-2xl p-3 flex flex-col space-y-2 hover:shadow-lg transition-all">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 truncate">
-          <span
-            className={`w-2 h-2 rounded-full ${
-              device.status === 'online' ? 'bg-emerald-500' : device.status === 'degraded' ? 'bg-amber-500' : 'bg-rose-500'
-            }`}
-          />
-          <span className="font-bold text-xs text-slate-900 truncate">{device.display_name}</span>
-        </div>
-        <button
-          onClick={() => onOpenControl(device)}
-          className="p-1 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-          title="Mở bảng điều khiển chi tiết"
-        >
-          <Maximize2 size={14} />
-        </button>
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-3 flex flex-col items-center shadow-lg hover:border-blue-500/50 transition-all group relative overflow-hidden">
+      {/* Tile Header */}
+      <div className="w-full flex items-center justify-between mb-2">
+        <span className="text-xs font-bold text-slate-200 truncate max-w-[110px]">
+          {device.display_name || device.name}
+        </span>
+        <span
+          className={`w-2 h-2 rounded-full ${
+            device.status === 'online' ? 'bg-emerald-500 shadow-sm shadow-emerald-500' : 'bg-slate-500'
+          }`}
+        />
       </div>
 
-      {/* Screen Tile Canvas */}
-      <div className="relative rounded-xl overflow-hidden bg-slate-950 aspect-[9/16] flex items-center justify-center">
-        <canvas ref={canvasRef} width={180} height={320} className="w-full h-full object-cover" />
+      {/* Screen Canvas Container */}
+      <div className="relative w-full aspect-[9/16] bg-slate-950 rounded-xl overflow-hidden border border-slate-800/80">
+        <canvas ref={canvasRef} width={180} height={320} className="w-full h-full object-contain" />
 
-        {/* Hover overlay button */}
-        <div className="absolute inset-0 bg-slate-900/40 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center p-2">
+        {/* Hover Overlay Actions */}
+        <div className="absolute inset-0 bg-slate-950/70 backdrop-blur-xs opacity-0 group-hover:opacity-100 flex flex-col items-center justify-center gap-2 transition-all">
           <button
             onClick={() => onOpenControl(device)}
-            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-lg flex items-center gap-1.5 active:scale-95"
+            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-md flex items-center gap-1.5"
           >
-            <Play size={14} /> Điều khiển
+            <Play className="w-3.5 h-3.5" />
+            <span>Điều khiển</span>
           </button>
         </div>
-      </div>
-
-      {/* Footer Specs */}
-      <div className="flex items-center justify-between text-[10px] text-slate-500 font-semibold pt-1 border-t border-slate-100">
-        <span>{device.telemetry.battery}% ⚡</span>
-        <span className="uppercase">{device.telemetry.network}</span>
-        <span className="text-emerald-600 font-bold">18ms</span>
       </div>
     </div>
   );
@@ -115,66 +101,71 @@ const DeviceGridTile: React.FC<{ device: DeviceEntity; onOpenControl: (dev: Devi
 
 export const DeviceGridPage: React.FC = () => {
   const { t } = useTranslation();
-  const { gridColumns, setGridColumns } = useUiStore();
   const [activeControlDevice, setActiveControlDevice] = useState<DeviceEntity | null>(null);
+  const [devices, setDevices] = useState<DeviceEntity[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const getGridClass = () => {
-    switch (gridColumns) {
-      case 2:
-        return 'grid-cols-1 sm:grid-cols-2';
-      case 4:
-        return 'grid-cols-2 sm:grid-cols-4';
-      case 5:
-        return 'grid-cols-2 sm:grid-cols-5';
-      case 3:
-      default:
-        return 'grid-cols-1 sm:grid-cols-3';
-    }
-  };
+  useEffect(() => {
+    let isMounted = true;
+
+    deviceService
+      .list()
+      .then((res) => {
+        if (isMounted) {
+          setDevices(res.items);
+          setLoading(false);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          setError(err.message || 'Failed to load devices');
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
-      {/* Title & Grid Selector */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+      {/* Title Bar */}
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">{t('deviceGrid.title')}</h1>
           <p className="text-xs text-slate-500 font-medium">
-            Quan sát đồng thời nhiều màn hình thiết bị Android với độ trễ thấp
+            Xem trực tiếp ma trận màn hình nhiều thiết bị trong một chế độ quan sát duy nhất
           </p>
         </div>
+      </div>
 
-        {/* Grid Column Selector */}
-        <div className="flex items-center gap-1 bg-white border border-slate-100 p-1.5 rounded-2xl shadow-sm">
-          {[2, 3, 4, 5].map((cols) => (
-            <button
-              key={cols}
-              onClick={() => setGridColumns(cols)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${
-                gridColumns === cols
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'text-slate-600 hover:bg-slate-100'
-              }`}
-            >
-              {cols}x{cols}
-            </button>
+      {/* Grid Container */}
+      {loading ? (
+        <div className="p-16 text-center text-slate-400 font-medium flex items-center justify-center gap-2 bg-white rounded-2xl border border-slate-200">
+          <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+          <span>Đang tải màn hình ma trận thiết bị...</span>
+        </div>
+      ) : error ? (
+        <div className="p-16 text-center text-rose-500 font-medium bg-white rounded-2xl border border-slate-200">
+          Lỗi tải dữ liệu: {error}
+        </div>
+      ) : devices.length === 0 ? (
+        <div className="p-16 text-center text-slate-400 font-medium bg-white rounded-2xl border border-slate-200">
+          Không có thiết bị nào khả dụng.
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          {devices.map((dev) => (
+            <DeviceGridTile key={dev.device_id} device={dev} onOpenControl={setActiveControlDevice} />
           ))}
         </div>
-      </div>
-
-      {/* Grid Canvas Tiles */}
-      <div className={`grid gap-4 ${getGridClass()}`}>
-        {mockDevices.map((dev) => (
-          <DeviceGridTile key={dev.device_id} device={dev} onOpenControl={(d) => setActiveControlDevice(d)} />
-        ))}
-      </div>
+      )}
 
       {/* Control Modal */}
       {activeControlDevice && (
-        <DeviceControlModal
-          device={activeControlDevice}
-          isOpen={!!activeControlDevice}
-          onClose={() => setActiveControlDevice(null)}
-        />
+        <DeviceControlModal device={activeControlDevice} onClose={() => setActiveControlDevice(null)} />
       )}
     </div>
   );
