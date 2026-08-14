@@ -17,12 +17,16 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.DisplayMetrics
 import android.util.Log
+import android.view.Display
 import android.view.Surface
+import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
@@ -39,6 +43,8 @@ class MediaCaptureService : Service() {
     private var currentHeight = 1280
     private var currentBitrate = 2_500_000
     private var currentFps = 30
+
+    private var displayListener: DisplayManager.DisplayListener? = null
 
     companion object {
         private const val TAG = "MediaCaptureService"
@@ -68,6 +74,7 @@ class MediaCaptureService : Service() {
             stopSelf()
         }
 
+        // Available on API 34+
         override fun onCapturedContentResize(width: Int, height: Int) {
             Log.i(TAG, "MediaProjection.Callback.onCapturedContentResize triggered -> ${width}x${height}")
             if (width > 0 && height > 0 && (width != currentWidth || height != currentHeight)) {
@@ -172,6 +179,9 @@ class MediaCaptureService : Service() {
             mediaProjection?.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
             Log.i(TAG, "Registered MediaProjection.Callback successfully")
 
+            // Register DisplayListener Fallback for Android 8.0 - 13 (API 26..33)
+            setupDisplayListenerFallback()
+
             // Setup MediaCodec H.264 AVC Encoder
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -211,6 +221,46 @@ class MediaCaptureService : Service() {
         }
     }
 
+    private fun setupDisplayListenerFallback() {
+        try {
+            val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+            displayListener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+                override fun onDisplayChanged(displayId: Int) {
+                    val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val defaultDisplay = windowManager.defaultDisplay ?: return
+                    if (displayId == defaultDisplay.displayId) {
+                        val metrics = DisplayMetrics()
+                        defaultDisplay.getRealMetrics(metrics)
+                        val w = metrics.widthPixels
+                        val h = metrics.heightPixels
+                        if (w > 0 && h > 0 && (w != currentWidth || h != currentHeight)) {
+                            Log.i(TAG, "DisplayListener (API 26-33 Fallback) detected rotation: ${currentWidth}x${currentHeight} -> ${w}x${h}")
+                            reconfigureEncoderForNewResolution(w, h)
+                        }
+                    }
+                }
+            }
+            displayManager.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+            Log.i(TAG, "Registered DisplayListener Fallback for API 26-33 rotation events")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register DisplayListener fallback: ${e.message}")
+        }
+    }
+
+    private fun unregisterDisplayListenerFallback() {
+        try {
+            if (displayListener != null) {
+                val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                displayManager.unregisterDisplayListener(displayListener)
+                displayListener = null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering DisplayListener fallback: ${e.message}")
+        }
+    }
+
     private fun reconfigureEncoderForNewResolution(newWidth: Int, newHeight: Int) {
         if (newWidth <= 0 || newHeight <= 0) return
         if (currentWidth == newWidth && currentHeight == newHeight) return
@@ -220,11 +270,12 @@ class MediaCaptureService : Service() {
         currentHeight = newHeight
 
         try {
-            // 1. Stop current encoder thread loop
+            // 1. Stop current encoder thread loop safely with cancelAndJoin()
             isEncoderRunning = false
             runBlocking {
-                encoderThreadJob?.cancel()
+                val oldJob = encoderThreadJob
                 encoderThreadJob = null
+                oldJob?.cancelAndJoin()
             }
 
             // 2. Release old surface and old encoder
@@ -323,8 +374,13 @@ class MediaCaptureService : Service() {
 
     private fun stopMediaProjectionEncoder(stopProjection: Boolean) {
         isEncoderRunning = false
-        encoderThreadJob?.cancel()
-        encoderThreadJob = null
+        runBlocking {
+            val oldJob = encoderThreadJob
+            encoderThreadJob = null
+            oldJob?.cancelAndJoin()
+        }
+
+        unregisterDisplayListenerFallback()
 
         try {
             virtualDisplay?.release()

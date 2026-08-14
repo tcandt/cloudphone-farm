@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 
 enum class ScreenCaptureState {
     IDLE,
@@ -64,6 +65,18 @@ object ScreenCaptureManager {
         // If in CONSENT_REQUIRED state for same session, retain request generation without duplicate notifications
         if (currentState == ScreenCaptureState.CONSENT_REQUIRED && activeSessionId == sessionId) {
             Log.i(TAG, "Screen capture consent prompt already pending for SessionID=$sessionId")
+            return
+        }
+
+        // Check Notification Permission on Android 13+ (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !NotificationManagerCompat.from(context).areNotificationsEnabled()
+        ) {
+            Log.w(TAG, "Notification permission denied on Android 13+. Failing capture request for SessionID=$sessionId")
+            currentState = ScreenCaptureState.FAILED
+            sessionListener?.onSessionFailed(sessionId, "notification_permission_required")
+            clearToken()
+            currentState = ScreenCaptureState.IDLE
             return
         }
 
