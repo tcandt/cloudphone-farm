@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
@@ -39,22 +40,9 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, errors.New("postgres connection pool uninitialized")
 	}
 
+	// 1. Mandatory Idempotency Key Validation (No auto-generation)
 	if req.IdempotencyKey == "" {
-		req.IdempotencyKey = fmt.Sprintf("idemp_%s", uuid.New().String()[:12])
-	}
-
-	// 1. Check Idempotency Store in PostgreSQL before starting new dispatch
-	existingQuery := `
-		SELECT command_id, device_id, organization_id, actor_id, command_type, status, created_at
-		FROM commands
-		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
-	`
-	var existing domain.DeviceCommand
-	err := s.pool.QueryRow(ctx, existingQuery, orgID, userID, req.IdempotencyKey).Scan(&existing.CommandID, &existing.DeviceID, &existing.OrganizationID, &existing.ActorID, &existing.CommandType, &existing.Status, &existing.CreatedAt)
-	if err == nil {
-		return &existing, nil // Idempotent return of pre-existing command
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("failed to query idempotency key: %w", err)
+		return nil, domain.ErrIdempotencyKeyRequired
 	}
 
 	// 2. Strict Input Command Payload Validation
@@ -68,29 +56,29 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		if !hasX || !hasY {
 			return nil, errors.New("missing x or y coordinate in gesture.touch payload")
 		}
-		if _, isNumX := xVal.(float64); !isNumX {
-			if _, isIntX := xVal.(int); !isIntX {
-				return nil, errors.New("coordinate x must be a valid number")
-			}
+		xNum, isXNum := parseNumber(xVal)
+		yNum, isYNum := parseNumber(yVal)
+		if !isXNum || xNum < 0 {
+			return nil, errors.New("coordinate x must be a number >= 0")
 		}
-		if _, isNumY := yVal.(float64); !isNumY {
-			if _, isIntY := yVal.(int); !isIntY {
-				return nil, errors.New("coordinate y must be a valid number")
-			}
+		if !isYNum || yNum < 0 {
+			return nil, errors.New("coordinate y must be a number >= 0")
 		}
 
 	case "gesture.swipe":
 		if req.Payload == nil {
 			return nil, errors.New("missing payload for gesture.swipe")
 		}
-		for _, key := range []string{"startX", "startY", "endX", "endY"} {
-			if _, ok := req.Payload[key]; !ok {
-				return nil, fmt.Errorf("missing %s in gesture.swipe payload", key)
+		for _, key := range []string{"startX", "startY", "endX", "endY", "durationMs"} {
+			val, ok := req.Payload[key]
+			if !ok {
+				return nil, fmt.Errorf("missing required %s in gesture.swipe payload", key)
 			}
-		}
-		if dur, ok := req.Payload["durationMs"]; ok {
-			durFloat, isNum := dur.(float64)
-			if !isNum || durFloat < 50 || durFloat > 5000 {
+			numVal, isNum := parseNumber(val)
+			if !isNum || numVal < 0 {
+				return nil, fmt.Errorf("%s must be a number >= 0", key)
+			}
+			if key == "durationMs" && (numVal < 50 || numVal > 5000) {
 				return nil, errors.New("durationMs must be a number between 50ms and 5000ms")
 			}
 		}
@@ -155,6 +143,12 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'pending', $7, $8, $9)
 	`
 	if _, err := tx.Exec(ctx, insertCmdSQL, cmdID, orgID, req.DeviceID, userID, req.Type, string(payloadBytes), req.IdempotencyKey, expiresAt, now); err != nil {
+		// Check PostgreSQL Unique Violation Error Code 23505
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			// Query existing command for idempotency lookup & collision check
+			return s.handleExistingIdempotency(ctx, orgID, userID, req)
+		}
 		return nil, fmt.Errorf("failed to insert command into postgres: %w", err)
 	}
 
@@ -172,7 +166,7 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, fmt.Errorf("failed to insert command event: %w", err)
 	}
 
-	// Insert into command_outbox table (Corrected BIGSERIAL outbox_id and event_type column)
+	// Insert into command_outbox table
 	insertOutboxSQL := `
 		INSERT INTO command_outbox (command_id, organization_id, device_id, event_type, payload, status, created_at)
 		VALUES ($1, $2, $3, 'command.dispatch', $4::jsonb, 'pending', $5)
@@ -191,7 +185,69 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		OrganizationID: orgID,
 		ActorID:        userID,
 		CommandType:    req.Type,
+		Payload:        req.Payload,
 		Status:         "pending",
 		CreatedAt:      now,
 	}, nil
+}
+
+func (s *CommandService) handleExistingIdempotency(ctx context.Context, orgID, userID string, req DispatchRequest) (*domain.DeviceCommand, error) {
+	query := `
+		SELECT command_id, device_id, organization_id, actor_id, command_type, payload, status, created_at
+		FROM commands
+		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
+	`
+	var existing domain.DeviceCommand
+	var rawPayload []byte
+	err := s.pool.QueryRow(ctx, query, orgID, userID, req.IdempotencyKey).Scan(
+		&existing.CommandID,
+		&existing.DeviceID,
+		&existing.OrganizationID,
+		&existing.ActorID,
+		&existing.CommandType,
+		&rawPayload,
+		&existing.Status,
+		&existing.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query existing idempotent command: %w", err)
+	}
+
+	// Unmarshal existing payload to check parameters match
+	var existingPayload map[string]interface{}
+	_ = json.Unmarshal(rawPayload, &existingPayload)
+
+	// Check device_id, type match
+	if existing.DeviceID != req.DeviceID || existing.CommandType != req.Type {
+		return nil, domain.ErrIdempotencyConflict
+	}
+
+	// Verify request payload keys match (ignoring system-added lease & fencing token)
+	for k, v := range req.Payload {
+		if k == "control_lease_id" || k == "fencing_token" {
+			continue
+		}
+		existingVal, ok := existingPayload[k]
+		if !ok || !reflect.DeepEqual(fmt.Sprintf("%v", v), fmt.Sprintf("%v", existingVal)) {
+			return nil, domain.ErrIdempotencyConflict
+		}
+	}
+
+	existing.Payload = existingPayload
+	return &existing, nil
+}
+
+func parseNumber(val interface{}) (float64, bool) {
+	switch v := val.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	default:
+		return 0, false
+	}
 }

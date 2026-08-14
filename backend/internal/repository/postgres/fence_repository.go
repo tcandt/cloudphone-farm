@@ -44,7 +44,7 @@ func (r *FenceRepository) IncrementFencingToken(ctx context.Context, orgID, devi
 // InsertLeaseAudit records historical audit trail of acquired control leases in PostgreSQL
 func (r *FenceRepository) InsertLeaseAudit(ctx context.Context, lease *domain.ControlLease) error {
 	if r.pool == nil {
-		return nil
+		return errors.New("postgres connection pool uninitialized")
 	}
 
 	query := `
@@ -64,7 +64,7 @@ func (r *FenceRepository) InsertLeaseAudit(ctx context.Context, lease *domain.Co
 // UpdateLeaseAuditExpiry updates expires_at for lease renewal audit trail in PostgreSQL
 func (r *FenceRepository) UpdateLeaseAuditExpiry(ctx context.Context, leaseID string, expiresAt time.Time) error {
 	if r.pool == nil {
-		return nil
+		return errors.New("postgres connection pool uninitialized")
 	}
 
 	query := `UPDATE control_leases SET expires_at = $1 WHERE control_lease_id = $2`
@@ -79,7 +79,7 @@ func (r *FenceRepository) UpdateLeaseAuditExpiry(ctx context.Context, leaseID st
 // RevokeLeaseAudit records revoked_at timestamp when lease is released
 func (r *FenceRepository) RevokeLeaseAudit(ctx context.Context, leaseID string) error {
 	if r.pool == nil {
-		return nil
+		return errors.New("postgres connection pool uninitialized")
 	}
 
 	query := `UPDATE control_leases SET revoked_at = CURRENT_TIMESTAMP WHERE control_lease_id = $1`

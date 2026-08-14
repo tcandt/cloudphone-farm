@@ -3,6 +3,7 @@ package device
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,8 +52,12 @@ func (s *LeaseService) AcquireLease(ctx context.Context, orgID, deviceID, userID
 		return nil, err
 	}
 
-	// 3. Persist historical audit record in PostgreSQL
-	_ = s.fenceRepo.InsertLeaseAudit(ctx, lease)
+	// 3. Persist historical audit record in PostgreSQL (Compensates Redis if audit fails)
+	if err := s.fenceRepo.InsertLeaseAudit(ctx, lease); err != nil {
+		slog.Error("Failed to record control lease audit in PostgreSQL, compensating Redis lease", "err", err, "lease_id", leaseID)
+		_ = s.leaseRepo.ReleaseLease(ctx, orgID, deviceID, leaseID, userID, fencingToken)
+		return nil, fmt.Errorf("failed to record control lease audit: %w", err)
+	}
 
 	return lease, nil
 }
@@ -73,7 +78,10 @@ func (s *LeaseService) RenewLease(ctx context.Context, orgID, deviceID, leaseID,
 	}
 
 	// Update historical audit record expiry in PostgreSQL
-	_ = s.fenceRepo.UpdateLeaseAuditExpiry(ctx, leaseID, renewedLease.ExpiresAt)
+	if err := s.fenceRepo.UpdateLeaseAuditExpiry(ctx, leaseID, renewedLease.ExpiresAt); err != nil {
+		slog.Error("Failed to update control lease audit expiry", "err", err, "lease_id", leaseID)
+		return nil, fmt.Errorf("failed to update lease audit expiry: %w", err)
+	}
 
 	return renewedLease, nil
 }
@@ -93,7 +101,10 @@ func (s *LeaseService) ReleaseLease(ctx context.Context, orgID, deviceID, leaseI
 	}
 
 	// Mark historical audit record revoked_at in PostgreSQL
-	_ = s.fenceRepo.RevokeLeaseAudit(ctx, leaseID)
+	if err := s.fenceRepo.RevokeLeaseAudit(ctx, leaseID); err != nil {
+		slog.Error("Failed to revoke control lease audit record", "err", err, "lease_id", leaseID)
+		return fmt.Errorf("failed to revoke lease audit record: %w", err)
+	}
 
 	return nil
 }

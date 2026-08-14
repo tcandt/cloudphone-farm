@@ -76,7 +76,13 @@ func (d *OutboxDispatcher) processBatch(ctx context.Context) {
 func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo.OutboxMessage) {
 	// 1. Fetch Command Record to check TTL / expiration and payload
 	cmdRec, err := d.cmdRepo.GetCommandByID(ctx, msg.CommandID)
-	if err == nil && cmdRec != nil && time.Now().After(cmdRec.ExpiresAt) {
+	if err != nil || cmdRec == nil {
+		slog.Error("Failed to fetch command record from DB, skipping dispatch for retry", "err", err, "command_id", msg.CommandID)
+		_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, "DB query error fetching command", time.Now().Add(1*time.Second))
+		return
+	}
+
+	if time.Now().After(cmdRec.ExpiresAt) {
 		slog.Warn("Command expired before outbox dispatch", "command_id", msg.CommandID, "expires_at", cmdRec.ExpiresAt)
 		_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "command TTL expired before dispatch")
 		_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "expired", "command TTL expired before dispatch", 0)
@@ -88,7 +94,7 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 	if len(msg.PayloadJSON) > 0 {
 		_ = json.Unmarshal(msg.PayloadJSON, &rawPayload)
 	}
-	if rawPayload == nil && cmdRec != nil && len(cmdRec.PayloadJSON) > 0 {
+	if rawPayload == nil && len(cmdRec.PayloadJSON) > 0 {
 		_ = json.Unmarshal(cmdRec.PayloadJSON, &rawPayload)
 	}
 
@@ -111,15 +117,12 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 	dispatchPayload := agentws.CommandDispatchPayload{
 		CommandID:    msg.CommandID,
 		DeviceID:     msg.DeviceID,
-		CommandType:  "gesture.touch",
+		CommandType:  cmdRec.CommandType,
 		Payload:      rawPayload,
 		ControlLease: controlLeaseID,
 		FencingToken: fencingToken,
 		IssuedAt:     msg.CreatedAt.UTC().Format(time.RFC3339),
-	}
-	if cmdRec != nil {
-		dispatchPayload.CommandType = cmdRec.CommandType
-		dispatchPayload.ExpiresAt = cmdRec.ExpiresAt.UTC().Format(time.RFC3339)
+		ExpiresAt:    cmdRec.ExpiresAt.UTC().Format(time.RFC3339),
 	}
 
 	env, err := agentws.NewWSEnvelope(agentws.MessageTypeCommandDispatch, fmt.Sprintf("msg_%d", time.Now().UnixNano()), dispatchPayload)
@@ -148,7 +151,6 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 	}
 
 	// 4. Dispatch Succeeded -> Mark Outbox as Dispatched
-	// (CRITICAL CORRECTNESS FIX: Outbox dispatched DOES NOT update commands.status to ack!)
 	slog.Info("Successfully dispatched outbox command to Agent WS Hub", "command_id", msg.CommandID, "device_id", msg.DeviceID)
 	_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
 }

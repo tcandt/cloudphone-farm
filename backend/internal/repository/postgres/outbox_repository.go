@@ -28,7 +28,7 @@ func NewOutboxRepository(pool *pgxpool.Pool) *OutboxRepository {
 	return &OutboxRepository{pool: pool}
 }
 
-// ClaimPendingOutboxMessages claims pending or stale claimed outbox messages using FOR UPDATE SKIP LOCKED
+// ClaimPendingOutboxMessages claims pending, stale claimed, or un-ACKed dispatched outbox messages
 func (r *OutboxRepository) ClaimPendingOutboxMessages(ctx context.Context, workerID string, limit int) ([]OutboxMessage, error) {
 	if r.pool == nil {
 		return nil, errors.New("postgres connection pool uninitialized")
@@ -41,11 +41,14 @@ func (r *OutboxRepository) ClaimPendingOutboxMessages(ctx context.Context, worke
 	defer tx.Rollback(ctx)
 
 	selectQuery := `
-		SELECT outbox_id, command_id, device_id, organization_id, payload, status, attempt_count, created_at
-		FROM command_outbox
-		WHERE (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP))
-		   OR (status = 'claimed' AND locked_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')
-		ORDER BY created_at ASC
+		SELECT co.outbox_id, co.command_id, co.device_id, co.organization_id, co.payload, co.status, co.attempt_count, co.created_at
+		FROM command_outbox co
+		WHERE (co.status = 'pending' AND (co.next_attempt_at IS NULL OR co.next_attempt_at <= CURRENT_TIMESTAMP))
+		   OR (co.status = 'claimed' AND co.locked_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')
+		   OR (co.status = 'dispatched' AND co.dispatched_at < CURRENT_TIMESTAMP - INTERVAL '3 seconds' AND EXISTS (
+		       SELECT 1 FROM commands c WHERE c.command_id = co.command_id AND c.status = 'pending' AND c.expires_at > CURRENT_TIMESTAMP
+		   ))
+		ORDER BY co.created_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1
 	`
@@ -89,7 +92,7 @@ func (r *OutboxRepository) ClaimPendingOutboxMessages(ctx context.Context, worke
 	return messages, nil
 }
 
-// UpdateOutboxDispatched marks outbox message as dispatched (server dispatched to WS hub, command execution pending ACK)
+// UpdateOutboxDispatched marks outbox message as dispatched (server dispatched to WS hub, awaiting Android ACK)
 func (r *OutboxRepository) UpdateOutboxDispatched(ctx context.Context, outboxID string) error {
 	if r.pool == nil {
 		return errors.New("postgres connection pool uninitialized")

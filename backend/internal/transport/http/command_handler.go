@@ -38,6 +38,14 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 
 	cmd, err := h.cmdService.DispatchCommand(r.Context(), principal.OrganizationID, principal.UserID, req)
 	if err != nil {
+		if errors.Is(err, domain.ErrIdempotencyKeyRequired) {
+			writeJSONError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", err.Error())
+			return
+		}
+		if errors.Is(err, domain.ErrIdempotencyConflict) {
+			writeJSONError(w, http.StatusConflict, "IDEMPOTENCY_KEY_CONFLICT", err.Error())
+			return
+		}
 		if errors.Is(err, domain.ErrUnauthorizedCommand) {
 			writeJSONError(w, http.StatusForbidden, "COMMAND_NOT_PERMITTED", err.Error())
 			return
@@ -51,6 +59,6 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted) // 202 Accepted as specified in contract
+	w.WriteHeader(http.StatusAccepted) // 202 Accepted
 	_ = json.NewEncoder(w).Encode(cmd)
 }
