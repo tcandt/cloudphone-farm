@@ -185,7 +185,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	createdBytes, _ := json.Marshal(createdEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
 
-	// 7. Dispatch media.session.start to Device Agent via Hub
+	// 7. Dispatch media.session.start to Device Agent via Fenced Session Dispatch
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -197,7 +197,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	startEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStart, "msg_start_01", startPayload)
 	startBytes, _ := json.Marshal(startEnv)
 
-	if err := h.hub.DispatchToDevice(orgID, deviceID, startBytes); err != nil {
+	if err := h.hub.DispatchToMediaSession(sessionID, startBytes); err != nil {
 		slog.Warn("Device agent not connected or failed to receive media.session.start", "device_id", deviceID, "error", err)
 		errPayload := map[string]interface{}{"session_id": sessionID, "status": "failed", "error_message": err.Error()}
 		errEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeError, "err_01", errPayload)
@@ -210,7 +210,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Expiry Timer: Auto-close session when expiresAt is reached
+	// Expiry Timer: Immediate stop & close when TTL expires
 	expiryTimer := time.NewTimer(time.Until(expiresAt))
 	defer expiryTimer.Stop()
 
@@ -220,11 +220,18 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			return
 		case <-expiryTimer.C:
 			slog.Info("Media session reached TTL expiration. Forcefully closing session.", "session_id", sessionID)
+			stopPayload := map[string]interface{}{"session_id": sessionID, "reason": "session_ttl_expired"}
+			stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_ttl_stop", stopPayload)
+			stopBytes, _ := json.Marshal(stopEnv)
+			_ = h.hub.DispatchToMediaSession(sessionID, stopBytes)
+
+			_ = conn.SetReadDeadline(time.Now())
+			_ = conn.Close()
 			cancel()
 		}
 	}()
 
-	// Goroutine 1: Relay messages from Browser -> Device Agent (Fail-closed session_id & expiry validation)
+	// Goroutine 1: Relay messages from Browser -> Device Agent via Fenced Media Session Dispatch
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -267,11 +274,11 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 			switch env.Type {
 			case agentws.MessageTypeMediaSignalOffer, agentws.MessageTypeMediaSignalCandidate, agentws.MessageTypeMediaSessionStop:
-				// Dispatch Browser Offer/Candidate directly to Device Agent Connection
-				if err := h.hub.DispatchToDevice(orgID, deviceID, message); err != nil {
-					slog.Warn("Failed to dispatch browser media signal to device agent", "type", env.Type, "error", err)
+				// Fenced Dispatch: Verify exact Agent Connection Snapshot
+				if err := h.hub.DispatchToMediaSession(sessionID, message); err != nil {
+					slog.Warn("Failed to dispatch fenced browser media signal to device agent", "type", env.Type, "error", err)
 				} else {
-					slog.Info("Dispatched browser media signal to device agent", "type", env.Type, "session_id", sessionID)
+					slog.Info("Dispatched fenced browser media signal to device agent", "type", env.Type, "session_id", sessionID)
 				}
 			}
 		}
@@ -313,6 +320,6 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	stopPayload := map[string]interface{}{"session_id": sessionID}
 	stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_stop_01", stopPayload)
 	stopBytes, _ := json.Marshal(stopEnv)
-	_ = h.hub.DispatchToDevice(orgID, deviceID, stopBytes)
+	_ = h.hub.DispatchToMediaSession(sessionID, stopBytes)
 	slog.Info("Browser Media Session closed cleanly", "session_id", sessionID)
 }

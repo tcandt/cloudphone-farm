@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	ErrDeviceNotConnected        = errors.New("device agent is not connected to WebSocket hub")
-	ErrBufferOverflow            = errors.New("connection send channel buffer overflow")
-	ErrSessionNotFound           = errors.New("media session subscriber not found")
-	ErrUnauthorizedMediaSession  = errors.New("unauthorized media session relay attempt")
+	ErrDeviceNotConnected       = errors.New("device agent is not connected to WebSocket hub")
+	ErrBufferOverflow           = errors.New("connection send channel buffer overflow")
+	ErrSessionNotFound          = errors.New("media session subscriber not found")
+	ErrUnauthorizedMediaSession = errors.New("unauthorized media session relay attempt")
 )
 
 type MediaSession struct {
@@ -108,6 +108,45 @@ func (h *Hub) DispatchToDevice(orgID, deviceID string, data []byte) error {
 		slog.Error("Disconnecting slow agent consumer due to send buffer overflow", "device_key", key, "connection_id", conn.ConnectionID)
 		go conn.Close()
 		return fmt.Errorf("%w: device %s buffer full", ErrBufferOverflow, key)
+	}
+}
+
+func (h *Hub) DispatchToMediaSession(sessionID string, data []byte) error {
+	h.mu.RLock()
+	session, sessionExists := h.mediaSessions[sessionID]
+	if !sessionExists || session == nil {
+		h.mu.RUnlock()
+		return ErrSessionNotFound
+	}
+
+	if time.Now().After(session.ExpiresAt) {
+		h.mu.RUnlock()
+		return errors.New("media session expired")
+	}
+
+	key := DeviceKey(session.OrganizationID, session.DeviceID)
+	conn, connExists := h.connections[key]
+	h.mu.RUnlock()
+
+	if !connExists || conn == nil {
+		return ErrDeviceNotConnected
+	}
+
+	// Connection Fencing: Verify Agent identity, connection ID, and generation match media session snapshot
+	if conn.AgentID != session.AgentID || conn.ConnectionID != session.ConnectionID || conn.Generation != session.Generation {
+		slog.Warn("Stale connection generation fencing mismatch for media session dispatch. Dropping.",
+			"session_id", sessionID,
+			"sess_conn_id", session.ConnectionID, "curr_conn_id", conn.ConnectionID,
+			"sess_gen", session.Generation, "curr_gen", conn.Generation)
+		return ErrUnauthorizedMediaSession
+	}
+
+	select {
+	case conn.Send <- data:
+		return nil
+	default:
+		slog.Error("Media dispatch failed due to agent send channel buffer full", "session_id", sessionID)
+		return ErrBufferOverflow
 	}
 }
 

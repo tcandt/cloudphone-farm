@@ -228,6 +228,11 @@ class AgentWebSocketClient(
         val sessionId = payload.optString("session_id")
         Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
+        if (sessionId.isNotEmpty() && ScreenCaptureManager.getActiveSessionId().isNotEmpty() && sessionId != ScreenCaptureManager.getActiveSessionId()) {
+            Log.w(TAG, "Ignoring stale media.session.stop request ($sessionId vs active ${ScreenCaptureManager.getActiveSessionId()})")
+            return
+        }
+
         pendingIceServersJson = null
         webRtcManager?.closeSession()
         ScreenCaptureManager.stopCapture(context)
