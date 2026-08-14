@@ -121,6 +121,13 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 		ON CONFLICT DO NOTHING
 	`, orgID)
 
+	// Insert user (foreign key dependency for control_leases)
+	_, _ = pool.Exec(ctx, `
+		INSERT INTO users (user_id, email, password_hash, display_name)
+		VALUES ($1, 'operator@example.com', 'hash123', 'Test Operator')
+		ON CONFLICT DO NOTHING
+	`, userID)
+
 	_, err = pool.Exec(ctx, `
 		INSERT INTO devices (device_id, organization_id, status, name, serial_number, model, platform_version)
 		VALUES ($1, $2, 'online', 'Integration Device', 'SN12345', 'Samsung S7', '11.0')
@@ -130,8 +137,8 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO control_leases (control_lease_id, device_id, organization_id, user_id, user_display_name, fencing_token, expires_at)
-		VALUES ($1, $2, $3, $4, 'Test Operator', 1, NOW() + INTERVAL '1 hour')
+		INSERT INTO control_leases (control_lease_id, device_id, organization_id, user_id, fencing_token, expires_at)
+		VALUES ($1, $2, $3, $4, 1, NOW() + INTERVAL '1 hour')
 	`, leaseID, deviceID, orgID, userID)
 	if err != nil {
 		t.Fatalf("failed to insert test lease: %v", err)
