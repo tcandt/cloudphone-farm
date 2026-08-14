@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.Surface
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,7 @@ class MediaCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var mediaCodec: MediaCodec? = null
+    private var encoderInputSurface: Surface? = null
     private var encoderThreadJob: Job? = null
     private var isEncoderRunning = false
 
@@ -42,6 +44,7 @@ class MediaCaptureService : Service() {
 
         const val ACTION_START_CAPTURE = "com.tcandt.cloudphone.agent.media.START_CAPTURE"
         const val ACTION_STOP_CAPTURE = "com.tcandt.cloudphone.agent.media.STOP_CAPTURE"
+        const val ACTION_UPDATE_RESOLUTION = "com.tcandt.cloudphone.agent.media.UPDATE_RESOLUTION"
 
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
@@ -90,10 +93,16 @@ class MediaCaptureService : Service() {
                     ScreenCaptureManager.onEncoderFailed("Invalid MediaProjection token result")
                 }
             }
+            ACTION_UPDATE_RESOLUTION -> {
+                val newWidth = intent.getIntExtra(EXTRA_WIDTH, currentWidth)
+                val newHeight = intent.getIntExtra(EXTRA_HEIGHT, currentHeight)
+                updateVirtualDisplayResolution(newWidth, newHeight)
+            }
             ACTION_STOP_CAPTURE -> {
                 stopMediaProjectionEncoder(stopProjection = true)
                 stopForeground(true)
                 stopSelf()
+                ScreenCaptureManager.onServiceStoppedFully("", "operator_requested")
             }
         }
 
@@ -163,7 +172,7 @@ class MediaCaptureService : Service() {
                 configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             }
 
-            val inputSurface = mediaCodec!!.createInputSurface()
+            encoderInputSurface = mediaCodec!!.createInputSurface()
             mediaCodec!!.start()
 
             // Create VirtualDisplay feeding into MediaCodec Surface
@@ -174,7 +183,7 @@ class MediaCaptureService : Service() {
                 height,
                 dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                inputSurface,
+                encoderInputSurface,
                 null,
                 null
             )
@@ -190,11 +199,22 @@ class MediaCaptureService : Service() {
         }
     }
 
+    private fun updateVirtualDisplayResolution(newWidth: Int, newHeight: Int) {
+        if (virtualDisplay != null && (currentWidth != newWidth || currentHeight != newHeight)) {
+            currentWidth = newWidth
+            currentHeight = newHeight
+            val dpi = resources.displayMetrics.densityDpi
+            virtualDisplay?.resize(newWidth, newHeight, dpi)
+            Log.i(TAG, "Resized VirtualDisplay dynamically to ${newWidth}x${newHeight} without recreating MediaProjection")
+        }
+    }
+
     private fun startEncoderLoop() {
         encoderThreadJob = CoroutineScope(Dispatchers.IO).launch {
             val bufferInfo = MediaCodec.BufferInfo()
             val codec = mediaCodec ?: return@launch
-            var hasNotifiedFormat = false
+            var hasOutputFormat = false
+            var hasKeyFrame = false
 
             while (isEncoderRunning) {
                 try {
@@ -212,6 +232,10 @@ class MediaCaptureService : Service() {
                             val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
                             val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
 
+                            if (isKeyFrame) {
+                                hasKeyFrame = true
+                            }
+
                             val frame = EncodedVideoFrame(
                                 data = frameData,
                                 ptsUs = bufferInfo.presentationTimeUs,
@@ -219,8 +243,8 @@ class MediaCaptureService : Service() {
                                 isCodecConfig = isCodecConfig
                             )
 
-                            if (!hasNotifiedFormat && (isKeyFrame || isCodecConfig)) {
-                                hasNotifiedFormat = true
+                            // Truthful frame readiness: Trigger CAPTURING state only when BOTH OutputFormat AND KeyFrame are produced
+                            if (hasOutputFormat && hasKeyFrame) {
                                 ScreenCaptureManager.onEncoderFormatConfirmed()
                             }
 
@@ -229,6 +253,7 @@ class MediaCaptureService : Service() {
                         codec.releaseOutputBuffer(outputBufferId, false)
                     } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val newFormat = codec.outputFormat
+                        hasOutputFormat = true
                         Log.i(TAG, "MediaCodec output format changed: $newFormat")
                         videoSink?.onFormatChanged(newFormat)
                     }
@@ -250,6 +275,9 @@ class MediaCaptureService : Service() {
             virtualDisplay?.release()
             virtualDisplay = null
 
+            encoderInputSurface?.release()
+            encoderInputSurface = null
+
             mediaCodec?.stop()
             mediaCodec?.release()
             mediaCodec = null
@@ -260,7 +288,7 @@ class MediaCaptureService : Service() {
                 mediaProjection = null
             }
 
-            Log.i(TAG, "Released MediaProjection, VirtualDisplay and MediaCodec hardware encoder")
+            Log.i(TAG, "Released MediaProjection, VirtualDisplay, encoderInputSurface and MediaCodec hardware encoder")
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing MediaProjection resources: ${e.message}")
         }
