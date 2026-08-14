@@ -4,23 +4,27 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 )
 
 type BrowserWSHandler struct {
 	browserHub     *agentws.BrowserHub
+	deviceService  *devservice.DeviceService
 	upgrader       websocket.Upgrader
 	allowedOrigins []string
 }
 
-func NewBrowserWSHandler(browserHub *agentws.BrowserHub, allowedOrigins []string) *BrowserWSHandler {
+func NewBrowserWSHandler(browserHub *agentws.BrowserHub, deviceService *devservice.DeviceService, allowedOrigins []string) *BrowserWSHandler {
 	h := &BrowserWSHandler{
 		browserHub:     browserHub,
+		deviceService:  deviceService,
 		allowedOrigins: allowedOrigins,
 	}
 	h.upgrader = websocket.Upgrader{
@@ -29,7 +33,8 @@ func NewBrowserWSHandler(browserHub *agentws.BrowserHub, allowedOrigins []string
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
 			if origin == "" {
-				return true
+				// Reject missing Origin header for browser WebSocket session cookie security
+				return false
 			}
 			for _, allowed := range allowedOrigins {
 				if allowed == "*" || strings.EqualFold(origin, allowed) {
@@ -51,11 +56,17 @@ func (h *BrowserWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	deviceID := chi.URLParam(r, "id")
 	if deviceID == "" {
-		deviceID = r.URL.Query().Get("deviceId")
-	}
-	if deviceID == "" {
 		writeJSONError(w, http.StatusBadRequest, "MISSING_DEVICE_ID", "Device ID is required in URL path /devices/{id}/events/ws")
 		return
+	}
+
+	// Verify device exists and belongs to authenticated organization
+	if h.deviceService != nil {
+		dev, err := h.deviceService.GetDeviceByID(r.Context(), deviceID)
+		if err != nil || dev == nil || dev.OrganizationID != principal.OrganizationID {
+			writeJSONError(w, http.StatusNotFound, "DEVICE_NOT_FOUND", "Device not found or unauthorized")
+			return
+		}
 	}
 
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -65,37 +76,41 @@ func (h *BrowserWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	subscriberID := uuid.New().String()
-	subscriber := &agentws.BrowserSubscriber{
-		SubscriberID:   subscriberID,
-		OrganizationID: principal.OrganizationID,
-		DeviceID:       deviceID,
-		UserID:         principal.UserID,
-		Send:           make(chan []byte, 64),
-	}
+	subscriber := agentws.NewBrowserSubscriber(subscriberID, principal.OrganizationID, deviceID, principal.UserID)
 
 	h.browserHub.Subscribe(subscriber)
 
-	// Writer loop
-	go func() {
-		defer func() {
+	var closeOnce sync.Once
+	cleanup := func() {
+		closeOnce.Do(func() {
 			h.browserHub.Unsubscribe(subscriber)
 			_ = conn.Close()
-		}()
+		})
+	}
 
-		for msg := range subscriber.Send {
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				slog.Warn("Browser event WS write failed, closing connection", "subscriber_id", subscriberID, "error", err)
+	// Writer loop
+	go func() {
+		defer cleanup()
+
+		for {
+			select {
+			case <-subscriber.Done:
 				return
+			case msg, ok := <-subscriber.Send:
+				if !ok {
+					return
+				}
+				if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					slog.Warn("Browser event WS write failed, closing connection", "subscriber_id", subscriberID, "error", err)
+					return
+				}
 			}
 		}
 	}()
 
 	// Reader loop (keep-alive ping/pong & graceful close)
 	go func() {
-		defer func() {
-			h.browserHub.Unsubscribe(subscriber)
-			_ = conn.Close()
-		}()
+		defer cleanup()
 
 		for {
 			_, _, err := conn.ReadMessage()

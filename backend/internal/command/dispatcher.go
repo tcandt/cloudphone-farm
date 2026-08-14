@@ -17,18 +17,20 @@ type OutboxDispatcher struct {
 	outboxRepo  *pgrepo.OutboxRepository
 	cmdRepo     *pgrepo.CommandRepository
 	wsHub       *agentws.Hub
+	browserHub  *agentws.BrowserHub
 	workerID    string
 	stopChan    chan struct{}
 	wg          sync.WaitGroup
 	maxAttempts int
 }
 
-func NewOutboxDispatcher(outboxRepo *pgrepo.OutboxRepository, cmdRepo *pgrepo.CommandRepository, wsHub *agentws.Hub) *OutboxDispatcher {
+func NewOutboxDispatcher(outboxRepo *pgrepo.OutboxRepository, cmdRepo *pgrepo.CommandRepository, wsHub *agentws.Hub, browserHub *agentws.BrowserHub) *OutboxDispatcher {
 	workerID := fmt.Sprintf("worker_%s", uuid.New().String()[:8])
 	return &OutboxDispatcher{
 		outboxRepo:  outboxRepo,
 		cmdRepo:     cmdRepo,
 		wsHub:       wsHub,
+		browserHub:  browserHub,
 		workerID:    workerID,
 		stopChan:    make(chan struct{}),
 		maxAttempts: 5,
@@ -74,7 +76,6 @@ func (d *OutboxDispatcher) processBatch(ctx context.Context) {
 }
 
 func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo.OutboxMessage) {
-	// 1. Fetch Command Record to check TTL / expiration and payload
 	cmdRec, err := d.cmdRepo.GetCommandByID(ctx, msg.CommandID)
 	if err != nil || cmdRec == nil {
 		slog.Error("Failed to fetch command record from DB, skipping dispatch for retry", "err", err, "command_id", msg.CommandID)
@@ -89,7 +90,6 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	// Unmarshal input parameters payload
 	var rawPayload map[string]interface{}
 	if len(msg.PayloadJSON) > 0 {
 		_ = json.Unmarshal(msg.PayloadJSON, &rawPayload)
@@ -98,7 +98,6 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		_ = json.Unmarshal(cmdRec.PayloadJSON, &rawPayload)
 	}
 
-	// Extract fencing_token and control_lease_id if present
 	var fencingToken int64
 	var controlLeaseID string
 
@@ -113,7 +112,6 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		}
 	}
 
-	// 2. Construct WS Command Dispatch Envelope
 	dispatchPayload := agentws.CommandDispatchPayload{
 		CommandID:    msg.CommandID,
 		DeviceID:     msg.DeviceID,
@@ -133,16 +131,29 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 
 	envData, _ := json.Marshal(env)
 
-	// 3. Attempt Dispatch to Agent WebSocket Hub by Tenant-scoped Device Routing
-	err = d.wsHub.DispatchToDevice(msg.OrganizationID, msg.DeviceID, envData)
+	// Snapshot active connection generation authority
+	snap, ok := d.wsHub.GetConnectionSnapshot(msg.OrganizationID, msg.DeviceID)
+	if !ok {
+		slog.Warn("Device agent not connected to hub for outbox dispatch", "device_id", msg.DeviceID, "command_id", msg.CommandID)
+		if msg.AttemptCount+1 >= d.maxAttempts {
+			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "Device offline after max attempts")
+			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
+		} else {
+			backoffSec := 1 << msg.AttemptCount
+			_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, "Device agent not connected", time.Now().Add(time.Duration(backoffSec)*time.Second))
+		}
+		return
+	}
+
+	// Dispatch to exact snapshot
+	err = d.wsHub.DispatchToConnectionSnapshot(msg.OrganizationID, msg.DeviceID, snap, envData)
 	if err != nil {
-		// Retries with exponential backoff: 1s, 2s, 4s, 8s
 		if msg.AttemptCount+1 >= d.maxAttempts {
 			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "attempts", msg.AttemptCount+1)
 			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, err.Error())
 			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
 		} else {
-			backoffSec := 1 << msg.AttemptCount // 1, 2, 4, 8...
+			backoffSec := 1 << msg.AttemptCount
 			nextAttempt := time.Now().Add(time.Duration(backoffSec) * time.Second)
 			slog.Warn("Outbox message dispatch failed, scheduling retry", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "next_attempt", nextAttempt, "error", err)
 			_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, err.Error(), nextAttempt)
@@ -150,7 +161,11 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	// 4. Dispatch Succeeded -> Mark Outbox as Dispatched
-	slog.Info("Successfully dispatched outbox command to Agent WS Hub", "command_id", msg.CommandID, "device_id", msg.DeviceID)
+	attemptNo := msg.AttemptCount + 1
+	_ = d.cmdRepo.RecordDeliveryAttempt(ctx, msg.OrganizationID, msg.CommandID, msg.DeviceID, attemptNo, snap.AgentID, snap.ConnectionID, snap.Generation)
 	_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
+
+	if d.browserHub != nil {
+		d.browserHub.BroadcastCommandDelivery(msg.OrganizationID, msg.DeviceID, msg.CommandID, "dispatched", attemptNo)
+	}
 }

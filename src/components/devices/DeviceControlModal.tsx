@@ -118,10 +118,16 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     const opClient = new OperatorEventClient(device.device_id);
     const unsub = opClient.subscribe((evt) => {
       if (evt.type === 'command.status.changed') {
-        const statusMsg = evt.error_message
-          ? `FAIL: ${evt.error_message}`
-          : evt.execution_status.toUpperCase();
-        addLog(`Cmd #${evt.command_id} [Seq #${evt.sequence}]: ${statusMsg}`);
+        const data = evt.data;
+        if (data.device_id !== device.device_id) return;
+        const statusMsg = data.error_message
+          ? `FAIL: ${data.error_message}`
+          : data.execution_status.toUpperCase();
+        addLog(`Cmd #${data.command_id} [Seq #${data.sequence}]: ${statusMsg}`);
+      } else if (evt.type === 'command.delivery.changed') {
+        const data = evt.data;
+        if (data.device_id !== device.device_id) return;
+        addLog(`Cmd #${data.command_id} DISPATCHED (Attempt #${data.attempt_count})`);
       }
     });
     opClient.connect();
@@ -138,6 +144,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
     let mounted = true;
     let unsubscribe: (() => void) | null = null;
+    let telemInterval: ReturnType<typeof setInterval> | null = null;
 
     async function initStream() {
       try {
@@ -164,14 +171,6 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             mediaClient.attach(canvasRef.current);
           }
         }
-
-        const telemInterval = setInterval(() => {
-          if (mounted && mediaClientRef.current?.getWebRtcClient?.()) {
-            setTelemetry(mediaClientRef.current.getWebRtcClient()?.getLatestTelemetry() || null);
-          }
-        }, 3000);
-
-        return () => clearInterval(telemInterval);
       } catch (err) {
         if (mounted) {
           const msg = err instanceof Error ? err.message : 'Failed to start media session';
@@ -183,8 +182,15 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
     initStream();
 
+    telemInterval = setInterval(() => {
+      if (mounted && mediaClientRef.current?.getWebRtcClient?.()) {
+        setTelemetry(mediaClientRef.current.getWebRtcClient()?.getLatestTelemetry() || null);
+      }
+    }, 3000);
+
     return () => {
       mounted = false;
+      if (telemInterval) clearInterval(telemInterval);
       unsubscribe?.();
       defaultMediaRegistry.release(viewerSessionId);
 

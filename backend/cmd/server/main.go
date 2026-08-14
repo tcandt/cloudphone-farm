@@ -81,7 +81,7 @@ func main() {
 	// Agent WebSocket Hub & Browser Event Hub & Command Outbox Dispatcher
 	wsHub := agentws.NewHub()
 	browserHub := agentws.NewBrowserHub()
-	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub)
+	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub, browserHub)
 	outboxDispatcher.Start(ctx)
 	defer outboxDispatcher.Stop()
 
@@ -98,7 +98,7 @@ func main() {
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo, browserHub)
 	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins)
-	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, cfg.CorsAllowedOrigins)
+	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, deviceService, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
 

@@ -91,6 +91,56 @@ func (h *Hub) GetConnection(orgID, deviceID string) (*Connection, bool) {
 	return conn, exists
 }
 
+type ConnectionSnapshot struct {
+	AgentID      string
+	ConnectionID string
+	Generation   int64
+}
+
+func (h *Hub) GetConnectionSnapshot(orgID, deviceID string) (ConnectionSnapshot, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	key := DeviceKey(orgID, deviceID)
+	conn, exists := h.connections[key]
+	if !exists || conn == nil {
+		return ConnectionSnapshot{}, false
+	}
+	return ConnectionSnapshot{
+		AgentID:      conn.AgentID,
+		ConnectionID: conn.ConnectionID,
+		Generation:   conn.Generation,
+	}, true
+}
+
+func (h *Hub) DispatchToConnectionSnapshot(orgID, deviceID string, snap ConnectionSnapshot, data []byte) error {
+	h.mu.RLock()
+	key := DeviceKey(orgID, deviceID)
+	conn, exists := h.connections[key]
+	h.mu.RUnlock()
+
+	if !exists || conn == nil {
+		return ErrDeviceNotConnected
+	}
+
+	if conn.AgentID != snap.AgentID || conn.ConnectionID != snap.ConnectionID || conn.Generation != snap.Generation {
+		slog.Warn("Stale connection generation fencing mismatch for command dispatch. Dropping.",
+			"device_key", key,
+			"snap_conn_id", snap.ConnectionID, "curr_conn_id", conn.ConnectionID,
+			"snap_gen", snap.Generation, "curr_gen", conn.Generation)
+		return ErrUnauthorizedMediaSession
+	}
+
+	select {
+	case conn.Send <- data:
+		return nil
+	default:
+		slog.Error("Disconnecting slow agent consumer due to command send buffer overflow", "device_key", key, "connection_id", conn.ConnectionID)
+		go conn.Close()
+		return fmt.Errorf("%w: device %s buffer full", ErrBufferOverflow, key)
+	}
+}
+
 func (h *Hub) DispatchToDevice(orgID, deviceID string, data []byte) error {
 	h.mu.RLock()
 	key := DeviceKey(orgID, deviceID)

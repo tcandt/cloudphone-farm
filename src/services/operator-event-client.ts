@@ -1,5 +1,4 @@
-export interface CommandStatusChangeEvent {
-  type: 'command.status.changed';
+export interface CommandStatusEventData {
   command_id: string;
   device_id: string;
   execution_status: string;
@@ -8,7 +7,25 @@ export interface CommandStatusChangeEvent {
   occurred_at: string;
 }
 
-export type OperatorEvent = CommandStatusChangeEvent;
+export interface CommandStatusChangeEvent {
+  type: 'command.status.changed';
+  data: CommandStatusEventData;
+}
+
+export interface CommandDeliveryEventData {
+  command_id: string;
+  device_id: string;
+  delivery_status: string;
+  attempt_count: number;
+  dispatched_at: string;
+}
+
+export interface CommandDeliveryChangeEvent {
+  type: 'command.delivery.changed';
+  data: CommandDeliveryEventData;
+}
+
+export type OperatorEvent = CommandStatusChangeEvent | CommandDeliveryChangeEvent;
 
 export class OperatorEventClient {
   private ws: WebSocket | null = null;
@@ -37,12 +54,43 @@ export class OperatorEventClient {
 
       this.ws.onmessage = (evt) => {
         try {
-          const payload = JSON.parse(evt.data) as OperatorEvent;
-          for (const l of this.listeners) {
-            try {
-              l(payload);
-            } catch (err) {
-              console.error('[OperatorEventClient] Listener error:', err);
+          const raw = JSON.parse(evt.data);
+          if (!raw || typeof raw !== 'object' || !raw.type) return;
+
+          let parsedEvent: OperatorEvent | null = null;
+
+          if (raw.type === 'command.status.changed' && raw.data) {
+            parsedEvent = {
+              type: 'command.status.changed',
+              data: {
+                command_id: String(raw.data.command_id || ''),
+                device_id: String(raw.data.device_id || ''),
+                execution_status: String(raw.data.execution_status || raw.data.status || 'ack'),
+                sequence: Number(raw.data.sequence || 0),
+                error_message: raw.data.error_message ? String(raw.data.error_message) : undefined,
+                occurred_at: String(raw.data.occurred_at || new Date().toISOString()),
+              },
+            };
+          } else if (raw.type === 'command.delivery.changed' && raw.data) {
+            parsedEvent = {
+              type: 'command.delivery.changed',
+              data: {
+                command_id: String(raw.data.command_id || ''),
+                device_id: String(raw.data.device_id || ''),
+                delivery_status: String(raw.data.delivery_status || 'dispatched'),
+                attempt_count: Number(raw.data.attempt_count || 1),
+                dispatched_at: String(raw.data.dispatched_at || new Date().toISOString()),
+              },
+            };
+          }
+
+          if (parsedEvent) {
+            for (const l of this.listeners) {
+              try {
+                l(parsedEvent);
+              } catch (err) {
+                console.error('[OperatorEventClient] Listener error:', err);
+              }
             }
           }
         } catch (err) {

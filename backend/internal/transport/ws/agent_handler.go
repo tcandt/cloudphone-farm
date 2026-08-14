@@ -140,11 +140,14 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		longLivedCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		err := h.cmdRepo.UpdateCommandStatusFromAgent(
+		err := h.cmdRepo.UpdateCommandStatusFromAgentWithGeneration(
 			longLivedCtx,
 			agent.OrganizationID,
 			agent.DeviceID,
 			statusPayload.CommandID,
+			agent.AgentID,
+			agentConn.ConnectionID,
+			agentConn.Generation,
 			statusPayload.Status,
 			statusPayload.ErrorMessage,
 			statusPayload.Sequence,

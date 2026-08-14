@@ -424,7 +424,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     }
   });
 
-  it('Verifies production WebRtcMediaClient 10x open/bind/close cycle leaves zero leaked timers or connections', () => {
+  it('Verifies production WebRtcMediaClient 10x open/startSession/bind/close cycle leaves zero leaked resources', async () => {
     const mockElement = document.createElement('video');
 
     for (let i = 0; i < 10; i++) {
@@ -435,8 +435,14 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       client.bindVideoElement(mockElement);
       expect(client.getState()).toBe('IDLE');
 
+      // Start signaling & session
+      client.startSession();
+      expect(['CONNECTING_SIGNALING', 'IDLE']).toContain(client.getState());
+
+      // Close session
       client.close();
       expect(client.getState()).toBe('CLOSED');
+      expect(mockElement.srcObject).toBeNull();
     }
   });
 });
