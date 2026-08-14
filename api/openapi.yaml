@@ -149,6 +149,7 @@ paths:
         '409':
           $ref: '#/components/responses/ConflictError'
 
+  /devices/{id}/control-leases/{leaseId}:
     delete:
       summary: Release Control Lease
       parameters:
@@ -157,15 +158,25 @@ paths:
           required: true
           schema:
             type: string
+        - name: leaseId
+          in: path
+          required: true
+          schema:
+            type: string
       responses:
         '204':
           description: Lease released successfully
 
-  /devices/{id}/control-leases/renew:
+  /devices/{id}/control-leases/{leaseId}/renew:
     post:
       summary: Renew Control Lease TTL
       parameters:
         - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: leaseId
           in: path
           required: true
           schema:
@@ -225,8 +236,8 @@ paths:
             schema:
               $ref: '#/components/schemas/DispatchCommandRequest'
       responses:
-        '200':
-          description: Command acknowledged and dispatched
+        '202':
+          description: Command accepted and queued
           content:
             application/json:
               schema:
@@ -429,7 +440,7 @@ components:
 
     ControlLease:
       type: object
-      required: [control_lease_id, device_id, organization_id, user_id, acquired_at, expires_at, ttl_seconds]
+      required: [control_lease_id, device_id, organization_id, user_id, fencing_token, acquired_at, expires_at, ttl_seconds]
       properties:
         control_lease_id:
           type: string
@@ -441,6 +452,9 @@ components:
           type: string
         user_display_name:
           type: string
+        fencing_token:
+          type: integer
+          format: int64
         acquired_at:
           type: string
         expires_at:
@@ -450,7 +464,7 @@ components:
 
     DispatchCommandRequest:
       type: object
-      required: [deviceId, type, payload, idempotencyKey, issuedAt, expiresAt]
+      required: [deviceId, type, payload, controlLeaseId, idempotencyKey]
       properties:
         deviceId:
           type: string

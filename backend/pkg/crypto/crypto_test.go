@@ -97,6 +97,16 @@ func TestMigrationSQLFilesValidity(t *testing.T) {
 	if !strings.Contains(m5Content, "last_status_sequence") || !strings.Contains(m5Content, "expires_at") {
 		t.Error("Migration 000005 missing required last_status_sequence or expires_at columns")
 	}
+
+	// Verify Migration 000006
+	m6SQL, err := os.ReadFile("../../db/migrations/000006_control_lease_and_command_contract.up.sql")
+	if err != nil {
+		t.Fatalf("Failed to read 000006_control_lease_and_command_contract.up.sql: %v", err)
+	}
+	m6Content := string(m6SQL)
+	if !strings.Contains(m6Content, "device.control.acquire") || !strings.Contains(m6Content, "device_control_fences") {
+		t.Error("Migration 000006 missing required device.control.acquire permission or device_control_fences table")
+	}
 }
 
 func TestArgon2idPasswordHashingAndVerification(t *testing.T) {

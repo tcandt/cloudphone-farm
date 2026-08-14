@@ -76,6 +76,7 @@ export interface ControlLease {
   organization_id: string;
   user_id: string;
   user_display_name: string;
+  fencing_token: number;
   acquired_at: string;
   expires_at: string;
   ttl_seconds: number;

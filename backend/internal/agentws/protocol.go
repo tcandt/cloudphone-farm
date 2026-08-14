@@ -58,6 +58,7 @@ type CommandDispatchPayload struct {
 	CommandType  string                 `json:"command_type"`
 	Payload      map[string]interface{} `json:"payload"`
 	ControlLease string                 `json:"control_lease_id,omitempty"`
+	FencingToken int64                  `json:"fencing_token,omitempty"`
 	IssuedAt     string                 `json:"issued_at"`
 	ExpiresAt    string                 `json:"expires_at"`
 }

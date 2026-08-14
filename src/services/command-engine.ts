@@ -94,6 +94,7 @@ export class CommandEngine {
       organization_id: 'org_pcp_enterprise_01',
       user_id: 'usr_owner_01',
       user_display_name: 'Minh Tuấn (Owner)',
+      fencing_token: 1,
       acquired_at: new Date().toISOString(),
       expires_at: new Date(Date.now() + 3600 * 1000).toISOString(),
       ttl_seconds: 3600,

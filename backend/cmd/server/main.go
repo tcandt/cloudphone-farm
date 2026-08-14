@@ -75,6 +75,8 @@ func main() {
 	presenceRepo := redisrepo.NewPresenceRepository(rdb, 30*time.Second)
 	outboxRepo := pgrepo.NewOutboxRepository(pgPool)
 	cmdRepo := pgrepo.NewCommandRepository(pgPool)
+	fenceRepo := pgrepo.NewFenceRepository(pgPool)
+	leaseRepo := redisrepo.NewLeaseRepository(rdb)
 
 	// Agent WebSocket Hub & Command Outbox Dispatcher
 	wsHub := agentws.NewHub()
@@ -85,6 +87,8 @@ func main() {
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	deviceService := devservice.NewDeviceService(deviceRepo)
 	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo, rdb)
+	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
+	cmdService := command.NewCommandService(pgPool, leaseService)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
@@ -92,6 +96,8 @@ func main() {
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo)
+	leaseHandler := httptransport.NewLeaseHandler(leaseService)
+	commandHandler := httptransport.NewCommandHandler(cmdService)
 
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
 	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
@@ -153,6 +159,20 @@ func main() {
 				r.Use(custommw.RequirePermission("device.read"))
 				r.Get("/devices", deviceHandler.List)
 				r.Get("/devices/{id}", deviceHandler.GetByID)
+			})
+
+			// Control Lease Management Routes (Require device.control.acquire permission)
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("device.control.acquire"))
+				r.Post("/devices/{id}/control-leases", leaseHandler.AcquireLease)
+				r.Post("/devices/{id}/control-leases/{leaseId}/renew", leaseHandler.RenewLease)
+				r.Delete("/devices/{id}/control-leases/{leaseId}", leaseHandler.ReleaseLease)
+			})
+
+			// Command Dispatch Endpoint (Require device.control.input permission)
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("device.control.input"))
+				r.Post("/commands", commandHandler.Dispatch)
 			})
 
 			// Enrollment Tokens Management Routes (Require agent.enroll permission)

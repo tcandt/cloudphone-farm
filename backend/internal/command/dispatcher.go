@@ -92,13 +92,30 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		_ = json.Unmarshal(cmdRec.PayloadJSON, &rawPayload)
 	}
 
+	// Extract fencing_token and control_lease_id if present
+	var fencingToken int64
+	var controlLeaseID string
+
+	if rawPayload != nil {
+		if ft, ok := rawPayload["fencing_token"].(float64); ok {
+			fencingToken = int64(ft)
+		} else if ft, ok := rawPayload["fencing_token"].(int64); ok {
+			fencingToken = ft
+		}
+		if cl, ok := rawPayload["control_lease_id"].(string); ok {
+			controlLeaseID = cl
+		}
+	}
+
 	// 2. Construct WS Command Dispatch Envelope
 	dispatchPayload := agentws.CommandDispatchPayload{
-		CommandID:   msg.CommandID,
-		DeviceID:    msg.DeviceID,
-		CommandType: "gesture.touch",
-		Payload:     rawPayload,
-		IssuedAt:    msg.CreatedAt.UTC().Format(time.RFC3339),
+		CommandID:    msg.CommandID,
+		DeviceID:     msg.DeviceID,
+		CommandType:  "gesture.touch",
+		Payload:      rawPayload,
+		ControlLease: controlLeaseID,
+		FencingToken: fencingToken,
+		IssuedAt:     msg.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if cmdRec != nil {
 		dispatchPayload.CommandType = cmdRec.CommandType
