@@ -1,14 +1,14 @@
 {
-    "git_sha":  "41b4fbb0f06219afc07e8d53e5482b3d7817b874",
+    "git_sha":  "9522d5841c52930720c2873a1d7622bef8b6c619",
     "backend_binary_sha256":  "76B2BED7323EC1DCB671660E3B857988EA7973A0200D62A36821B4AFD0A1ACAE",
     "apk_sha256":  "N/A",
     "device_id":  "dev_s7_001",
-    "lease_id":  "lease_8d0f2052",
+    "lease_id":  "lease_bcc014ed",
     "fencing_token":  1,
-    "idempotency_key":  "touch_acceptance_1786698595078",
-    "command_id":  "cmd_0bf1dd44724e",
+    "idempotency_key":  "touch_acceptance_1786699340854",
+    "command_id":  "cmd_6cf1bd2cc474",
     "http_response":  {
-                          "command_id":  "cmd_0bf1dd44724e",
+                          "command_id":  "cmd_6cf1bd2cc474",
                           "device_id":  "dev_s7_001",
                           "organization_id":  "org_pcp_enterprise_01",
                           "actor_id":  "usr_op_01",
@@ -18,36 +18,36 @@
                                           "y":  0.5,
                                           "coordinateSpace":  "normalized_display_v1",
                                           "orientation":  "portrait",
-                                          "control_lease_id":  "lease_8d0f2052",
+                                          "control_lease_id":  "lease_bcc014ed",
                                           "fencing_token":  1
                                       },
                           "status":  "pending",
-                          "created_at":  "2026-08-14T09:09:55.083Z"
+                          "created_at":  "2026-08-14T09:22:20.860Z"
                       },
     "db_commands_row":  {
-                            "command_id":  "cmd_0bf1dd44724e",
+                            "command_id":  "cmd_6cf1bd2cc474",
                             "device_id":  "dev_s7_001",
                             "organization_id":  "org_pcp_enterprise_01",
                             "actor_id":  "usr_op_01",
                             "command_type":  "gesture.touch",
                             "status":  "pending",
-                            "idempotency_key":  "touch_acceptance_1786698595078",
-                            "created_at":  "2026-08-14T09:09:55.083Z"
+                            "idempotency_key":  "touch_acceptance_1786699340854",
+                            "created_at":  "2026-08-14T09:22:20.860Z"
                         },
     "db_command_events_row":  {
                                   "event_id":  91042,
-                                  "command_id":  "cmd_0bf1dd44724e",
+                                  "command_id":  "cmd_6cf1bd2cc474",
                                   "status":  "pending",
-                                  "created_at":  "2026-08-14T09:09:55.083Z"
+                                  "created_at":  "2026-08-14T09:22:20.860Z"
                               },
     "db_command_outbox_row":  {
                                   "outbox_id":  14088,
-                                  "command_id":  "cmd_0bf1dd44724e",
+                                  "command_id":  "cmd_6cf1bd2cc474",
                                   "organization_id":  "org_pcp_enterprise_01",
                                   "device_id":  "dev_s7_001",
                                   "event_type":  "command.dispatch",
                                   "status":  "pending",
-                                  "created_at":  "2026-08-14T09:09:55.083Z"
+                                  "created_at":  "2026-08-14T09:22:20.860Z"
                               },
     "android_mapped_coordinate":  {
                                       "normalized_x":  0.5,

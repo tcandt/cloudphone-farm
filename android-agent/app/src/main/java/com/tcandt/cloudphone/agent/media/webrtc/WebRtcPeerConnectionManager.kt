@@ -271,15 +271,6 @@ class WebRtcPeerConnectionManager(
                     }
                 }
             }
-                        val (newW, newH) = if (currentGeom.orientation == DisplayOrientation.LANDSCAPE) {
-                            Pair(1280, 720)
-                        } else {
-                            Pair(720, 1280)
-                        }
-                        updateCaptureFormat(newW, newH, 30)
-                    }
-                }
-            }
             displayManager?.registerDisplayListener(displayListener, null)
             Log.i(TAG, "Registered DisplayManager.DisplayListener for orientation changes")
         } catch (e: Exception) {
