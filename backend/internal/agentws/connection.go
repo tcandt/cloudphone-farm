@@ -90,8 +90,17 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 		case MessageTypeCommandStatus:
 			var statusPayload CommandStatusPayload
 			if err := json.Unmarshal(env.Payload, &statusPayload); err == nil {
-				if statusCallback != nil {
-					_ = statusCallback(statusPayload)
+				// Generation Fencing: Verify this connection is still the current active generation in the hub
+				if currentConn, active := c.hub.GetConnection(c.OrganizationID, c.DeviceID); active && currentConn != nil && currentConn.ConnectionID == c.ConnectionID && currentConn.Generation == c.Generation {
+					if statusCallback != nil {
+						_ = statusCallback(statusPayload)
+					}
+				} else {
+					slog.Warn("Rejected command status from stale agent connection generation",
+						"device_id", c.DeviceID,
+						"conn_id", c.ConnectionID,
+						"generation", c.Generation,
+						"command_id", statusPayload.CommandID)
 				}
 			}
 

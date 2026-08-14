@@ -28,13 +28,15 @@ type AgentWSHandler struct {
 	hub        *agentws.Hub
 	enrollRepo *pgrepo.EnrollmentRepository
 	cmdRepo    *pgrepo.CommandRepository
+	browserHub *agentws.BrowserHub
 }
 
-func NewAgentWSHandler(hub *agentws.Hub, enrollRepo *pgrepo.EnrollmentRepository, cmdRepo *pgrepo.CommandRepository) *AgentWSHandler {
+func NewAgentWSHandler(hub *agentws.Hub, enrollRepo *pgrepo.EnrollmentRepository, cmdRepo *pgrepo.CommandRepository, browserHub *agentws.BrowserHub) *AgentWSHandler {
 	return &AgentWSHandler{
 		hub:        hub,
 		enrollRepo: enrollRepo,
 		cmdRepo:    cmdRepo,
+		browserHub: browserHub,
 	}
 }
 
@@ -149,6 +151,15 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		)
 		if err != nil {
 			slog.Error("Failed to persist command status ACK from agent WS", "error", err, "command_id", statusPayload.CommandID, "device_id", agent.DeviceID, "org_id", agent.OrganizationID)
+		} else if h.browserHub != nil {
+			h.browserHub.BroadcastCommandStatus(
+				agent.OrganizationID,
+				agent.DeviceID,
+				statusPayload.CommandID,
+				statusPayload.Status,
+				int(statusPayload.Sequence),
+				statusPayload.ErrorMessage,
+			)
 		}
 		return err
 	}

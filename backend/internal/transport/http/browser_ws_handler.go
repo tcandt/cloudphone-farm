@@ -3,49 +3,64 @@ package http
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 )
 
-var browserWSUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Auth middleware validates cookie session & CSRF
-	},
-}
-
 type BrowserWSHandler struct {
-	browserHub *agentws.BrowserHub
+	browserHub     *agentws.BrowserHub
+	upgrader       websocket.Upgrader
+	allowedOrigins []string
 }
 
-func NewBrowserWSHandler(browserHub *agentws.BrowserHub) *BrowserWSHandler {
-	return &BrowserWSHandler{
-		browserHub: browserHub,
+func NewBrowserWSHandler(browserHub *agentws.BrowserHub, allowedOrigins []string) *BrowserWSHandler {
+	h := &BrowserWSHandler{
+		browserHub:     browserHub,
+		allowedOrigins: allowedOrigins,
 	}
+	h.upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			for _, allowed := range allowedOrigins {
+				if allowed == "*" || strings.EqualFold(origin, allowed) {
+					return true
+				}
+			}
+			return false
+		},
+	}
+	return h
 }
 
-func (h *BrowserWSHandler) SubscribeEvents(w http.ResponseWriter, r *http.Request) {
+func (h *BrowserWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	principal, err := auth.GetPrincipal(r.Context())
 	if err != nil {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
 		return
 	}
 
-	deviceID := r.URL.Query().Get("deviceId")
+	deviceID := chi.URLParam(r, "id")
 	if deviceID == "" {
-		// Fallback check path param if Chi path matching is used
-		deviceID = r.URL.Path // Chi router context handles deviceId
+		deviceID = r.URL.Query().Get("deviceId")
 	}
 	if deviceID == "" {
-		writeJSONError(w, http.StatusBadRequest, "MISSING_DEVICE_ID", "deviceId is required")
+		writeJSONError(w, http.StatusBadRequest, "MISSING_DEVICE_ID", "Device ID is required in URL path /devices/{id}/events/ws")
 		return
 	}
 
-	conn, err := browserWSUpgrader.Upgrade(w, r, nil)
+	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		slog.Error("Failed to upgrade browser event WebSocket connection", "error", err)
+		slog.Error("Failed to upgrade browser event WebSocket connection", "error", err, "device_id", deviceID)
 		return
 	}
 
@@ -69,7 +84,7 @@ func (h *BrowserWSHandler) SubscribeEvents(w http.ResponseWriter, r *http.Reques
 
 		for msg := range subscriber.Send {
 			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				slog.Warn("Browser WS write failed, closing connection", "subscriber_id", subscriberID, "error", err)
+				slog.Warn("Browser event WS write failed, closing connection", "subscriber_id", subscriberID, "error", err)
 				return
 			}
 		}

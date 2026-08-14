@@ -78,8 +78,9 @@ func main() {
 	fenceRepo := pgrepo.NewFenceRepository(pgPool)
 	leaseRepo := redisrepo.NewLeaseRepository(rdb)
 
-	// Agent WebSocket Hub & Command Outbox Dispatcher
+	// Agent WebSocket Hub & Browser Event Hub & Command Outbox Dispatcher
 	wsHub := agentws.NewHub()
+	browserHub := agentws.NewBrowserHub()
 	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub)
 	outboxDispatcher.Start(ctx)
 	defer outboxDispatcher.Stop()
@@ -95,8 +96,9 @@ func main() {
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
-	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo)
+	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo, browserHub)
 	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins)
+	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
 
@@ -162,10 +164,11 @@ func main() {
 				r.Get("/devices/{id}", deviceHandler.GetByID)
 			})
 
-			// Device Stream WebRTC Media Signaling Route (Require device.stream.view permission)
+			// Device Stream & Event WebSocket Routes (Require device.stream.view permission)
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.stream.view"))
 				r.Get("/devices/{id}/media/ws", browserMediaHandler.ServeHTTP)
+				r.Get("/devices/{id}/events/ws", browserWSHandler.ServeHTTP)
 			})
 
 			// Control Lease Management Routes (Require device.control.acquire permission)

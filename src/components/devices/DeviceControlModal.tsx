@@ -7,6 +7,8 @@ import { useAuth } from '../../context/AuthContext';
 import { PermissionGuard } from '../common/PermissionGuard';
 import { computeVideoGeometry, mapPointerToNormalizedCoordinates, VideoContentGeometry } from '../../lib/video-geometry';
 import { PointerGestureRecognizer, DispatchedGesture } from '../../lib/pointer-gesture-engine';
+import { OperatorEventClient } from '../../services/operator-event-client';
+import { PeerTelemetry } from '../../services/webrtc-media-client';
 import {
   X,
   Smartphone,
@@ -46,6 +48,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const [_webrtcError, setWebrtcError] = useState<string | null>(null);
   const [activeServerSessionId, setActiveServerSessionId] = useState<string>('');
   const [geometry, setGeometry] = useState<VideoContentGeometry | null>(null);
+  const [telemetry, setTelemetry] = useState<PeerTelemetry | null>(null);
 
   const mediaClientRef = useRef<MediaClient | null>(null);
   const gestureRecognizerRef = useRef<PointerGestureRecognizer>(new PointerGestureRecognizer());
@@ -106,6 +109,29 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     }
   }, [isOpen, updateGeometry]);
 
+  // Subscribe to real-time operator WebSocket command status events
+  useEffect(() => {
+    if (!isOpen) return;
+    const isMockMode = getApiMode() === 'mock';
+    if (isMockMode) return;
+
+    const opClient = new OperatorEventClient(device.device_id);
+    const unsub = opClient.subscribe((evt) => {
+      if (evt.type === 'command.status.changed') {
+        const statusMsg = evt.error_message
+          ? `FAIL: ${evt.error_message}`
+          : evt.execution_status.toUpperCase();
+        addLog(`Cmd #${evt.command_id} [Seq #${evt.sequence}]: ${statusMsg}`);
+      }
+    });
+    opClient.connect();
+
+    return () => {
+      unsub();
+      opClient.close();
+    };
+  }, [device.device_id, isOpen, addLog]);
+
   // Handle WebRTC Stream Session Setup
   useEffect(() => {
     if (!isOpen) return;
@@ -138,6 +164,14 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             mediaClient.attach(canvasRef.current);
           }
         }
+
+        const telemInterval = setInterval(() => {
+          if (mounted && mediaClientRef.current?.getWebRtcClient?.()) {
+            setTelemetry(mediaClientRef.current.getWebRtcClient()?.getLatestTelemetry() || null);
+          }
+        }, 3000);
+
+        return () => clearInterval(telemInterval);
       } catch (err) {
         if (mounted) {
           const msg = err instanceof Error ? err.message : 'Failed to start media session';
@@ -435,8 +469,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 font-bold text-[10px] border border-emerald-500/20">
                   {device.status.toUpperCase()}
                 </span>
-                <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-bold text-[10px] border border-blue-500/20">
-                  {webrtcState === 'VIDEO_RECEIVING' ? '● LIVE 30fps' : webrtcState}
+                <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-bold text-[10px] border border-blue-500/20 font-mono">
+                  {webrtcState === 'VIDEO_RECEIVING'
+                    ? `● LIVE ${telemetry?.fps ? `${telemetry.fps} FPS` : '— FPS'} ${telemetry?.resolution || (geometry ? `${geometry.videoWidth}x${geometry.videoHeight}` : '—×—')} ${telemetry?.candidateType ? telemetry.candidateType.toUpperCase() : 'UNKNOWN'} ${telemetry?.roundTripTime ? `${telemetry.roundTripTime}ms` : '—ms'}`
+                    : webrtcState}
                 </span>
                 {isMockMode && (
                   <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-extrabold text-[10px] border border-amber-500/40 animate-pulse">
@@ -549,13 +585,17 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Trạng thái Quyền Điều Khiển</span>
                 {lease ? (
-                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 font-bold text-xs border border-emerald-500/20 flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                    Active ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
+                  <span className={`px-2.5 py-1 rounded-full font-bold text-xs border flex items-center gap-1.5 ${
+                    leaseSecondsLeft <= 10
+                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                      : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${leaseSecondsLeft <= 10 ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`} />
+                    {leaseSecondsLeft <= 10 ? 'CONTROL EXPIRING' : 'CONTROL ACTIVE'} ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
                   </span>
                 ) : (
                   <span className="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-bold text-xs border border-slate-700">
-                    Chưa đăng ký Lease
+                    LIVE • VIEW ONLY
                   </span>
                 )}
               </div>

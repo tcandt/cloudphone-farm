@@ -81,11 +81,7 @@ export class ProductionWebRtcMediaClient implements MediaClient {
     if (element instanceof HTMLVideoElement) {
       this.videoElement = element;
       if (this.webRtcClient) {
-        const stream = this.webRtcClient.getMediaStream();
-        if (stream) {
-          element.srcObject = stream;
-          element.play().catch(() => {});
-        }
+        this.webRtcClient.bindVideoElement(element);
       }
     }
   }

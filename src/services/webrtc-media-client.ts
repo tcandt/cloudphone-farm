@@ -21,15 +21,15 @@ export interface ServerMediaMetadata {
 }
 
 export interface PeerTelemetry {
-  fps: number;
-  resolution: string;
-  bytesReceived: number;
-  packetsLost: number;
-  jitter: number;
-  roundTripTime: number;
-  candidateType: string;
-  localCandidateType: string;
-  remoteCandidateType: string;
+  fps?: number;
+  resolution?: string;
+  bytesReceived?: number;
+  packetsLost?: number;
+  jitter?: number;
+  roundTripTime?: number;
+  candidateType?: 'direct' | 'relay' | 'unknown';
+  localCandidateType?: string;
+  remoteCandidateType?: string;
 }
 
 export interface WebRtcMediaClientOptions {
@@ -57,6 +57,11 @@ export class WebRtcMediaClient {
   private iceGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private latestTelemetry: PeerTelemetry | null = null;
+
+  private isReconnecting = false;
+  private reconnectAttempts = 0;
+  private isClosedExplicitly = false;
+  private frameCallbackId: number | null = null;
 
   private metadataResolve?: (m: ServerMediaMetadata) => void;
   private metadataReject?: (e: Error) => void;
@@ -105,12 +110,30 @@ export class WebRtcMediaClient {
   }
 
   public bindVideoElement(element: HTMLVideoElement): void {
+    if (this.videoElement === element) return;
+    this.unbindVideoElement();
     this.videoElement = element;
     if (this.mediaStream) {
       this.videoElement.srcObject = this.mediaStream;
       this.videoElement.play().catch(() => {});
     }
     this.setupFrameCallback();
+  }
+
+  public unbindVideoElement(): void {
+    if (this.videoElement) {
+      if (this.frameCallbackId !== null) {
+        const videoEl = this.videoElement as HTMLVideoElement & {
+          cancelVideoFrameCallback?: (id: number) => void;
+        };
+        if (typeof videoEl.cancelVideoFrameCallback === 'function') {
+          videoEl.cancelVideoFrameCallback(this.frameCallbackId);
+        }
+        this.frameCallbackId = null;
+      }
+      this.videoElement.srcObject = null;
+      this.videoElement = null;
+    }
   }
 
   public subscribeState(listener: (state: WebRtcState, error?: string, serverSessionId?: string) => void): () => void {
@@ -122,7 +145,11 @@ export class WebRtcMediaClient {
   }
 
   public startSession(): void {
-    if (this.state !== 'IDLE' && this.state !== 'CLOSED' && this.state !== 'FAILED') {
+    if (this.isClosedExplicitly) {
+      this.isClosedExplicitly = false;
+    }
+
+    if (this.state !== 'IDLE' && this.state !== 'CLOSED' && this.state !== 'FAILED' && this.state !== 'RECONNECTING') {
       return;
     }
 
@@ -152,21 +179,21 @@ export class WebRtcMediaClient {
         console.error('[WebRtcMediaClient] WebSocket signaling error:', err);
         const errorMsg = 'WebSocket signaling connection error';
         this.metadataReject?.(new Error(errorMsg));
-        this.setState('FAILED', errorMsg);
+        this.performReconnect('websocket_signaling_error');
       };
 
       this.ws.onclose = (event) => {
         console.warn(`[WebRtcMediaClient] WebSocket closed: ${event.reason} (${event.code})`);
         const closeMsg = event.reason || 'Signaling connection closed';
         this.metadataReject?.(new Error(closeMsg));
-        if (this.state !== 'FAILED' && this.state !== 'CLOSED') {
-          this.setState('CLOSED', closeMsg);
+        if (!this.isClosedExplicitly && this.state !== 'CLOSED') {
+          this.performReconnect('websocket_signaling_closed');
         }
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'WebSocket initialization failed';
       this.metadataReject?.(new Error(msg));
-      this.setState('FAILED', msg);
+      this.performReconnect('websocket_init_failed');
     }
   }
 
@@ -184,9 +211,10 @@ export class WebRtcMediaClient {
           expiresAt: (payload.expires_at as string) || '',
         };
         this.metadataResolve?.(this.serverMetadata);
+        this.reconnectAttempts = 0; // Reset backoff on successful session creation
 
         const iceServers = (payload.ice_servers as RTCIceServer[]) || [{ urls: 'stun:stun.l.google.com:19302' }];
-        console.log(`[WebRtcMediaClient] Session Created: ${this.sessionId}. Metadata loaded. Initializing RTCPeerConnection.`);
+        console.log(`[WebRtcMediaClient] Session Created: ${this.sessionId}. Initializing RTCPeerConnection.`);
 
         this.initPeerConnection(iceServers);
         this.setState('WAITING_DEVICE_CONSENT');
@@ -212,7 +240,7 @@ export class WebRtcMediaClient {
             })
             .catch((err) => {
               console.error('[WebRtcMediaClient] Failed to setRemoteDescription (answer):', err);
-              this.setState('FAILED', 'Failed to set SDP answer');
+              this.performReconnect('sdp_answer_set_failed');
             });
         }
         break;
@@ -241,7 +269,7 @@ export class WebRtcMediaClient {
           console.log('[WebRtcMediaClient] Agent confirmed session started (ICE Connected)');
         } else if (payload.status === 'failed') {
           const err = (payload.error_message as string) || 'Media session failed on device';
-          this.setState('FAILED', err);
+          this.performReconnect(err);
         }
         break;
       }
@@ -249,13 +277,15 @@ export class WebRtcMediaClient {
       case 'media.session.stopped': {
         const reason = (payload.reason as string) || 'operator_requested';
         console.log(`[WebRtcMediaClient] Session stopped by agent: ${reason}`);
-        this.close();
+        if (!this.isClosedExplicitly) {
+          this.performReconnect(`agent_stopped:${reason}`);
+        }
         break;
       }
 
       case 'error': {
         const errMsg = (payload.error_message as string) || 'Media session error';
-        this.setState('FAILED', errMsg);
+        this.performReconnect(errMsg);
         break;
       }
     }
@@ -306,8 +336,8 @@ export class WebRtcMediaClient {
           this.iceGraceTimer = setTimeout(() => {
             this.iceGraceTimer = null;
             if (this.pc && (this.pc.iceConnectionState === 'disconnected' || this.pc.iceConnectionState === 'failed')) {
-              console.error('[WebRtcMediaClient] ICE grace window expired. Transitioning to FAILED.');
-              this.setState('FAILED', 'ICE P2P Grace Window Expired');
+              console.error('[WebRtcMediaClient] ICE grace window expired (7s). Triggering controlled reconnect.');
+              this.performReconnect('ice_grace_window_expired');
             }
           }, 7000);
         }
@@ -316,12 +346,12 @@ export class WebRtcMediaClient {
           clearTimeout(this.iceGraceTimer);
           this.iceGraceTimer = null;
         }
-        this.setState('FAILED', 'ICE P2P Connection Failed');
+        this.performReconnect('ice_p2p_failed');
       }
     };
 
     this.pc.ontrack = (event) => {
-      console.log('[WebRtcMediaClient] Received remote VideoTrack from Samsung Agent!');
+      console.log('[WebRtcMediaClient] Received remote VideoTrack!');
       if (event.streams && event.streams[0]) {
         this.mediaStream = event.streams[0];
       } else {
@@ -343,7 +373,8 @@ export class WebRtcMediaClient {
     if (!this.videoElement) return;
 
     const videoEl = this.videoElement as HTMLVideoElement & {
-      requestVideoFrameCallback?: (cb: () => void) => void;
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (id: number) => void;
     };
 
     if (typeof videoEl.requestVideoFrameCallback === 'function') {
@@ -354,12 +385,14 @@ export class WebRtcMediaClient {
         }
         if (this.videoElement) {
           const v = this.videoElement as HTMLVideoElement & {
-            requestVideoFrameCallback?: (cb: () => void) => void;
+            requestVideoFrameCallback?: (cb: () => void) => number;
           };
-          v.requestVideoFrameCallback?.(onFrame);
+          if (typeof v.requestVideoFrameCallback === 'function') {
+            this.frameCallbackId = v.requestVideoFrameCallback(onFrame);
+          }
         }
       };
-      videoEl.requestVideoFrameCallback(onFrame);
+      this.frameCallbackId = videoEl.requestVideoFrameCallback(onFrame);
     } else {
       this.videoElement.onplaying = () => {
         this.lastVideoFrameAt = performance.now();
@@ -372,7 +405,7 @@ export class WebRtcMediaClient {
     if (this.stallWatchdogTimer) clearInterval(this.stallWatchdogTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
 
-    // Frame stall watchdog (3s -> DEGRADED, 8s -> RECONNECTING / FAILED)
+    // Frame stall watchdog (3s -> DEGRADED, 8s -> RECONNECTING)
     this.stallWatchdogTimer = setInterval(() => {
       if (this.state === 'VIDEO_RECEIVING' || this.state === 'CONNECTED') {
         if (this.lastVideoFrameAt > 0 && performance.now() - this.lastVideoFrameAt > 3000) {
@@ -381,12 +414,12 @@ export class WebRtcMediaClient {
         }
       }
       if (this.state === 'DEGRADED' && this.lastVideoFrameAt > 0 && performance.now() - this.lastVideoFrameAt > 8000) {
-        console.error('[WebRtcMediaClient] Prolonged video stall (>8s). Triggering RECONNECTING.');
-        this.setState('RECONNECTING', 'Prolonged Video Frame Stall');
+        console.error('[WebRtcMediaClient] Prolonged video stall (>8s). Triggering controlled reconnect.');
+        this.performReconnect('prolonged_video_stall');
       }
     }, 1000);
 
-    // Stats polling every 3 seconds
+    // Stats polling every 3 seconds (Authoritative PeerTelemetry)
     this.statsTimer = setInterval(async () => {
       if (!this.pc || (this.state !== 'CONNECTED' && this.state !== 'VIDEO_RECEIVING' && this.state !== 'DEGRADED')) {
         return;
@@ -394,37 +427,61 @@ export class WebRtcMediaClient {
 
       try {
         const stats = await this.pc.getStats();
-        let fps = 0;
-        let resolution = '1440x2560';
-        let bytesReceived = 0;
-        let packetsLost = 0;
-        let jitter = 0;
-        let roundTripTime = 0;
-        let candType = 'direct';
-        let localCand = 'host';
-        let remoteCand = 'host';
+        let fps: number | undefined;
+        let resolution: string | undefined;
+        let bytesReceived: number | undefined;
+        let packetsLost: number | undefined;
+        let jitter: number | undefined;
+        let roundTripTime: number | undefined;
+        let candType: 'direct' | 'relay' | 'unknown' = 'unknown';
+        let localCandType: string | undefined;
+        let remoteCandType: string | undefined;
+
+        const candidateMap = new Map<string, Record<string, unknown>>();
+        let selectedPairReport: Record<string, unknown> | null = null;
 
         stats.forEach((report) => {
-          if (report.type === 'inbound-rtp' && report.kind === 'video') {
-            fps = report.framesPerSecond || Math.round(report.framesDecoded / 5) || 30;
-            if (report.frameWidth && report.frameHeight) {
-              resolution = `${report.frameWidth}x${report.frameHeight}`;
+          if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
+            candidateMap.set(report.id as string, report as Record<string, unknown>);
+          }
+          if (report.type === 'candidate-pair') {
+            const r = report as Record<string, unknown>;
+            if (r.selected === true || r.state === 'succeeded') {
+              if (!selectedPairReport || r.selected === true) {
+                selectedPairReport = r;
+              }
             }
-            bytesReceived = report.bytesReceived || 0;
-            packetsLost = report.packetsLost || 0;
-            jitter = report.jitter || 0;
           }
-          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
-            roundTripTime = Math.round((report.currentRoundTripTime || 0.045) * 1000);
-          }
-          if (report.type === 'local-candidate') {
-            localCand = report.candidateType || 'host';
-          }
-          if (report.type === 'remote-candidate') {
-            remoteCand = report.candidateType || 'host';
-            candType = report.candidateType === 'relay' ? 'relay' : 'direct';
+          if (report.type === 'inbound-rtp' && report.kind === 'video') {
+            const r = report as Record<string, unknown>;
+            if (typeof r.framesPerSecond === 'number' && r.framesPerSecond > 0) {
+              fps = r.framesPerSecond;
+            }
+            if (typeof r.frameWidth === 'number' && typeof r.frameHeight === 'number' && r.frameWidth > 0 && r.frameHeight > 0) {
+              resolution = `${r.frameWidth}x${r.frameHeight}`;
+            }
+            if (typeof r.bytesReceived === 'number') bytesReceived = r.bytesReceived;
+            if (typeof r.packetsLost === 'number') packetsLost = r.packetsLost;
+            if (typeof r.jitter === 'number') jitter = Math.round(r.jitter * 1000);
           }
         });
+
+        if (selectedPairReport) {
+          const pair = selectedPairReport as Record<string, unknown>;
+          if (typeof pair.currentRoundTripTime === 'number') {
+            roundTripTime = Math.round((pair.currentRoundTripTime as number) * 1000);
+          }
+          const remoteCand = candidateMap.get(pair.remoteCandidateId as string);
+          const localCand = candidateMap.get(pair.localCandidateId as string);
+
+          if (localCand && typeof localCand.candidateType === 'string') {
+            localCandType = localCand.candidateType as string;
+          }
+          if (remoteCand && typeof remoteCand.candidateType === 'string') {
+            remoteCandType = remoteCand.candidateType as string;
+            candType = remoteCandType === 'relay' || localCandType === 'relay' ? 'relay' : 'direct';
+          }
+        }
 
         const telemetry: PeerTelemetry = {
           fps,
@@ -432,10 +489,10 @@ export class WebRtcMediaClient {
           bytesReceived,
           packetsLost,
           jitter,
-          roundTripTime: roundTripTime || 45,
+          roundTripTime,
           candidateType: candType,
-          localCandidateType: localCand,
-          remoteCandidateType: remoteCand,
+          localCandidateType: localCandType,
+          remoteCandidateType: remoteCandType,
         };
 
         this.latestTelemetry = telemetry;
@@ -444,6 +501,72 @@ export class WebRtcMediaClient {
         console.warn('[WebRtcMediaClient] Telemetry getStats error:', err);
       }
     }, 3000);
+  }
+
+  private async performReconnect(reason: string): Promise<void> {
+    if (this.isReconnecting || this.isClosedExplicitly) return;
+    this.isReconnecting = true;
+    this.reconnectAttempts++;
+    console.warn(`[WebRtcMediaClient] Initiating controlled reconnect #${this.reconnectAttempts}. Reason: ${reason}`);
+    this.setState('RECONNECTING', `Reconnecting (${reason})`);
+
+    // 1. Clear timers
+    if (this.stallWatchdogTimer) clearInterval(this.stallWatchdogTimer);
+    if (this.statsTimer) clearInterval(this.statsTimer);
+    if (this.iceGraceTimer) clearTimeout(this.iceGraceTimer);
+    this.stallWatchdogTimer = null;
+    this.statsTimer = null;
+    this.iceGraceTimer = null;
+
+    // 2. Best-effort stop frame to old signaling WS & close
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.sessionId) {
+      try {
+        this.ws.send(
+          JSON.stringify({
+            type: 'media.session.stop',
+            message_id: `stop_${Date.now()}`,
+            payload: { session_id: this.sessionId },
+          })
+        );
+        this.ws.close();
+      } catch (err) {
+        console.warn('[WebRtcMediaClient] Error stopping old session on reconnect:', err);
+      }
+    }
+    this.ws = null;
+
+    // 3. Close old PeerConnection
+    if (this.pc) {
+      this.pc.close();
+      this.pc = null;
+    }
+
+    // 4. Reset state & create new metadata promise
+    this.sessionId = '';
+    this.serverMetadata = null;
+    this.isOfferCreated = false;
+    this.pendingIceCandidates = [];
+    this.metadataPromise = new Promise<ServerMediaMetadata>((resolve, reject) => {
+      this.metadataResolve = resolve;
+      this.metadataReject = reject;
+    });
+
+    // 5. Exponential backoff: 1s, 2s, 4s, 8s, 15s, max 30s + jitter
+    const backoffMs = Math.min(
+      30000,
+      Math.pow(2, Math.min(this.reconnectAttempts - 1, 5)) * 1000 + Math.floor(Math.random() * 500)
+    );
+    console.log(`[WebRtcMediaClient] Waiting ${backoffMs}ms before executing reconnect attempt #${this.reconnectAttempts}`);
+
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+
+    if (this.isClosedExplicitly) {
+      this.isReconnecting = false;
+      return;
+    }
+
+    this.isReconnecting = false;
+    this.startSession();
   }
 
   private async createAndSendOffer(): Promise<void> {
@@ -474,7 +597,7 @@ export class WebRtcMediaClient {
       }
     } catch (err) {
       console.error('[WebRtcMediaClient] Error creating SDP offer:', err);
-      this.setState('FAILED', 'Failed to create SDP offer');
+      this.performReconnect('sdp_offer_failed');
     }
   }
 
@@ -508,6 +631,7 @@ export class WebRtcMediaClient {
 
   public close(): void {
     if (this.state === 'CLOSED') return;
+    this.isClosedExplicitly = true;
     const isAlreadyFailed = this.state === 'FAILED';
 
     if (this.stallWatchdogTimer) {
@@ -545,10 +669,7 @@ export class WebRtcMediaClient {
       this.pc = null;
     }
 
-    if (this.videoElement) {
-      this.videoElement.srcObject = null;
-      this.videoElement = null;
-    }
+    this.unbindVideoElement();
 
     if (this.mediaStream) {
       this.mediaStream.getTracks().forEach((track) => track.stop());

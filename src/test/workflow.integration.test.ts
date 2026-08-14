@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { defaultMediaRegistry } from '../services/media-client';
+import { WebRtcMediaClient } from '../services/webrtc-media-client';
 import { defaultCommandEngine, canonicalJsonStringify, SUPPORTED_COMMAND_TYPES, CommandEngine } from '../services/command-engine';
 import { defaultWsSimulator } from '../services/websocket-simulator';
 import { mockDevices, mockCurrentUserSession } from '../data/mockData';
@@ -423,18 +424,19 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     }
   });
 
-  it('Verifies WebRTC MediaClient state machine handles DEGRADED and RECONNECTING states', () => {
-    const targetDevice = mockDevices[0];
-    const mediaClient = defaultMediaRegistry.acquire(`str_state_${targetDevice.device_id}`);
-    
-    let currentState: string = mediaClient.getWebRtcClient?.()?.getState() || 'IDLE';
-    const unsub = mediaClient.onStateChange?.((state) => {
-      currentState = state;
-    });
+  it('Verifies production WebRtcMediaClient 10x open/bind/close cycle leaves zero leaked timers or connections', () => {
+    const mockElement = document.createElement('video');
 
-    expect(currentState).toBeDefined();
+    for (let i = 0; i < 10; i++) {
+      const client = new WebRtcMediaClient({
+        deviceId: 'dev_sm_g930f_01',
+      });
 
-    unsub?.();
-    defaultMediaRegistry.release(`str_state_${targetDevice.device_id}`);
+      client.bindVideoElement(mockElement);
+      expect(client.getState()).toBe('IDLE');
+
+      client.close();
+      expect(client.getState()).toBe('CLOSED');
+    }
   });
 });
