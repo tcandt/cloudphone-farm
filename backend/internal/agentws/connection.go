@@ -24,13 +24,11 @@ type Connection struct {
 	Generation     int64
 	Agent          *domain.DeviceAgent
 
-	ws           *websocket.Conn
-	hub          *Hub
-	Send         chan []byte
-	once         sync.Once
-	closed       chan struct{}
-	lastSequence int64
-	seqMutex     sync.Mutex
+	ws     *websocket.Conn
+	hub    *Hub
+	Send   chan []byte
+	once   sync.Once
+	closed chan struct{}
 }
 
 func NewConnection(hub *Hub, ws *websocket.Conn, agent *domain.DeviceAgent, generation int64) *Connection {
@@ -96,15 +94,6 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 		case MessageTypeCommandStatus:
 			var statusPayload CommandStatusPayload
 			if err := json.Unmarshal(env.Payload, &statusPayload); err == nil {
-				c.seqMutex.Lock()
-				if statusPayload.Sequence <= c.lastSequence {
-					c.seqMutex.Unlock()
-					slog.Warn("Ignored stale command status sequence", "seq", statusPayload.Sequence, "last_seq", c.lastSequence)
-					continue
-				}
-				c.lastSequence = statusPayload.Sequence
-				c.seqMutex.Unlock()
-
 				if statusCallback != nil {
 					_ = statusCallback(statusPayload)
 				}

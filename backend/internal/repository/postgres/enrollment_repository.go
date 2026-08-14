@@ -54,9 +54,9 @@ type AgentEnrollmentPayload struct {
 }
 
 type EnrollmentResult struct {
-	AgentID        string
-	DeviceID       string
-	OrganizationID string
+	AgentID        string `json:"agent_id"`
+	DeviceID       string `json:"device_id"`
+	OrganizationID string `json:"organization_id"`
 }
 
 type EnrollmentRepository struct {

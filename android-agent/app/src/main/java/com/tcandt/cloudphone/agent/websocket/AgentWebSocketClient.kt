@@ -2,15 +2,18 @@ package com.tcandt.cloudphone.agent.websocket
 
 import android.content.Context
 import android.util.Log
-import com.tcandt/cloudphone.agent.command.CommandProcessor
-import com.tcandt/cloudphone.agent.security.AgentKeyStore
+import com.tcandt.cloudphone.agent.command.CommandProcessor
+import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import com.tcandt.cloudphone.agent.security.AgentKeyStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -30,6 +33,7 @@ class AgentWebSocketClient(
 
     private var webSocket: WebSocket? = null
     private val keyStore = AgentKeyStore(context)
+    private val configStore = AgentConfigStore(context)
     private var commandProcessor: CommandProcessor? = null
 
     private var connectionId: String = ""
@@ -130,27 +134,63 @@ class AgentWebSocketClient(
         generation = payload.optLong("generation", 0L)
         Log.i(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
 
-        startHeartbeat()
+        startSignedHttpHeartbeat()
     }
 
-    private fun startHeartbeat() {
+    private fun startSignedHttpHeartbeat() {
         stopHeartbeat()
         heartbeatJob = CoroutineScope(Dispatchers.IO).launch {
             while (true) {
-                delay(10000) // 10s heartbeat
-                val pingPayload = JSONObject().apply {
-                    put("agent_id", agentId)
-                    put("connection_id", connectionId)
-                    put("timestamp", System.currentTimeMillis() / 1000)
+                delay(10000) // 10s signed HTTP heartbeat for Redis presence TTL renewal
+                try {
+                    sendSignedHttpHeartbeat()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Signed HTTP heartbeat failed: ${e.message}")
                 }
-                val pingEnvelope = JSONObject().apply {
-                    put("type", "agent.ping")
-                    put("message_id", "msg_${System.nanoTime()}")
-                    put("payload", pingPayload)
-                }
-                webSocket?.send(pingEnvelope.toString())
-                Log.d(TAG, "Sent 10s agent.ping heartbeat to server")
             }
+        }
+    }
+
+    private fun sendSignedHttpHeartbeat() {
+        val serverUrl = configStore.getServerUrl().trimEnd('/')
+        val heartbeatUrl = "$serverUrl/api/v1/agents/heartbeat"
+
+        val bodyJson = JSONObject().apply {
+            put("connection_id", connectionId)
+            put("generation", generation)
+            put("sequence", 1)
+            put("battery", 85)
+            put("network", "wifi")
+            put("cpu_usage", 15.0)
+            put("ram_usage", 42.0)
+            put("temperature_c", 34.5)
+        }
+
+        val bodyBytes = bodyJson.toString().toByteArray(Charsets.UTF_8)
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        val bodyHashBytes = digest.digest(bodyBytes)
+        val bodyHashHex = bodyHashBytes.joinToString("") { "%02x".format(it) }
+
+        val timestamp = (System.currentTimeMillis() / 1000).toString()
+        val nonce = "nonce_${UUID.randomUUID().toString().substring(0, 8)}"
+
+        val canonicalMsg = "POST\n/api/v1/agents/heartbeat\n$bodyHashHex\n$timestamp\n$nonce"
+        val signature = keyStore.signMessage(canonicalMsg)
+
+        val request = Request.Builder()
+            .url(heartbeatUrl)
+            .post(bodyJson.toString().toRequestBody("application/json".toMediaType()))
+            .addHeader("X-Agent-ID", agentId)
+            .addHeader("X-Agent-Timestamp", timestamp)
+            .addHeader("X-Agent-Nonce", nonce)
+            .addHeader("X-Agent-Signature", signature)
+            .build()
+
+        val response = client.newCall(request).execute()
+        if (response.isSuccessful) {
+            Log.d(TAG, "10s Signed HTTP Heartbeat successful!")
+        } else {
+            Log.w(TAG, "Signed HTTP Heartbeat status: ${response.code}")
         }
     }
 

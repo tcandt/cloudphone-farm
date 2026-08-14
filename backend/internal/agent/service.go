@@ -132,8 +132,11 @@ func (s *AgentService) RevokeEnrollmentToken(ctx context.Context, orgID, tokenID
 }
 
 func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*pgrepo.EnrollmentResult, error) {
-	if req.TokenCode == "" || len(req.PublicKeyBytes) == 0 || req.DeviceSerialNumber == "" {
+	if req.TokenCode == "" || len(req.PublicKeyBytes) == 0 {
 		return nil, errors.New("missing required enrollment parameters")
+	}
+	if req.DeviceSerialNumber == "" {
+		req.DeviceSerialNumber = fmt.Sprintf("sn_%s", uuid.New().String()[:8])
 	}
 
 	// Validate Ed25519 public key size (must be exactly 32 bytes)

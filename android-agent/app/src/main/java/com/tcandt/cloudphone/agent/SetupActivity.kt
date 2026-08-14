@@ -71,9 +71,13 @@ class SetupActivity : AppCompatActivity() {
             val jsonBody = JSONObject().apply {
                 put("token_code", tokenCode)
                 put("device_fingerprint", fingerprint)
-                put("model", "${Build.MANUFACTURER} ${Build.MODEL}")
-                put("os_version", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-                put("public_key", pubKeyB64)
+                put("device_model", "${Build.MANUFACTURER} ${Build.MODEL}")
+                put("device_android_version", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                put("public_key_bytes", pubKeyB64)
+                put("apk_version", "1.0.0")
+                put("protocol_version", "v1")
+                put("device_serial_number", Build.SERIAL ?: "sn_android_01")
+                put("device_display_name", Build.MODEL)
             }
 
             val client = OkHttpClient()

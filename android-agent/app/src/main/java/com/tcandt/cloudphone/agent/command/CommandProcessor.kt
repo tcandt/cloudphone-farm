@@ -4,11 +4,16 @@ import android.content.Context
 import android.util.Log
 import com.tcandt.cloudphone.agent.accessibility.DeviceControlService
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 class CommandProcessor(
     private val context: Context,
@@ -36,7 +41,7 @@ class CommandProcessor(
         commandChannel.trySend(commandDispatch)
     }
 
-    private fun processSingleCommandSerial(commandDispatch: JSONObject) {
+    private suspend fun processSingleCommandSerial(commandDispatch: JSONObject) {
         val commandId = commandDispatch.optString("command_id")
         val deviceId = commandDispatch.optString("device_id")
         val fencingToken = commandDispatch.optLong("fencing_token", 0L)
@@ -49,17 +54,25 @@ class CommandProcessor(
             return
         }
 
-        // 1. Target Device ID Validation
+        // 1. Strict Target Device ID Validation
         val myDeviceId = configStore.getDeviceId()
-        if (myDeviceId.isNotEmpty() && deviceId.isNotEmpty() && deviceId != myDeviceId) {
+        if (deviceId.isEmpty() || myDeviceId.isEmpty() || deviceId != myDeviceId) {
             Log.w(TAG, "Command $commandId target device $deviceId mismatch with local device $myDeviceId")
             return
         }
 
-        // 2. Persistent SQLite Deduplication & Crash Window Protection Check
+        // 2. TTL Expiration Check before ACK
+        if (isExpired(expiresAtStr)) {
+            Log.w(TAG, "Command $commandId expired (expires_at=$expiresAtStr). Dropping execution.")
+            journal.saveRecord(commandId, fencingToken, "expired", "TTL expired before execution")
+            statusPublisher(commandId, "expired", "TTL expired before execution", 3)
+            return
+        }
+
+        // 3. Persistent SQLite Deduplication & Crash Window Protection Check
         val existingRecord = journal.getRecord(commandId)
         if (existingRecord != null) {
-            if (existingRecord.status == "succeeded" || existingRecord.status == "failed") {
+            if (existingRecord.status == "succeeded" || existingRecord.status == "failed" || existingRecord.status == "expired") {
                 Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
                 statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
                 return
@@ -71,7 +84,7 @@ class CommandProcessor(
             }
         }
 
-        // 3. Monotonic Fencing Token check
+        // 4. Monotonic Fencing Token check
         if (!fencingStore.validateAndUpdate(fencingToken)) {
             val errStr = "Stale fencing token $fencingToken (highest known: ${fencingStore.getHighestFencingToken()})"
             Log.w(TAG, "Rejecting command $commandId: $errStr")
@@ -80,10 +93,10 @@ class CommandProcessor(
             return
         }
 
-        // 4. Sequenced execution reporting: Sequence 1 -> ACK
+        // 5. Sequenced execution reporting: Sequence 1 -> ACK
         statusPublisher(commandId, "ack", null, 1)
 
-        // 5. Pre-execution Durable Crash Window Protection: Record 'executing' in SQLite BEFORE physical touch
+        // 6. Pre-execution Durable Crash Window Protection: Record 'executing' in SQLite BEFORE physical touch
         journal.saveRecord(commandId, fencingToken, "executing", null)
         statusPublisher(commandId, "executing", null, 2)
 
@@ -96,17 +109,20 @@ class CommandProcessor(
             return
         }
 
-        // 6. Physical gesture execution via AccessibilityService
+        // 7. Serial Physical Gesture Execution using CompletableDeferred for async callbacks
         when (commandType) {
             "gesture.touch" -> {
                 val x = payload.optDouble("x", 0.0).toFloat()
                 val y = payload.optDouble("y", 0.0).toFloat()
+                val deferred = CompletableDeferred<Boolean>()
                 service.performTouch(x, y) { success ->
-                    val status = if (success) "succeeded" else "failed"
-                    val err = if (success) null else "Accessibility touch gesture failed"
-                    journal.saveRecord(commandId, fencingToken, status, err)
-                    statusPublisher(commandId, status, err, 3)
+                    deferred.complete(success)
                 }
+                val success = deferred.await()
+                val status = if (success) "succeeded" else "failed"
+                val err = if (success) null else "Accessibility touch gesture failed"
+                journal.saveRecord(commandId, fencingToken, status, err)
+                statusPublisher(commandId, status, err, 3)
             }
             "gesture.swipe" -> {
                 val startX = payload.optDouble("startX", 0.0).toFloat()
@@ -114,12 +130,15 @@ class CommandProcessor(
                 val endX = payload.optDouble("endX", 0.0).toFloat()
                 val endY = payload.optDouble("endY", 0.0).toFloat()
                 val durationMs = payload.optLong("durationMs", 300L)
+                val deferred = CompletableDeferred<Boolean>()
                 service.performSwipe(startX, startY, endX, endY, durationMs) { success ->
-                    val status = if (success) "succeeded" else "failed"
-                    val err = if (success) null else "Accessibility swipe gesture failed"
-                    journal.saveRecord(commandId, fencingToken, status, err)
-                    statusPublisher(commandId, status, err, 3)
+                    deferred.complete(success)
                 }
+                val success = deferred.await()
+                val status = if (success) "succeeded" else "failed"
+                val err = if (success) null else "Accessibility swipe gesture failed"
+                journal.saveRecord(commandId, fencingToken, status, err)
+                statusPublisher(commandId, status, err, 3)
             }
             "input.text" -> {
                 val text = payload.optString("text", "")
@@ -141,6 +160,18 @@ class CommandProcessor(
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
             }
+        }
+    }
+
+    private fun isExpired(expiresAtStr: String): Boolean {
+        if (expiresAtStr.isEmpty()) return false
+        return try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            val expiresDate = sdf.parse(expiresAtStr) ?: return false
+            System.currentTimeMillis() > expiresDate.time
+        } catch (e: Exception) {
+            false
         }
     }
 }
