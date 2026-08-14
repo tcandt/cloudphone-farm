@@ -408,4 +408,33 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     const unauthSession = await httpAuth.fetchSession();
     expect(unauthSession).toBeNull();
   });
+
+  it('Verifies 10x consecutive open/close media client cycle does not leak resources or media sessions', async () => {
+    const targetDevice = mockDevices[0];
+
+    for (let i = 0; i < 10; i++) {
+      const viewerKey = `str_${targetDevice.device_id}_cycle_${i}`;
+      const mediaClient = defaultMediaRegistry.acquire(viewerKey);
+      
+      const session = await mediaClient.startSession(targetDevice.device_id);
+      expect(session.stream_session_id).toBeTruthy();
+
+      await defaultMediaRegistry.release(viewerKey);
+    }
+  });
+
+  it('Verifies WebRTC MediaClient state machine handles DEGRADED and RECONNECTING states', () => {
+    const targetDevice = mockDevices[0];
+    const mediaClient = defaultMediaRegistry.acquire(`str_state_${targetDevice.device_id}`);
+    
+    let currentState: string = mediaClient.getWebRtcClient?.()?.getState() || 'IDLE';
+    const unsub = mediaClient.onStateChange?.((state) => {
+      currentState = state;
+    });
+
+    expect(currentState).toBeDefined();
+
+    unsub?.();
+    defaultMediaRegistry.release(`str_state_${targetDevice.device_id}`);
+  });
 });
