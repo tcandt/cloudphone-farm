@@ -81,7 +81,9 @@ jobs:
         env:
           DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
           REDIS_URL: localhost:6379
-        run: go test -v ./...
+        run: |
+          go vet ./...
+          go test -race -v ./...
 
       - name: Build Go Backend Server Binary
         working-directory: backend

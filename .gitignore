@@ -35,3 +35,4 @@ secrets/*
 # Testing
 playwright-report/
 test-results/
+scripts/*.json
