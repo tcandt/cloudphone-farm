@@ -426,23 +426,45 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
 
   it('Verifies production WebRtcMediaClient 10x open/startSession/bind/close cycle leaves zero leaked resources', async () => {
     const mockElement = document.createElement('video');
+    const OriginalWS = globalThis.WebSocket;
 
-    for (let i = 0; i < 10; i++) {
-      const client = new WebRtcMediaClient({
-        deviceId: 'dev_sm_g930f_01',
-      });
+    // Mock WebSocket to simulate clean signaling connection in JSDOM
+    globalThis.WebSocket = class MockWebSocket {
+      public onopen: (() => void) | null = null;
+      public onmessage: ((evt: { data: string }) => void) | null = null;
+      public onclose: (() => void) | null = null;
+      public onerror: (() => void) | null = null;
+      public readyState = 1;
 
-      client.bindVideoElement(mockElement);
-      expect(client.getState()).toBe('IDLE');
+      constructor() {
+        setTimeout(() => {
+          this.onopen?.();
+        }, 0);
+      }
+      public send() {}
+      public close() {
+        this.onclose?.();
+      }
+    } as unknown as typeof WebSocket;
 
-      // Start signaling & session
-      client.startSession();
-      expect(['CONNECTING_SIGNALING', 'IDLE']).toContain(client.getState());
+    try {
+      for (let i = 0; i < 10; i++) {
+        const client = new WebRtcMediaClient({
+          deviceId: 'dev_sm_g930f_01',
+        });
 
-      // Close session
-      client.close();
-      expect(client.getState()).toBe('CLOSED');
-      expect(mockElement.srcObject).toBeNull();
+        client.bindVideoElement(mockElement);
+        expect(client.getState()).toBe('IDLE');
+
+        client.startSession();
+        expect(['CONNECTING_SIGNALING', 'IDLE']).toContain(client.getState());
+
+        client.close();
+        expect(client.getState()).toBe('CLOSED');
+        expect(mockElement.srcObject).toBeNull();
+      }
+    } finally {
+      globalThis.WebSocket = OriginalWS;
     }
   });
 });
