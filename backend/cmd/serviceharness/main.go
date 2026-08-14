@@ -1,5 +1,10 @@
 package main
 
+// Internal Backend Service Integration Test Harness
+// Purpose: Validates PostgreSQL migrations 000001..000006, Redis control lease acquisition,
+// and CommandService.DispatchCommand database transactions in Go.
+// NOTE: This harness tests database engine mechanics directly and is NOT a physical device test.
+
 import (
 	"context"
 	"encoding/json"
@@ -18,8 +23,7 @@ import (
 	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
 
-type PhysicalTraceResult struct {
-	GitSHA              string                   `json:"git_sha"`
+type ServiceHarnessResult struct {
 	Timestamp           string                   `json:"timestamp"`
 	IdempotencyKey      string                   `json:"idempotency_key"`
 	ServerCommandID     string                   `json:"server_command_id"`
@@ -110,7 +114,7 @@ func main() {
 	// 4. Dispatch Command through Command Service
 	cmdService := command.NewCommandService(pool, leaseService)
 	timestampMs := time.Now().UnixNano() / 1000000
-	idempKey := fmt.Sprintf("touch_physical_%d", timestampMs)
+	idempKey := fmt.Sprintf("touch_harness_%d", timestampMs)
 
 	req := &domain.DispatchCommandRequest{
 		DeviceID:       deviceID,
@@ -163,8 +167,7 @@ func main() {
 		log.Fatalf("Failed to query command_outbox table: %v", err)
 	}
 
-	result := &PhysicalTraceResult{
-		GitSHA:          cmd.CommandID,
+	result := &ServiceHarnessResult{
 		Timestamp:       time.Now().Format(time.RFC3339),
 		IdempotencyKey:  idempKey,
 		ServerCommandID: cmd.CommandID,
