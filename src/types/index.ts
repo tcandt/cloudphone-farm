@@ -104,8 +104,8 @@ export interface DispatchCommandRequest {
   payload: Record<string, unknown>;
   controlLeaseId?: string;
   idempotencyKey: string;
-  issuedAt: string;
-  expiresAt: string;
+  issuedAt?: string;
+  expiresAt?: string;
 }
 
 export interface DeviceCommand {

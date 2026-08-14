@@ -8,6 +8,7 @@ import (
 
 var (
 	ErrDeviceNotFound = errors.New("device not found or access denied")
+	ErrDeviceOffline  = errors.New("device is offline")
 )
 
 type DeviceTelemetry struct {

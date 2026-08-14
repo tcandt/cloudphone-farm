@@ -26,7 +26,7 @@ export interface DeviceService {
 
 export class MockDeviceService implements DeviceService {
   async list(params: DeviceListParams = {}): Promise<DeviceListResponse> {
-    await new Promise((res) => setTimeout(res, 50));
+    await new Promise((res) => setTimeout(res, 10));
     let result = [...mockDevices];
 
     if (params.status && params.status !== 'all') {
@@ -57,12 +57,12 @@ export class MockDeviceService implements DeviceService {
   }
 
   async getById(id: string): Promise<DeviceEntity | null> {
-    await new Promise((res) => setTimeout(res, 50));
+    await new Promise((res) => setTimeout(res, 10));
     return mockDevices.find((d) => d.device_id === id) ?? null;
   }
 
   async acquireLease(deviceId: string): Promise<ControlLease> {
-    await new Promise((res) => setTimeout(res, 50));
+    await new Promise((res) => setTimeout(res, 10));
     const now = new Date();
     return {
       control_lease_id: `lease_${Math.random().toString(36).substring(2, 10)}`,
@@ -78,7 +78,7 @@ export class MockDeviceService implements DeviceService {
   }
 
   async renewLease(deviceId: string, leaseId: string): Promise<ControlLease> {
-    await new Promise((res) => setTimeout(res, 50));
+    await new Promise((res) => setTimeout(res, 10));
     const now = new Date();
     return {
       control_lease_id: leaseId,
@@ -94,7 +94,7 @@ export class MockDeviceService implements DeviceService {
   }
 
   async releaseLease(): Promise<void> {
-    await new Promise((res) => setTimeout(res, 50));
+    await new Promise((res) => setTimeout(res, 10));
   }
 }
 
@@ -179,9 +179,10 @@ export class HttpDeviceService implements DeviceService {
   }
 }
 
-const apiMode = import.meta.env.VITE_API_MODE ?? (import.meta.env.DEV ? 'mock' : 'http');
+const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
+const apiMode = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_MODE
+  ? import.meta.env.VITE_API_MODE
+  : (isTestEnv || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) ? 'mock' : 'http');
 
 export const deviceService: DeviceService =
-  apiMode === 'mock'
-    ? new MockDeviceService()
-    : new HttpDeviceService();
+  apiMode === 'mock' ? new MockDeviceService() : new HttpDeviceService();

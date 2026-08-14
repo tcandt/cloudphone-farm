@@ -5,22 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 )
-
-type DispatchRequest struct {
-	DeviceID       string                 `json:"deviceId"`
-	Type           string                 `json:"type"`
-	Payload        map[string]interface{} `json:"payload"`
-	ControlLeaseID string                 `json:"controlLeaseId"`
-	IdempotencyKey string                 `json:"idempotencyKey"`
-}
 
 type CommandService struct {
 	pool         *pgxpool.Pool
@@ -34,17 +26,34 @@ func NewCommandService(pool *pgxpool.Pool, leaseService *devservice.LeaseService
 	}
 }
 
-func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID string, req DispatchRequest) (*domain.DeviceCommand, error) {
-	if s.pool == nil {
-		return nil, errors.New("postgres connection pool uninitialized")
+func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID string, req *domain.DispatchCommandRequest) (*domain.DeviceCommand, error) {
+	if req.DeviceID == "" {
+		return nil, errors.New("missing device_id")
+	}
+	if req.Type == "" {
+		return nil, errors.New("missing command type")
+	}
+	if req.ControlLeaseID == "" {
+		return nil, errors.New("missing control_lease_id")
 	}
 
-	// 1. Mandatory Idempotency Key Validation (No auto-generation)
-	if req.IdempotencyKey == "" {
-		return nil, domain.ErrIdempotencyKeyRequired
+	// 1. Verify Device Ownership (Tenant Isolation)
+	var deviceOrg string
+	var deviceStatus string
+	err := s.pool.QueryRow(ctx, "SELECT organization_id, status FROM devices WHERE device_id = $1", req.DeviceID).Scan(&deviceOrg, &deviceStatus)
+	if err != nil {
+		return nil, fmt.Errorf("%w: device %s not found", domain.ErrDeviceNotFound, req.DeviceID)
 	}
 
-	// 2. Strict Input Command Payload Validation
+	if deviceOrg != orgID {
+		return nil, domain.ErrUnauthorizedCommand
+	}
+
+	if deviceStatus != "online" {
+		return nil, fmt.Errorf("%w: device is %s", domain.ErrDeviceOffline, deviceStatus)
+	}
+
+	// 2. Validate Command Payload & Type
 	switch req.Type {
 	case "gesture.touch":
 		if req.Payload == nil {
@@ -57,29 +66,34 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		}
 		xNum, isXNum := parseNumber(xVal)
 		yNum, isYNum := parseNumber(yVal)
-		if !isXNum || xNum < 0 {
-			return nil, errors.New("coordinate x must be a number >= 0")
+		if !isXNum || xNum < 0 || xNum > 1 {
+			return nil, errors.New("normalized coordinate x must be a number between 0.0 and 1.0")
 		}
-		if !isYNum || yNum < 0 {
-			return nil, errors.New("coordinate y must be a number >= 0")
+		if !isYNum || yNum < 0 || yNum > 1 {
+			return nil, errors.New("normalized coordinate y must be a number between 0.0 and 1.0")
 		}
 
 	case "gesture.swipe":
 		if req.Payload == nil {
 			return nil, errors.New("missing payload for gesture.swipe")
 		}
-		for _, key := range []string{"startX", "startY", "endX", "endY", "durationMs"} {
+		for _, key := range []string{"startX", "startY", "endX", "endY"} {
 			val, ok := req.Payload[key]
 			if !ok {
 				return nil, fmt.Errorf("missing required %s in gesture.swipe payload", key)
 			}
 			numVal, isNum := parseNumber(val)
-			if !isNum || numVal < 0 {
-				return nil, fmt.Errorf("%s must be a number >= 0", key)
+			if !isNum || numVal < 0 || numVal > 1 {
+				return nil, fmt.Errorf("normalized coordinate %s must be a number between 0.0 and 1.0", key)
 			}
-			if key == "durationMs" && (numVal < 50 || numVal > 5000) {
-				return nil, errors.New("durationMs must be a number between 50ms and 5000ms")
-			}
+		}
+		durationVal, ok := req.Payload["durationMs"]
+		if !ok {
+			return nil, errors.New("missing required durationMs in gesture.swipe payload")
+		}
+		durNum, isDurNum := parseNumber(durationVal)
+		if !isDurNum || durNum < 50 || durNum > 5000 {
+			return nil, errors.New("durationMs must be a number between 50ms and 5000ms")
 		}
 
 	case "input.text":
@@ -138,44 +152,59 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 
 	// Insert into commands table (Includes idempotency_key NOT NULL)
 	insertCmdSQL := `
-		INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload, status, idempotency_key, expires_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'pending', $7, $8, $9)
+		INSERT INTO commands (
+			command_id, device_id, organization_id, actor_id,
+			command_type, payload, status, idempotency_key, created_at, expires_at
+		) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
 	`
-	if _, err := tx.Exec(ctx, insertCmdSQL, cmdID, orgID, req.DeviceID, userID, req.Type, string(payloadBytes), req.IdempotencyKey, expiresAt, now); err != nil {
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && (pgErr.ConstraintName == "uk_org_actor_idempotency" || pgErr.ConstraintName == "commands_organization_id_actor_id_idempotency_key_key" || pgErr.ConstraintName == "") {
-			// Idempotency constraint violation on (organization_id, actor_id, idempotency_key)
-			return s.handleExistingIdempotency(ctx, orgID, userID, req)
-		}
-		return nil, fmt.Errorf("failed to insert command into postgres: %w", err)
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = fmt.Sprintf("idemp_%s", uuid.New().String()[:12])
 	}
 
-	// Insert into command_events table
-	insertEvtSQL := `
-		INSERT INTO command_events (command_id, status, payload)
-		VALUES ($1, 'pending', $2::jsonb)
-	`
-	evtPayload, _ := json.Marshal(map[string]interface{}{
-		"actor_id":      userID,
-		"fencing_token": lease.FencingToken,
-		"timestamp":     now.Format(time.RFC3339),
-	})
-	if _, err := tx.Exec(ctx, insertEvtSQL, cmdID, string(evtPayload)); err != nil {
-		return nil, fmt.Errorf("failed to insert command event: %w", err)
+	_, err = tx.Exec(ctx, insertCmdSQL, cmdID, req.DeviceID, orgID, userID, req.Type, payloadBytes, idempotencyKey, now, expiresAt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert command record: %w", err)
 	}
 
-	// Insert into command_outbox table
+	// Insert into command_events audit table
+	insertEventSQL := `
+		INSERT INTO command_events (
+			event_id, command_id, device_id, organization_id,
+			status, event_type, payload, created_at
+		) VALUES ($1, $2, $3, $4, 'pending', 'created', $5, $6)
+	`
+	eventID := fmt.Sprintf("evt_%s", uuid.New().String()[:12])
+	_, err = tx.Exec(ctx, insertEventSQL, eventID, cmdID, req.DeviceID, orgID, payloadBytes, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert command event record: %w", err)
+	}
+
+	// Insert into command_outbox table for asynchronous worker dispatch to agent
 	insertOutboxSQL := `
-		INSERT INTO command_outbox (command_id, organization_id, device_id, event_type, payload, status, created_at)
-		VALUES ($1, $2, $3, 'command.dispatch', $4::jsonb, 'pending', $5)
+		INSERT INTO command_outbox (
+			outbox_id, command_id, device_id, organization_id,
+			command_type, payload, status, created_at, scheduled_at
+		) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
 	`
-	if _, err := tx.Exec(ctx, insertOutboxSQL, cmdID, orgID, req.DeviceID, string(payloadBytes), now); err != nil {
-		return nil, fmt.Errorf("failed to insert outbox record: %w", err)
+	outboxID := fmt.Sprintf("out_%s", uuid.New().String()[:12])
+	_, err = tx.Exec(ctx, insertOutboxSQL, outboxID, cmdID, req.DeviceID, orgID, req.Type, payloadBytes, now, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert command outbox record: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit command dispatch transaction: %w", err)
 	}
+
+	slog.Info("Dispatched command successfully to transactional outbox",
+		"command_id", cmdID,
+		"device_id", req.DeviceID,
+		"org_id", orgID,
+		"type", req.Type,
+		"lease_id", lease.ControlLeaseID,
+		"fencing_token", lease.FencingToken,
+	)
 
 	return &domain.DeviceCommand{
 		CommandID:      cmdID,
@@ -183,72 +212,10 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		OrganizationID: orgID,
 		ActorID:        userID,
 		CommandType:    req.Type,
-		Payload:        req.Payload,
+		Payload:        payloadMap,
 		Status:         "pending",
 		CreatedAt:      now,
 	}, nil
-}
-
-func (s *CommandService) handleExistingIdempotency(ctx context.Context, orgID, userID string, req DispatchRequest) (*domain.DeviceCommand, error) {
-	query := `
-		SELECT command_id, device_id, organization_id, actor_id, command_type, payload, status, created_at
-		FROM commands
-		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
-	`
-	var existing domain.DeviceCommand
-	var rawPayload []byte
-	err := s.pool.QueryRow(ctx, query, orgID, userID, req.IdempotencyKey).Scan(
-		&existing.CommandID,
-		&existing.DeviceID,
-		&existing.OrganizationID,
-		&existing.ActorID,
-		&existing.CommandType,
-		&rawPayload,
-		&existing.Status,
-		&existing.CreatedAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query existing idempotent command: %w", err)
-	}
-
-	// Unmarshal existing payload to check parameters match
-	var existingPayload map[string]interface{}
-	_ = json.Unmarshal(rawPayload, &existingPayload)
-
-	// Check device_id and command_type match
-	if existing.DeviceID != req.DeviceID || existing.CommandType != req.Type {
-		return nil, domain.ErrIdempotencyConflict
-	}
-
-	// Two-way payload semantic comparison (stripping system fields control_lease_id and fencing_token)
-	normReq := make(map[string]string)
-	for k, v := range req.Payload {
-		if k != "control_lease_id" && k != "fencing_token" {
-			normReq[k] = fmt.Sprintf("%v", v)
-		}
-	}
-
-	normExist := make(map[string]string)
-	for k, v := range existingPayload {
-		if k != "control_lease_id" && k != "fencing_token" {
-			normExist[k] = fmt.Sprintf("%v", v)
-		}
-	}
-
-	// 2-way length and key-value equality check
-	if len(normReq) != len(normExist) {
-		return nil, domain.ErrIdempotencyConflict
-	}
-
-	for k, v := range normReq {
-		existVal, ok := normExist[k]
-		if !ok || existVal != v {
-			return nil, domain.ErrIdempotencyConflict
-		}
-	}
-
-	existing.Payload = existingPayload
-	return &existing, nil
 }
 
 func parseNumber(val interface{}) (float64, bool) {

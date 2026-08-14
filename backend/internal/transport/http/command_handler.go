@@ -25,7 +25,7 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req cmdservice.DispatchRequest
+	var req domain.DispatchCommandRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "INVALID_JSON_PAYLOAD", "Malformed request body")
 		return
@@ -36,7 +36,7 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd, err := h.cmdService.DispatchCommand(r.Context(), principal.OrganizationID, principal.UserID, req)
+	cmd, err := h.cmdService.DispatchCommand(r.Context(), principal.OrganizationID, principal.UserID, &req)
 	if err != nil {
 		if errors.Is(err, domain.ErrIdempotencyKeyRequired) {
 			writeJSONError(w, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", err.Error())

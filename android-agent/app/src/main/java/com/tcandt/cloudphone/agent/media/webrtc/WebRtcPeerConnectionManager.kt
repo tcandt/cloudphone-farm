@@ -179,7 +179,16 @@ class WebRtcPeerConnectionManager(
             peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
             Log.i(TAG, "Attached MediaProjection VideoTrack to WebRTC PeerConnection successfully")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to attach WebRTC ScreenCapturer: ${e.message}", e)
+            Log.e(TAG, "Error attaching ScreenCapturerAndroid: ${e.message}", e)
+        }
+    }
+
+    fun updateCaptureFormat(width: Int, height: Int, fps: Int = 30) {
+        try {
+            videoCapturer?.changeCaptureFormat(width, height, fps)
+            Log.i(TAG, "Changed WebRTC ScreenCapturer format to ${width}x${height}@${fps}fps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to change WebRTC capture format: ${e.message}")
         }
     }
 

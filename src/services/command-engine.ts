@@ -142,8 +142,8 @@ export class CommandEngine {
 
     // 1. Validate timestamp & clock skew bounds
     const now = Date.now();
-    const issuedAtTime = new Date(req.issuedAt).getTime();
-    const expiresAtTime = new Date(req.expiresAt).getTime();
+    const issuedAtTime = req.issuedAt ? new Date(req.issuedAt).getTime() : now;
+    const expiresAtTime = req.expiresAt ? new Date(req.expiresAt).getTime() : now + 15000;
 
     if (isNaN(issuedAtTime) || issuedAtTime > now + 300 * 1000) {
       throw new CommandExecutionError('INVALID_TIMESTAMP', 'Command issuedAt timestamp is in the far future.');

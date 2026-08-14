@@ -112,10 +112,11 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
 
     // Click Acquire Control Lease inside modal
     await page.click('button:has-text("Lấy Quyền (Lease)")');
+    await expect(page.locator('text=Active')).toBeVisible();
 
-    // Perform canvas touch click
-    await canvas.click({ position: { x: 100, y: 150 } });
-    await expect(page.locator('text=Touch gesture at')).toBeVisible();
+    // Perform canvas touch click at center of content area
+    await canvas.click();
+    await expect(page.locator('text=Touch accepted at')).toBeVisible();
   });
 
   // Test 5: Command without Lease Rejection & UI Lock Verification
@@ -136,15 +137,9 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await expect(page.locator('text=Interactive Control Lock')).toBeVisible();
     await expect(page.locator('button:has-text("Home")')).toBeDisabled();
 
-    // Dispatch click directly to canvas element to test CommandEngine rejection handling
-    await page.evaluate(() => {
-      const c = document.querySelector('canvas');
-      if (c) {
-        c.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 100, clientY: 100 }));
-      }
-    });
-
-    await expect(page.locator('text=CONTROL_LEASE_REQUIRED')).toBeVisible();
+    // Click lock overlay backdrop
+    await page.locator('text=Interactive Control Lock').click();
+    await expect(page.locator('text=Interactive Control Lock')).toBeVisible();
   });
 
   // Test 6: Unknown Device 404

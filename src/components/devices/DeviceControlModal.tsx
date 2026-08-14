@@ -1,9 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { DeviceEntity, ControlLease, DeviceCommandType } from '../../types';
 import { defaultMediaRegistry, MediaClient } from '../../services/media-client';
-import { defaultCommandEngine } from '../../services/command-engine';
+import { deviceService } from '../../services/device-service';
+import { commandService } from '../../services/command-service';
 import { useAuth } from '../../context/AuthContext';
 import { PermissionGuard } from '../common/PermissionGuard';
+import { computeVideoGeometry, mapPointerToNormalizedCoordinates, VideoContentGeometry } from '../../lib/video-geometry';
+import { PointerGestureRecognizer, DispatchedGesture } from '../../lib/pointer-gesture-engine';
 import {
   X,
   Play,
@@ -30,8 +33,9 @@ interface CommandLogItem {
 
 export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, isOpen = true, onClose }) => {
   const { session } = useAuth();
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
 
   const [lease, setLease] = useState<ControlLease | null>(null);
   const [leaseSecondsLeft, setLeaseSecondsLeft] = useState<number>(0);
@@ -40,19 +44,50 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const [webrtcState, setWebrtcState] = useState<string>('CONNECTING');
   const [webrtcError, setWebrtcError] = useState<string | null>(null);
   const [activeServerSessionId, setActiveServerSessionId] = useState<string>('');
-  const mediaClientRef = useRef<MediaClient | null>(null);
+  const [geometry, setGeometry] = useState<VideoContentGeometry | null>(null);
+  const [geometryRevision, setGeometryRevision] = useState(0);
 
-  // Unique stream session ID per viewer instance
+  const mediaClientRef = useRef<MediaClient | null>(null);
+  const gestureRecognizerRef = useRef<PointerGestureRecognizer>(new PointerGestureRecognizer());
+  const leaseRef = useRef<ControlLease | null>(null);
+  const lastPointerUpTimeRef = useRef<number>(0);
+
+  // Keep leaseRef updated for async callbacks & unmount cleanup
+  useEffect(() => {
+    leaseRef.current = lease;
+  }, [lease]);
+
   const [viewerSessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
 
-  const addLog = (msg: string) => {
+  const addLog = useCallback((msg: string) => {
     setCommandLog((prev) => [
       { id: Math.random().toString(), msg, time: new Date().toLocaleTimeString('vi-VN') },
-      ...prev.slice(0, 7),
+      ...prev.slice(0, 9),
     ]);
-  };
+  }, []);
 
-  // Initialize MediaClient for device stream & subscribe to WebRTC state machine
+  // Recalculate video geometry on video metadata load or element resize
+  const updateGeometry = useCallback(() => {
+    if (!videoRef.current) return;
+    const nextRevision = geometryRevision + 1;
+    const geom = computeVideoGeometry(videoRef.current, nextRevision);
+    if (geom) {
+      setGeometry(geom);
+      setGeometryRevision(nextRevision);
+    }
+  }, [geometryRevision]);
+
+  useEffect(() => {
+    if (!containerRef.current || !videoRef.current) return;
+    const ro = new ResizeObserver(() => {
+      updateGeometry();
+    });
+    ro.observe(containerRef.current);
+    ro.observe(videoRef.current);
+    return () => ro.disconnect();
+  }, [updateGeometry]);
+
+  // MediaClient Stream Initialization
   useEffect(() => {
     if (!isOpen) return;
 
@@ -70,18 +105,26 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     });
 
     async function initStream() {
-      await mediaClient.startSession(device.device_id, {
-        resolution: '720p',
-        fps: 30,
-        bitrate_kbps: 2500,
-      });
+      try {
+        await mediaClient.startSession(device.device_id, {
+          resolution: '720p',
+          fps: 30,
+          bitrate_kbps: 2500,
+        });
 
-      if (mounted) {
-        if (videoRef.current) {
-          mediaClient.attach(videoRef.current);
+        if (mounted) {
+          if (videoRef.current) {
+            mediaClient.attach(videoRef.current);
+          }
+          if (canvasRef.current) {
+            mediaClient.attach(canvasRef.current);
+          }
         }
-        if (canvasRef.current) {
-          mediaClient.attach(canvasRef.current);
+      } catch (err) {
+        if (mounted) {
+          const msg = err instanceof Error ? err.message : 'Failed to start media session';
+          setWebrtcState('FAILED');
+          setWebrtcError(msg);
         }
       }
     }
@@ -92,10 +135,16 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       mounted = false;
       unsubscribe?.();
       defaultMediaRegistry.release(viewerSessionId);
-    };
-  }, [device, isOpen, viewerSessionId]);
 
-  // Handle Lease Timer Countdown
+      // Best-effort release control lease on modal unmount
+      if (leaseRef.current) {
+        deviceService.releaseLease(device.device_id, leaseRef.current.control_lease_id).catch(() => {});
+        leaseRef.current = null;
+      }
+    };
+  }, [device.device_id, isOpen, viewerSessionId]);
+
+  // Control Lease Expiry & Auto-Renew Loop
   useEffect(() => {
     if (!lease) return;
 
@@ -104,89 +153,150 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       setLeaseSecondsLeft(remaining);
 
       if (remaining <= 0) {
-        if (lease) defaultCommandEngine.revokeLease(lease.control_lease_id);
         setLease(null);
-        addLog('Control lease ended (Expired)');
+        addLog('Control lease expired');
+      } else if (remaining <= 10) {
+        // Auto-renew lease 10s before expiry
+        deviceService
+          .renewLease(device.device_id, lease.control_lease_id)
+          .then((renewed) => {
+            setLease(renewed);
+            addLog(`Auto-renewed control lease (Fencing Token: #${renewed.fencing_token})`);
+          })
+          .catch((err) => {
+            console.warn('[Lease] Auto-renew failed:', err);
+            setLease(null);
+            addLog('Lease auto-renew failed. Control revoked.');
+          });
       }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [lease]);
+  }, [device.device_id, lease, addLog]);
 
-  const acquireLease = () => {
+  const acquireLease = async () => {
     if (!session) return;
-    const newLease: ControlLease = {
-      control_lease_id: `lease_${Math.random().toString(36).substring(2, 8)}`,
-      device_id: device.device_id,
-      organization_id: session.organization_id,
-      user_id: session.user_id,
-      user_display_name: session.display_name,
-      fencing_token: Math.floor(Math.random() * 1000) + 1,
-      acquired_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 300 * 1000).toISOString(),
-      ttl_seconds: 300,
-    };
     try {
-      defaultCommandEngine.registerLease(newLease);
+      const newLease = await deviceService.acquireLease(device.device_id);
+      const remaining = Math.max(0, Math.floor((new Date(newLease.expires_at).getTime() - Date.now()) / 1000));
+      setLeaseSecondsLeft(remaining);
       setLease(newLease);
-      addLog('Acquired exclusive control lease (300s)');
+      addLog(`Acquired backend control lease #${newLease.control_lease_id} (Fencing Token: #${newLease.fencing_token})`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to acquire lease';
-      addLog(`Error acquiring lease: ${msg}`);
+      const msg = err instanceof Error ? err.message : 'Failed to acquire control lease';
+      addLog(`Lease error: ${msg}`);
     }
   };
 
-  const releaseLease = () => {
+  const releaseLease = async () => {
     if (lease) {
-      defaultCommandEngine.revokeLease(lease.control_lease_id);
-      setLease(null);
-      addLog('Released control lease manually');
+      try {
+        await deviceService.releaseLease(device.device_id, lease.control_lease_id);
+        addLog('Released control lease manually');
+      } catch (err) {
+        console.warn('Error releasing lease:', err);
+      } finally {
+        setLease(null);
+      }
     }
   };
 
-  const handleTouch = (normX: number, normY: number) => {
+  // Dispatch gesture command to backend production HTTP service
+  const dispatchGestureCommand = async (gesture: DispatchedGesture) => {
     if (!lease || !session) {
-      addLog('Cannot touch: CONTROL_LEASE_REQUIRED');
+      addLog('Cannot dispatch gesture: CONTROL_LEASE_REQUIRED');
       return;
     }
+
     try {
-      const cmd = defaultCommandEngine.dispatch(
-        {
-          deviceId: device.device_id,
-          type: 'gesture.touch',
-          payload: { x: normX, y: normY },
-          controlLeaseId: lease.control_lease_id,
-          idempotencyKey: `touch_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
-        },
-        session
-      );
-      if (mediaClientRef.current) {
-        mediaClientRef.current.simulateTouch(normX, normY);
+      const command = await commandService.dispatch({
+        deviceId: device.device_id,
+        type: gesture.type,
+        payload: gesture.payload as unknown as Record<string, unknown>,
+        controlLeaseId: lease.control_lease_id,
+        idempotencyKey: `cmd_${gesture.type}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      });
+
+      if (gesture.type === 'gesture.touch') {
+        const { x, y } = gesture.payload;
+        addLog(`Touch accepted at (${x.toFixed(3)}, ${y.toFixed(3)}) - Cmd #${command.command_id}`);
+      } else {
+        const { startX, startY, endX, endY } = gesture.payload;
+        addLog(`Swipe accepted (${startX.toFixed(2)},${startY.toFixed(2)})->(${endX.toFixed(2)},${endY.toFixed(2)}) - Cmd #${command.command_id}`);
       }
-      addLog(`Touch gesture at (x: ${normX.toFixed(2)}, y: ${normY.toFixed(2)}) - Cmd #${cmd.command_id}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Touch command failed';
-      addLog(`Touch error: ${msg}`);
+      const msg = err instanceof Error ? err.message : 'Command dispatch failed';
+      addLog(`Command Error: ${msg}`);
     }
   };
 
-  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    handleTouch(x, y);
+  // Pointer Event Handlers using Video Content Geometry Engine
+  const handlePointerDown = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
+    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const activeGeom = geometry || computeVideoGeometry(targetEl);
+    const rect = targetEl.getBoundingClientRect();
+    const position = { clientX: e.clientX, clientY: e.clientY };
+
+    const accepted = gestureRecognizerRef.current.onPointerDown(e.pointerId, position, rect, activeGeom);
+    if (accepted) {
+      try {
+        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      } catch {
+        // Ignore pointer capture errors in synthetic/test environments
+      }
+    }
   };
 
-  const handleVideoClick = (e: React.MouseEvent<HTMLVideoElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    handleTouch(x, y);
+  const handlePointerMove = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
+    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const activeGeom = geometry || computeVideoGeometry(targetEl);
+    const rect = targetEl.getBoundingClientRect();
+    const position = { clientX: e.clientX, clientY: e.clientY };
+    gestureRecognizerRef.current.onPointerMove(e.pointerId, position, rect, activeGeom);
   };
 
-  const sendKey = (keyName: string) => {
+  const handlePointerUp = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
+    lastPointerUpTimeRef.current = Date.now();
+    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const activeGeom = geometry || computeVideoGeometry(targetEl);
+    const rect = targetEl.getBoundingClientRect();
+    const position = { clientX: e.clientX, clientY: e.clientY };
+
+    const gesture = gestureRecognizerRef.current.onPointerUp(e.pointerId, position, rect, activeGeom);
+    if (gesture) {
+      dispatchGestureCommand(gesture);
+    }
+  };
+
+  const handlePointerCancel = (_e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
+    gestureRecognizerRef.current.cancelCurrentGesture();
+  };
+
+  const handleClickFallback = (e: React.MouseEvent<HTMLVideoElement | HTMLCanvasElement>) => {
+    if (Date.now() - lastPointerUpTimeRef.current < 200) {
+      return; // Ignore fallback click if pointerup already dispatched gesture
+    }
+    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const activeGeom = geometry || computeVideoGeometry(targetEl);
+    if (!activeGeom) return;
+    const rect = targetEl.getBoundingClientRect();
+    const position = { clientX: e.clientX, clientY: e.clientY };
+    const point = mapPointerToNormalizedCoordinates(position, rect, activeGeom);
+    if (point) {
+      dispatchGestureCommand({
+        type: 'gesture.touch',
+        payload: {
+          x: point.x,
+          y: point.y,
+          coordinateSpace: 'normalized_display_v1',
+          orientation: activeGeom.orientation,
+        },
+      });
+    }
+  };
+
+  // Dispatch Global Hard Keys
+  const sendKey = async (keyName: string) => {
     if (!lease || !session) {
       addLog('Cannot send key: CONTROL_LEASE_REQUIRED');
       return;
@@ -196,29 +306,25 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       HOME: 'global.home',
       RECENTS: 'global.recents',
     };
-    const cmdType: DeviceCommandType = typeMap[keyName] || 'global.back';
+    const cmdType = typeMap[keyName] || 'global.back';
 
     try {
-      const cmd = defaultCommandEngine.dispatch(
-        {
-          deviceId: device.device_id,
-          type: cmdType,
-          payload: { key: keyName },
-          controlLeaseId: lease.control_lease_id,
-          idempotencyKey: `key_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
-        },
-        session
-      );
-      addLog(`Sent key: ${keyName} - Cmd #${cmd.command_id}`);
+      const command = await commandService.dispatch({
+        deviceId: device.device_id,
+        type: cmdType,
+        payload: { key: keyName },
+        controlLeaseId: lease.control_lease_id,
+        idempotencyKey: `key_${keyName}_${Date.now()}`,
+      });
+      addLog(`Sent key: ${keyName} - Cmd #${command.command_id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Key command failed';
       addLog(`Key error: ${msg}`);
     }
   };
 
-  const sendTextInput = () => {
+  // Dispatch Text Input
+  const sendTextInput = async () => {
     if (!lease || !session) {
       addLog('Cannot send text: CONTROL_LEASE_REQUIRED');
       return;
@@ -226,19 +332,14 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     if (!textPayload.trim()) return;
 
     try {
-      const cmd = defaultCommandEngine.dispatch(
-        {
-          deviceId: device.device_id,
-          type: 'input.text',
-          payload: { text: textPayload },
-          controlLeaseId: lease.control_lease_id,
-          idempotencyKey: `text_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 30 * 1000).toISOString(),
-        },
-        session
-      );
-      addLog(`Typed text: "${textPayload}" - Cmd #${cmd.command_id}`);
+      const command = await commandService.dispatch({
+        deviceId: device.device_id,
+        type: 'input.text',
+        payload: { text: textPayload },
+        controlLeaseId: lease.control_lease_id,
+        idempotencyKey: `text_${Date.now()}`,
+      });
+      addLog(`Typed text: "${textPayload}" - Cmd #${command.command_id}`);
       setTextPayload('');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Type text failed';
@@ -249,6 +350,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   if (!isOpen) return null;
 
   const displaySessionId = activeServerSessionId || viewerSessionId;
+  const isLandscape = geometry?.orientation === 'landscape';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
@@ -270,13 +372,16 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 </span>
               </div>
               <p className="text-xs text-slate-400 font-mono">
-                {device.model} ({device.android_version}) • ID: {device.device_id}
+                {device.model} ({device.android_version}) • Geometry: {geometry ? `${geometry.videoWidth}x${geometry.videoHeight} (${geometry.orientation})` : '720x1280'}
               </p>
             </div>
           </div>
 
           <button
-            onClick={onClose}
+            onClick={() => {
+              releaseLease();
+              onClose();
+            }}
             className="p-2 text-slate-400 hover:text-white bg-slate-800/60 hover:bg-slate-800 rounded-full transition-all"
           >
             <X size={18} />
@@ -285,26 +390,48 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
         {/* Modal Body Grid */}
         <div className="grid grid-cols-1 md:grid-cols-12 overflow-hidden flex-1">
-          {/* Stream Player (Left Column) */}
-          <div className="md:col-span-6 bg-slate-950 p-6 flex flex-col items-center justify-center border-b md:border-b-0 md:border-r border-slate-800/80 relative">
-            <div className="relative rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-800 bg-black aspect-[9/16] w-full max-w-[280px]">
+          {/* Stream Player Column */}
+          <div
+            ref={containerRef}
+            className="md:col-span-6 bg-slate-950 p-6 flex flex-col items-center justify-center border-b md:border-b-0 md:border-r border-slate-800/80 relative"
+          >
+            <div
+              className={`relative rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-800 bg-black w-full max-w-[320px] transition-all duration-300 ${
+                isLandscape ? 'aspect-[16/9]' : 'aspect-[9/16]'
+              }`}
+            >
               <video
                 ref={videoRef}
                 autoPlay
                 playsInline
                 muted
-                onClick={handleVideoClick}
-                onLoadedData={() => mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived()}
-                onPlaying={() => mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived()}
-                className="w-full h-full cursor-crosshair object-contain bg-black"
+                onLoadedMetadata={updateGeometry}
+                onLoadedData={() => {
+                  updateGeometry();
+                  mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived();
+                }}
+                onPlaying={() => {
+                  updateGeometry();
+                  mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived();
+                }}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerCancel}
+                onClick={handleClickFallback}
+                className="w-full h-full cursor-crosshair object-contain bg-black touch-none select-none"
               />
               <canvas
                 ref={canvasRef}
-                width={360}
-                height={640}
-                onClick={handleCanvasClick}
+                width={geometry?.videoWidth || 360}
+                height={geometry?.videoHeight || 640}
+                onPointerDown={handlePointerDown}
+                onPointerMove={handlePointerMove}
+                onPointerUp={handlePointerUp}
+                onPointerCancel={handlePointerCancel}
+                onClick={handleClickFallback}
                 data-session-id={displaySessionId}
-                className="absolute inset-0 w-full h-full cursor-crosshair object-contain"
+                className="absolute inset-0 w-full h-full cursor-crosshair object-contain touch-none select-none"
               />
 
               {webrtcState === 'FAILED' && (
@@ -316,11 +443,14 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
               )}
 
               {!lease && (
-                <div className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer z-10" onClick={acquireLease}>
+                <div
+                  className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer z-10"
+                  onClick={acquireLease}
+                >
                   <Shield size={32} className="text-amber-400 animate-bounce" />
                   <p className="text-xs font-bold text-slate-200">Interactive Control Lock</p>
                   <p className="text-[11px] text-slate-400 max-w-[180px]">
-                    Acquire a control lease to interact with touch gestures and send input commands.
+                    Lấy quyền Control Lease để tương tác cảm ứng và phát lệnh tới thiết bị.
                   </p>
                   <PermissionGuard permission="device.control.acquire">
                     <button
@@ -335,23 +465,23 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             </div>
 
             <p className="text-[10px] text-slate-500 mt-3 font-mono flex items-center gap-1">
-              <Wifi size={12} className="text-emerald-400" /> Server Session ID: {displaySessionId}
+              <Wifi size={12} className="text-emerald-400" /> Session: {displaySessionId}
             </p>
           </div>
 
-          {/* Control Panel (Right Column) */}
+          {/* Control Panel Column */}
           <div className="md:col-span-6 p-6 space-y-5 bg-slate-900/50 flex flex-col overflow-y-auto">
             {/* Lease Status Card */}
             <div className="bg-slate-800/60 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
               <div className="space-y-1">
                 <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                  Quyền Điều Khiển (Lease)
+                  Quyền Điều Khiển Backend
                 </span>
                 {lease ? (
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
                     <span className="text-xs font-extrabold text-emerald-400">
-                      Active ({leaseSecondsLeft}s còn lại)
+                      Active ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
                     </span>
                   </div>
                 ) : (
@@ -441,7 +571,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             <div className="space-y-2 flex-1 flex flex-col min-h-[140px]">
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                  <Clock size={12} /> Nhật Ký Lệnh Dispatch (Audit Trail)
+                  <Clock size={12} /> Real-Time HTTP Command Audit Log
                 </span>
                 <span className="text-[10px] font-mono text-slate-500">{commandLog.length} events</span>
               </div>

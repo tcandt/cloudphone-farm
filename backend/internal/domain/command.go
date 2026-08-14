@@ -10,6 +10,14 @@ var (
 	ErrIdempotencyConflict    = errors.New("idempotency key reused with different command parameters")
 )
 
+type DispatchCommandRequest struct {
+	DeviceID       string                 `json:"deviceId"`
+	Type           string                 `json:"type"`
+	Payload        map[string]interface{} `json:"payload"`
+	ControlLeaseID string                 `json:"controlLeaseId"`
+	IdempotencyKey string                 `json:"idempotencyKey"`
+}
+
 type DeviceCommand struct {
 	CommandID      string                 `json:"command_id"`
 	DeviceID       string                 `json:"device_id"`

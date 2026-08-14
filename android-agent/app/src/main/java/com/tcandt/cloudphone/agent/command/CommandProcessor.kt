@@ -4,6 +4,9 @@ import android.content.Context
 import android.util.Log
 import com.tcandt.cloudphone.agent.accessibility.DeviceControlService
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import com.tcandt.cloudphone.agent.control.DisplayGeometryProvider
+import com.tcandt.cloudphone.agent.control.DisplayOrientation
+import com.tcandt.cloudphone.agent.control.NormalizedCoordinateMapper
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -98,11 +101,6 @@ class CommandProcessor(
                 Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
                 statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
                 return
-            } else if (existingRecord.status == "executing") {
-                Log.w(TAG, "Command $commandId was interrupted in 'executing' state (process crash/restart). Preventing 2nd touch, marking failed")
-                journal.saveRecord(commandId, fencingToken, "failed", "Interrupted during process restart")
-                statusPublisher(commandId, "failed", "Interrupted during process restart", 3)
-                return
             }
         }
 
@@ -131,13 +129,33 @@ class CommandProcessor(
             return
         }
 
+        // Fetch current physical screen geometry and orientation
+        val geometry = DisplayGeometryProvider.getGeometry(context)
+
+        // Orientation guard
+        val targetOrientation = payload.optString("orientation", "")
+        if (targetOrientation.isNotEmpty()) {
+            val currentOrientStr = if (geometry.orientation == DisplayOrientation.LANDSCAPE) "landscape" else "portrait"
+            if (targetOrientation != currentOrientStr) {
+                val errStr = "ORIENTATION_MISMATCH: command expected $targetOrientation but screen is $currentOrientStr"
+                Log.w(TAG, errStr)
+                journal.saveRecord(commandId, fencingToken, "failed", errStr)
+                statusPublisher(commandId, "failed", errStr, 3)
+                return
+            }
+        }
+
         // 7. Serial Physical Gesture Execution using CompletableDeferred for async callbacks
         when (commandType) {
             "gesture.touch" -> {
-                val x = payload.optDouble("x", 0.0).toFloat()
-                val y = payload.optDouble("y", 0.0).toFloat()
+                val normX = payload.optDouble("x", 0.0).toFloat()
+                val normY = payload.optDouble("y", 0.0).toFloat()
+
+                val point = NormalizedCoordinateMapper.map(normX, normY, geometry.widthPx, geometry.heightPx)
+                Log.d(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
+
                 val deferred = CompletableDeferred<Boolean>()
-                service.performTouch(x, y) { success ->
+                service.performTouch(point.x, point.y) { success ->
                     deferred.complete(success)
                 }
                 val success = deferred.await()
@@ -147,13 +165,19 @@ class CommandProcessor(
                 statusPublisher(commandId, status, err, 3)
             }
             "gesture.swipe" -> {
-                val startX = payload.optDouble("startX", 0.0).toFloat()
-                val startY = payload.optDouble("startY", 0.0).toFloat()
-                val endX = payload.optDouble("endX", 0.0).toFloat()
-                val endY = payload.optDouble("endY", 0.0).toFloat()
+                val startNormX = payload.optDouble("startX", 0.0).toFloat()
+                val startNormY = payload.optDouble("startY", 0.0).toFloat()
+                val endNormX = payload.optDouble("endX", 0.0).toFloat()
+                val endNormY = payload.optDouble("endY", 0.0).toFloat()
                 val durationMs = payload.optLong("durationMs", 300L)
+
+                val startPt = NormalizedCoordinateMapper.map(startNormX, startNormY, geometry.widthPx, geometry.heightPx)
+                val endPt = NormalizedCoordinateMapper.map(endNormX, endNormY, geometry.widthPx, geometry.heightPx)
+
+                Log.d(TAG, "Swipe normalized ($startNormX, $startNormY)->($endNormX, $endNormY) -> Physical Px (${startPt.x}, ${startPt.y})->(${endPt.x}, ${endPt.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
+
                 val deferred = CompletableDeferred<Boolean>()
-                service.performSwipe(startX, startY, endX, endY, durationMs) { success ->
+                service.performSwipe(startPt.x, startPt.y, endPt.x, endPt.y, durationMs) { success ->
                     deferred.complete(success)
                 }
                 val success = deferred.await()
@@ -173,12 +197,13 @@ class CommandProcessor(
             "global.back", "global.home", "global.recents" -> {
                 val success = service.performNavigation(commandType)
                 val status = if (success) "succeeded" else "failed"
-                val err = if (success) null else "Global action $commandType failed"
+                val err = if (success) null else "Failed to perform global navigation action $commandType"
                 journal.saveRecord(commandId, fencingToken, status, err)
                 statusPublisher(commandId, status, err, 3)
             }
             else -> {
-                val errStr = "Unsupported command type $commandType"
+                val errStr = "Unsupported command_type: $commandType"
+                Log.e(TAG, errStr)
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
             }
