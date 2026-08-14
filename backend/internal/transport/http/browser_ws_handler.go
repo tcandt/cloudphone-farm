@@ -62,7 +62,7 @@ func (h *BrowserWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Verify device exists and belongs to authenticated organization
 	if h.deviceService != nil {
-		dev, err := h.deviceService.GetDeviceByID(r.Context(), deviceID)
+		dev, err := h.deviceService.GetDeviceByID(r.Context(), principal.OrganizationID, deviceID)
 		if err != nil || dev == nil || dev.OrganizationID != principal.OrganizationID {
 			writeJSONError(w, http.StatusNotFound, "DEVICE_NOT_FOUND", "Device not found or unauthorized")
 			return
