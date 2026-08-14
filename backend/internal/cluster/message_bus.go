@@ -91,14 +91,15 @@ func (mb *MessageBus) Subscribe(ctx context.Context, handler func(env *RoutedEnv
 	}
 
 	mb.mu.Lock()
-	ch := nodeBusChannel(mb.nodeID)
-	mb.pubsub = mb.rdb.Subscribe(ctx, ch)
+	nodeCh := nodeBusChannel(mb.nodeID)
+	devicePattern := "pcp:v1:device-bus:*"
+	mb.pubsub = mb.rdb.PSubscribe(ctx, nodeCh, devicePattern)
 	mb.mu.Unlock()
 
 	mb.wg.Add(1)
 	go func() {
 		defer mb.wg.Done()
-		slog.Info("Subscribed backend node message bus channel", "channel", ch, "node_id", mb.nodeID)
+		slog.Info("Subscribed backend node message bus channel", "channel", nodeCh, "node_id", mb.nodeID)
 
 		pubsubChan := mb.pubsub.Channel()
 		for {
