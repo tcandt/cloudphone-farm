@@ -171,3 +171,23 @@ func (b *BrowserHub) BroadcastCommandDelivery(orgID, deviceID, commandID, delive
 		}
 	}
 }
+
+func (b *BrowserHub) BroadcastRawMediaSignal(orgID, deviceID string, data []byte) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	key := DeviceKey(orgID, deviceID)
+	subs, exists := b.subscribers[key]
+	if !exists || len(subs) == 0 {
+		return
+	}
+
+	for _, sub := range subs {
+		select {
+		case sub.Send <- data:
+		default:
+			slog.Warn("Browser subscriber channel buffer full, skipping media signal frame", "subscriber_id", sub.SubscriberID)
+		}
+	}
+}
+

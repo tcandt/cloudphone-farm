@@ -11,8 +11,10 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
+	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
+	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 )
 
@@ -25,19 +27,33 @@ var upgrader = websocket.Upgrader{
 }
 
 type AgentWSHandler struct {
-	hub        *agentws.Hub
-	enrollRepo *pgrepo.EnrollmentRepository
-	cmdRepo    *pgrepo.CommandRepository
-	browserHub *agentws.BrowserHub
+	hub           *agentws.Hub
+	enrollRepo    *pgrepo.EnrollmentRepository
+	cmdRepo       *pgrepo.CommandRepository
+	browserHub    *agentws.BrowserHub
+	agentConnRepo *redispkg.AgentConnectionRepository
+	router        *cluster.ClusterRouter
+	nodeID        string
 }
 
-func NewAgentWSHandler(hub *agentws.Hub, enrollRepo *pgrepo.EnrollmentRepository, cmdRepo *pgrepo.CommandRepository, browserHub *agentws.BrowserHub) *AgentWSHandler {
+func NewAgentWSHandler(
+	hub *agentws.Hub,
+	enrollRepo *pgrepo.EnrollmentRepository,
+	cmdRepo *pgrepo.CommandRepository,
+	browserHub *agentws.BrowserHub,
+) *AgentWSHandler {
 	return &AgentWSHandler{
 		hub:        hub,
 		enrollRepo: enrollRepo,
 		cmdRepo:    cmdRepo,
 		browserHub: browserHub,
 	}
+}
+
+func (h *AgentWSHandler) SetClusterComponents(nodeID string, agentConnRepo *redispkg.AgentConnectionRepository, router *cluster.ClusterRouter) {
+	h.nodeID = nodeID
+	h.agentConnRepo = agentConnRepo
+	h.router = router
 }
 
 func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +128,56 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Handshake Succeeded -> Initialize Agent Connection with Tenant-Scoped Device Key
-	generation := h.hub.NextGeneration(agent.OrganizationID, agent.DeviceID)
+	// 2. Handshake Succeeded -> Allocate Global Generation & Register Distributed Owner Record
+	var generation int64
+	if h.agentConnRepo != nil {
+		gen, err := h.agentConnRepo.NextGeneration(r.Context(), agent.OrganizationID, agent.DeviceID)
+		if err != nil {
+			slog.Error("Fail closed: Redis generation allocation failed", "error", err, "device_id", agent.DeviceID)
+			_ = conn.Close()
+			return
+		}
+		generation = gen
+	} else {
+		generation = h.hub.NextGeneration(agent.OrganizationID, agent.DeviceID)
+	}
+
 	agentConn := agentws.NewConnection(h.hub, conn, agent, generation)
+
+	if h.agentConnRepo != nil {
+		ownerRec := redispkg.AgentOwnerRecord{
+			NodeID:       h.nodeID,
+			AgentID:      agent.AgentID,
+			ConnectionID: agentConn.ConnectionID,
+			Generation:   generation,
+		}
+		if err := h.agentConnRepo.RegisterOwner(r.Context(), agent.OrganizationID, agent.DeviceID, ownerRec, 30*time.Second); err != nil {
+			slog.Error("Fail closed: Redis owner lease registration failed", "error", err, "device_id", agent.DeviceID)
+			_ = conn.Close()
+			return
+		}
+
+		// Periodic owner lease renewal ticker
+		renewCtx, renewCancel := context.WithCancel(context.Background())
+		defer renewCancel()
+
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					_ = h.agentConnRepo.RenewOwner(renewCtx, agent.OrganizationID, agent.DeviceID, ownerRec, 30*time.Second)
+				case <-renewCtx.Done():
+					return
+				}
+			}
+		}()
+
+		defer func() {
+			_ = h.agentConnRepo.UnregisterOwner(context.Background(), agent.OrganizationID, agent.DeviceID, agentConn.ConnectionID)
+		}()
+	}
 
 	// Send Connection Ready Payload
 	readyPayload := agentws.ConnectionReadyPayload{
@@ -134,6 +197,7 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 
 	// Register in Hub
 	h.hub.Register(agentConn)
+	defer h.hub.Unregister(agentConn)
 
 	// Status ACK Callback for Command State Machine (Bound to Device Authority & Independent Long-Lived Context)
 	statusCallback := func(statusPayload agentws.CommandStatusPayload) error {
@@ -154,15 +218,26 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		)
 		if err != nil {
 			slog.Error("Failed to persist command status ACK from agent WS", "error", err, "command_id", statusPayload.CommandID, "device_id", agent.DeviceID, "org_id", agent.OrganizationID)
-		} else if h.browserHub != nil {
-			h.browserHub.BroadcastCommandStatus(
-				agent.OrganizationID,
-				agent.DeviceID,
-				statusPayload.CommandID,
-				statusPayload.Status,
-				int(statusPayload.Sequence),
-				statusPayload.ErrorMessage,
-			)
+		} else {
+			if h.router != nil {
+				h.router.BroadcastBrowserStatusEvent(
+					agent.OrganizationID,
+					agent.DeviceID,
+					statusPayload.CommandID,
+					statusPayload.Status,
+					int(statusPayload.Sequence),
+					statusPayload.ErrorMessage,
+				)
+			} else if h.browserHub != nil {
+				h.browserHub.BroadcastCommandStatus(
+					agent.OrganizationID,
+					agent.DeviceID,
+					statusPayload.CommandID,
+					statusPayload.Status,
+					int(statusPayload.Sequence),
+					statusPayload.ErrorMessage,
+				)
+			}
 		}
 		return err
 	}

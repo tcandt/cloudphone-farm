@@ -21,17 +21,19 @@ import (
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
+	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
 
 type BrowserMediaHandler struct {
 	hub           *agentws.Hub
 	deviceService *devservice.DeviceService
+	viewerRepo    *redispkg.ViewerRepository
 	coturnSecret  string
 	coturnHost    string
 	upgrader      websocket.Upgrader
 }
 
-func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceService, allowedOrigins []string) *BrowserMediaHandler {
+func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceService, allowedOrigins []string, viewerRepo *redispkg.ViewerRepository) *BrowserMediaHandler {
 	var coturnSecret string
 	secretPath := os.Getenv("COTURN_SHARED_SECRET_FILE")
 	if secretPath != "" {
@@ -42,9 +44,6 @@ func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceSe
 	if coturnSecret == "" {
 		coturnSecret = os.Getenv("COTURN_SHARED_SECRET")
 	}
-	if coturnSecret == "" {
-		coturnSecret = "pcp_coturn_secret_key"
-	}
 
 	coturnHost := os.Getenv("COTURN_HOST")
 	if coturnHost == "" {
@@ -54,6 +53,7 @@ func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceSe
 	return &BrowserMediaHandler{
 		hub:           hub,
 		deviceService: deviceService,
+		viewerRepo:    viewerRepo,
 		coturnSecret:  coturnSecret,
 		coturnHost:    coturnHost,
 		upgrader: websocket.Upgrader{
@@ -118,7 +118,20 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// 3. Verify Active Agent Connection Before Registering Session
+	// 3. Distributed Viewer Quota Lease Check (MAX_DIRECT_P2P_VIEWERS_PER_DEVICE = 1)
+	sessionID := fmt.Sprintf("sess_%s", uuid.New().String()[:8])
+	if h.viewerRepo != nil {
+		if err := h.viewerRepo.AcquireViewerLease(ctx, orgID, deviceID, sessionID, 15*time.Minute); err != nil {
+			slog.Warn("Viewer quota exceeded for device stream", "device_id", deviceID, "org_id", orgID, "error", err)
+			http.Error(w, "Maximum viewer stream limit reached for device (max 1)", http.StatusTooManyRequests)
+			return
+		}
+		defer func() {
+			_ = h.viewerRepo.ReleaseViewerLease(context.Background(), orgID, deviceID, sessionID)
+		}()
+	}
+
+	// 4. Verify Active Agent Connection Before Registering Session
 	agentConn, ok := h.hub.GetConnection(orgID, deviceID)
 	if !ok || agentConn == nil {
 		slog.Warn("Device agent is not connected for browser media stream", "device_id", deviceID, "org_id", orgID)
@@ -133,11 +146,10 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	}
 	defer conn.Close()
 
-	sessionID := fmt.Sprintf("sess_%s", uuid.New().String()[:8])
 	browserChan := make(chan []byte, 128)
 	expiresAt := time.Now().Add(15 * time.Minute)
 
-	// 4. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
+	// 5. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
 	unixExpiry := time.Now().Add(10 * time.Minute).Unix()
 	username := fmt.Sprintf("%d:%s", unixExpiry, sessionID)
 
@@ -157,7 +169,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	// 5. Register authenticated MediaSession record with Agent Connection Fencing Snapshot
+	// 6. Register authenticated MediaSession record with Agent Connection Fencing Snapshot
 	mediaSession := &agentws.MediaSession{
 		SessionID:      sessionID,
 		OrganizationID: orgID,
@@ -174,7 +186,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID, "agent_id", agentConn.AgentID)
 
-	// 6. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
+	// 7. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
 	createdPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"device_id":   deviceID,
@@ -187,7 +199,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	createdBytes, _ := json.Marshal(createdEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
 
-	// 7. Dispatch media.session.start to Device Agent via Fenced Session Dispatch
+	// 8. Dispatch media.session.start to Device Agent via Fenced Session Dispatch
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -276,14 +288,12 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 			switch env.Type {
 			case agentws.MessageTypeMediaSignalOffer, agentws.MessageTypeMediaSignalCandidate:
-				// Fenced Dispatch: Verify exact Agent Connection Snapshot
 				if err := h.hub.DispatchToMediaSession(sessionID, message); err != nil {
 					slog.Warn("Failed to dispatch fenced browser media signal to device agent", "type", env.Type, "error", err)
 				} else {
 					slog.Info("Dispatched fenced browser media signal to device agent", "type", env.Type, "session_id", sessionID)
 				}
 			case agentws.MessageTypeMediaSessionStop:
-				// Fenced Stop Dispatch: Dispatches stop even if expiry boundary was reached
 				if err := h.hub.DispatchStopToMediaSession(sessionID, message); err != nil {
 					slog.Warn("Failed to dispatch fenced browser media stop to device agent", "type", env.Type, "error", err)
 				} else {

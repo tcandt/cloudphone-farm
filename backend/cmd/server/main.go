@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,11 +18,13 @@ import (
 	agentservice "github.com/tcandt/cloudphone-farm/backend/internal/agent"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
 	"github.com/tcandt/cloudphone-farm/backend/internal/command"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
+	"github.com/tcandt/cloudphone-farm/backend/internal/telemetry"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
 	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 	wstransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/ws"
@@ -37,7 +38,13 @@ func main() {
 	slog.SetDefault(logger)
 
 	cfg := config.LoadConfig()
-	slog.Info("Starting Phone Control Platform Go Backend", "env", cfg.AppEnv, "port", cfg.Port)
+	slog.Info("Starting Phone Control Platform Go Backend", "node_id", cfg.NodeID, "env", cfg.AppEnv, "port", cfg.Port)
+
+	// Validate Production Configuration Fail-Fast Policy
+	if err := config.ValidateProductionConfig(cfg); err != nil {
+		slog.Error("FATAL: Production security validation failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Context for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -50,6 +57,10 @@ func main() {
 	pgCancel()
 	if err != nil {
 		slog.Warn("Failed to initialize PostgreSQL pool connection", "error", err)
+		if cfg.AppEnv == "production" {
+			slog.Error("FATAL: PostgreSQL unavailable in production mode")
+			os.Exit(1)
+		}
 	} else {
 		pgPool = pool
 		defer pgPool.Close()
@@ -61,10 +72,28 @@ func main() {
 	opt, err := redis.ParseURL(cfg.RedisURL)
 	if err != nil {
 		slog.Warn("Failed to parse Redis URL", "error", err)
+		if cfg.AppEnv == "production" {
+			slog.Error("FATAL: Redis unavailable in production mode")
+			os.Exit(1)
+		}
 	} else {
 		rdb = redis.NewClient(opt)
 		defer rdb.Close()
 		slog.Info("Redis client initialized")
+	}
+
+	// Cluster Components (Node Registry, Message Bus, Cluster Router)
+	nodeRegistry := cluster.NewNodeRegistry(cfg.NodeID, rdb, 20*time.Second)
+	if rdb != nil {
+		if err := nodeRegistry.Start(ctx); err != nil {
+			slog.Warn("Failed to start cluster node registry", "error", err)
+		}
+		defer nodeRegistry.Shutdown(context.Background())
+	}
+
+	messageBus := cluster.NewMessageBus(cfg.NodeID, rdb)
+	if rdb != nil {
+		defer messageBus.Close()
 	}
 
 	// Repositories & Services
@@ -78,10 +107,23 @@ func main() {
 	fenceRepo := pgrepo.NewFenceRepository(pgPool)
 	leaseRepo := redisrepo.NewLeaseRepository(rdb)
 
+	agentConnRepo := redisrepo.NewAgentConnectionRepository(rdb)
+	mediaSessionRepo := redisrepo.NewMediaSessionRepository(rdb)
+	viewerRepo := redisrepo.NewViewerRepository(rdb)
+
 	// Agent WebSocket Hub & Browser Event Hub & Command Outbox Dispatcher
 	wsHub := agentws.NewHub()
 	browserHub := agentws.NewBrowserHub()
+
+	clusterRouter := cluster.NewClusterRouter(cfg.NodeID, messageBus, agentConnRepo, mediaSessionRepo, wsHub, browserHub)
+	if rdb != nil {
+		if err := clusterRouter.Start(ctx); err != nil {
+			slog.Warn("Failed to start cluster router", "error", err)
+		}
+	}
+
 	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub, browserHub)
+	outboxDispatcher.SetClusterComponents(agentConnRepo, clusterRouter)
 	outboxDispatcher.Start(ctx)
 	defer outboxDispatcher.Stop()
 
@@ -96,14 +138,18 @@ func main() {
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
+
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo, browserHub)
-	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins)
+	agentWSHandler.SetClusterComponents(cfg.NodeID, agentConnRepo, clusterRouter)
+
+	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins, viewerRepo)
 	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, deviceService, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
 
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
 	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
+	rateLimiter := custommw.NewRateLimiter(rdb, cfg.AppEnv)
 
 	// Create Chi router
 	r := chi.NewRouter()
@@ -130,15 +176,22 @@ func main() {
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/ready", healthHandler.Ready)
 
+	// Internal Prometheus Telemetry Exporter
+	r.Get("/metrics", telemetry.PrometheusHandler().ServeHTTP)
+
 	// Persistent Agent WebSocket Endpoint (Separate from /api/v1 - Protected by Signed HTTP Upgrade)
-	r.With(agentAuthMiddleware.Handler).Get("/agent/v1/connect", agentWSHandler.Connect)
+	r.With(
+		rateLimiter.LimitMiddleware(custommw.ScopeWSUpgrade, 20, 5),
+		agentAuthMiddleware.Handler,
+	).Get("/agent/v1/connect", agentWSHandler.Connect)
 
 	// API Gateway routes (HTTP Request Timeout 30s scoped here)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
+		r.Use(rateLimiter.LimitMiddleware(custommw.ScopeRestAPI, 100, 20))
 
 		// Public Auth Routes
-		r.Post("/auth/login", authHandler.Login)
+		r.With(rateLimiter.LimitMiddleware(custommw.ScopeLogin, 10, 2)).Post("/auth/login", authHandler.Login)
 		r.Post("/auth/logout", authHandler.Logout)
 
 		// Public Agent Enrollment Endpoint
@@ -182,7 +235,7 @@ func main() {
 			// Command Dispatch Endpoint (Require device.control.input permission)
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.control.input"))
-				r.Post("/commands", commandHandler.Dispatch)
+				r.With(rateLimiter.LimitMiddleware(custommw.ScopeCommand, 50, 10)).Post("/commands", commandHandler.Dispatch)
 			})
 
 			// Enrollment Tokens Management Routes (Require agent.enroll permission)
@@ -198,46 +251,40 @@ func main() {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"message": "pong",
-					"status":  "active",
-					"user_id": principal.UserID,
-					"org_id":  principal.OrganizationID,
+					"status":          "pong",
+					"user_id":         principal.UserID,
+					"organization_id": principal.OrganizationID,
 				})
 			})
 		})
 	})
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", cfg.Port),
+		Addr:         ":" + cfg.Port,
 		Handler:      r,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Server runner goroutine
-	serverErrors := make(chan error, 1)
+	// Start server in goroutine
 	go func() {
-		slog.Info("HTTP Server listening", "addr", server.Addr)
-		serverErrors <- server.ListenAndServe()
+		slog.Info("HTTP Gateway & WebSocket Server listening", "addr", server.Addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("Server listen failed", "error", err)
+		}
 	}()
 
-	// Graceful shutdown listener
-	select {
-	case err := <-serverErrors:
-		if err != nil && err != http.ErrServerClosed {
-			slog.Error("HTTP Server fatal error", "error", err)
-		}
-	case <-ctx.Done():
-		slog.Info("Shutting down HTTP Server gracefully...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+	// Wait for SIGINT/SIGTERM
+	<-ctx.Done()
+	slog.Info("Shutdown signal received. Initiating graceful shutdown...")
 
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("HTTP Server forced shutdown", "error", err)
-			_ = server.Close()
-		} else {
-			slog.Info("HTTP Server stopped cleanly")
-		}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Server forced shutdown error", "error", err)
 	}
+
+	slog.Info("Server stopped cleanly")
 }

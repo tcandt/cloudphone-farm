@@ -1,0 +1,89 @@
+name: phone-farm-cluster
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: pcp-cluster-postgres
+    environment:
+      POSTGRES_USER: pcp_user
+      POSTGRES_PASSWORD: pcp_secure_password_2026
+      POSTGRES_DB: phone_control_platform
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pcp_user -d phone_control_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: pcp-cluster-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend-a:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pcp-backend-node-a
+    environment:
+      NODE_ID: node-a
+      APP_ENV: development
+      PORT: "8080"
+      POSTGRES_URL: postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      COTURN_SHARED_SECRET: pcp_coturn_secret_key
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  backend-b:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pcp-backend-node-b
+    environment:
+      NODE_ID: node-b
+      APP_ENV: development
+      PORT: "8081"
+      POSTGRES_URL: postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      COTURN_SHARED_SECRET: pcp_coturn_secret_key
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  backend-c:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pcp-backend-node-c
+    environment:
+      NODE_ID: node-c
+      APP_ENV: development
+      PORT: "8082"
+      POSTGRES_URL: postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      COTURN_SHARED_SECRET: pcp_coturn_secret_key
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy

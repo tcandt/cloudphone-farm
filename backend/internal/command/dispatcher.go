@@ -10,21 +10,30 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
+	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
+	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
 
 type OutboxDispatcher struct {
-	outboxRepo  *pgrepo.OutboxRepository
-	cmdRepo     *pgrepo.CommandRepository
-	wsHub       *agentws.Hub
-	browserHub  *agentws.BrowserHub
-	workerID    string
-	stopChan    chan struct{}
-	wg          sync.WaitGroup
-	maxAttempts int
+	outboxRepo    *pgrepo.OutboxRepository
+	cmdRepo       *pgrepo.CommandRepository
+	wsHub         *agentws.Hub
+	browserHub    *agentws.BrowserHub
+	agentConnRepo *redispkg.AgentConnectionRepository
+	router        *cluster.ClusterRouter
+	workerID      string
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+	maxAttempts   int
 }
 
-func NewOutboxDispatcher(outboxRepo *pgrepo.OutboxRepository, cmdRepo *pgrepo.CommandRepository, wsHub *agentws.Hub, browserHub *agentws.BrowserHub) *OutboxDispatcher {
+func NewOutboxDispatcher(
+	outboxRepo *pgrepo.OutboxRepository,
+	cmdRepo *pgrepo.CommandRepository,
+	wsHub *agentws.Hub,
+	browserHub *agentws.BrowserHub,
+) *OutboxDispatcher {
 	workerID := fmt.Sprintf("worker_%s", uuid.New().String()[:8])
 	return &OutboxDispatcher{
 		outboxRepo:  outboxRepo,
@@ -35,6 +44,11 @@ func NewOutboxDispatcher(outboxRepo *pgrepo.OutboxRepository, cmdRepo *pgrepo.Co
 		stopChan:    make(chan struct{}),
 		maxAttempts: 5,
 	}
+}
+
+func (d *OutboxDispatcher) SetClusterComponents(agentConnRepo *redispkg.AgentConnectionRepository, router *cluster.ClusterRouter) {
+	d.agentConnRepo = agentConnRepo
+	d.router = router
 }
 
 func (d *OutboxDispatcher) Start(ctx context.Context) {
@@ -133,30 +147,57 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 
 	attemptNo := msg.AttemptCount + 1
 
-	// Snapshot active connection generation authority
-	snap, ok := d.wsHub.GetConnectionSnapshot(msg.OrganizationID, msg.DeviceID)
-	if !ok {
-		slog.Warn("Device agent not connected to hub for outbox dispatch", "device_id", msg.DeviceID, "command_id", msg.CommandID)
-		if attemptNo >= d.maxAttempts {
-			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "Device offline after max attempts")
-			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
-		} else {
-			backoffSec := 1 << msg.AttemptCount
-			_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, "Device agent not connected", time.Now().Add(time.Duration(backoffSec)*time.Second))
+	var targetAgentID string
+	var targetConnID string
+	var targetGen int64
+	var targetNodeID string
+
+	// 1. Resolve agent owner authority from Redis or local snapshot
+	if d.agentConnRepo != nil {
+		owner, err := d.agentConnRepo.GetOwner(ctx, msg.OrganizationID, msg.DeviceID)
+		if err != nil || owner == nil {
+			slog.Warn("Device agent owner not found in distributed directory", "device_id", msg.DeviceID, "command_id", msg.CommandID, "err", err)
+			d.handleDispatchOffline(ctx, msg, attemptNo)
+			return
 		}
-		return
+		targetAgentID = owner.AgentID
+		targetConnID = owner.ConnectionID
+		targetGen = owner.Generation
+		targetNodeID = owner.NodeID
+	} else {
+		snap, ok := d.wsHub.GetConnectionSnapshot(msg.OrganizationID, msg.DeviceID)
+		if !ok {
+			slog.Warn("Device agent not connected to local hub", "device_id", msg.DeviceID, "command_id", msg.CommandID)
+			d.handleDispatchOffline(ctx, msg, attemptNo)
+			return
+		}
+		targetAgentID = snap.AgentID
+		targetConnID = snap.ConnectionID
+		targetGen = snap.Generation
+		targetNodeID = ""
 	}
 
-	// 1. PERSIST delivery attempt with status 'prepared' BEFORE socket dispatch
-	err = d.cmdRepo.RecordDeliveryAttempt(ctx, msg.OrganizationID, msg.CommandID, msg.DeviceID, attemptNo, snap.AgentID, snap.ConnectionID, snap.Generation, "prepared")
+	snap := agentws.ConnectionSnapshot{
+		AgentID:      targetAgentID,
+		ConnectionID: targetConnID,
+		Generation:   targetGen,
+	}
+
+	// 2. PERSIST delivery attempt with status 'prepared' BEFORE socket dispatch
+	err = d.cmdRepo.RecordDeliveryAttempt(ctx, msg.OrganizationID, msg.CommandID, msg.DeviceID, attemptNo, targetAgentID, targetConnID, targetGen, "prepared")
 	if err != nil {
 		slog.Error("Failed to record prepared command delivery attempt in DB", "error", err, "command_id", msg.CommandID)
 		_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, fmt.Sprintf("DB record delivery attempt error: %v", err), time.Now().Add(1*time.Second))
 		return
 	}
 
-	// 2. Dispatch to exact snapshot atomically
-	err = d.wsHub.DispatchToConnectionSnapshot(msg.OrganizationID, msg.DeviceID, snap, envData)
+	// 3. Dispatch to target node via ClusterRouter or local Hub
+	if d.router != nil && targetNodeID != "" {
+		err = d.router.DispatchCommandRoute(ctx, msg.OrganizationID, msg.DeviceID, snap, targetNodeID, envData)
+	} else {
+		err = d.wsHub.DispatchToConnectionSnapshot(msg.OrganizationID, msg.DeviceID, snap, envData)
+	}
+
 	if err != nil {
 		_ = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "failed", err.Error())
 		if attemptNo >= d.maxAttempts {
@@ -172,7 +213,7 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	// 3. Mark delivery attempt status 'dispatched' and outbox 'dispatched'
+	// 4. Mark delivery attempt status 'dispatched' and outbox 'dispatched'
 	err = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "dispatched", "")
 	if err != nil {
 		slog.Error("Failed to update delivery attempt status to dispatched", "error", err, "command_id", msg.CommandID)
@@ -186,8 +227,20 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	// 4. ONLY AFTER authoritative delivery DB persistence succeeds: broadcast DISPATCHED to browser
-	if d.browserHub != nil {
+	// 5. Broadcast DISPATCHED event across cluster
+	if d.router != nil {
+		d.router.BroadcastBrowserDeliveryEvent(msg.OrganizationID, msg.DeviceID, msg.CommandID, "dispatched", attemptNo)
+	} else if d.browserHub != nil {
 		d.browserHub.BroadcastCommandDelivery(msg.OrganizationID, msg.DeviceID, msg.CommandID, "dispatched", attemptNo)
+	}
+}
+
+func (d *OutboxDispatcher) handleDispatchOffline(ctx context.Context, msg pgrepo.OutboxMessage, attemptNo int) {
+	if attemptNo >= d.maxAttempts {
+		_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "Device offline after max attempts")
+		_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
+	} else {
+		backoffSec := 1 << msg.AttemptCount
+		_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, "Device agent not connected", time.Now().Add(time.Duration(backoffSec)*time.Second))
 	}
 }
