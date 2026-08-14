@@ -40,4 +40,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("org.json:json:20231013")
     implementation("com.google.crypto.tink:tink-android:1.12.0")
+    implementation("io.getstream:stream-webrtc-android:1.2.2")
 }

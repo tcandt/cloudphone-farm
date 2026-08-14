@@ -5,6 +5,7 @@ import android.util.Log
 import com.tcandt.cloudphone.agent.command.CommandProcessor
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
 import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
+import com.tcandt.cloudphone.agent.media.webrtc.WebRtcPeerConnectionManager
 import com.tcandt.cloudphone.agent.security.AgentKeyStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,7 @@ class AgentWebSocketClient(
     private val keyStore = AgentKeyStore(context)
     private val configStore = AgentConfigStore(context)
     private var commandProcessor: CommandProcessor? = null
+    private var webRtcManager: WebRtcPeerConnectionManager? = null
 
     private var connectionId: String = ""
     private var generation: Long = 0
@@ -50,6 +52,10 @@ class AgentWebSocketClient(
     fun connect() {
         commandProcessor = CommandProcessor(context) { commandId, status, error, sequence ->
             sendStatusMessage(commandId, status, error, sequence)
+        }
+
+        webRtcManager = WebRtcPeerConnectionManager(context) { type, payload ->
+            sendWSEnvelope(type, payload)
         }
 
         ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {
@@ -68,6 +74,7 @@ class AgentWebSocketClient(
             }
 
             override fun onSessionStopped(sessionId: String, reason: String) {
+                webRtcManager?.closeSession()
                 val respPayload = JSONObject().apply {
                     put("session_id", sessionId)
                     put("status", "stopped")
@@ -83,6 +90,7 @@ class AgentWebSocketClient(
             }
 
             override fun onSessionFailed(sessionId: String, error: String) {
+                webRtcManager?.closeSession()
                 val respPayload = JSONObject().apply {
                     put("session_id", sessionId)
                     put("status", "failed")
@@ -139,6 +147,12 @@ class AgentWebSocketClient(
                         }
                         "media.session.stop" -> {
                             handleMediaSessionStop(payload)
+                        }
+                        "media.signal.offer" -> {
+                            handleMediaSignalOffer(payload)
+                        }
+                        "media.signal.candidate" -> {
+                            handleMediaSignalCandidate(payload)
                         }
                         else -> {
                             Log.d(TAG, "Received frame of type: $type")
@@ -206,7 +220,30 @@ class AgentWebSocketClient(
         val sessionId = payload.optString("session_id")
         Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
+        webRtcManager?.closeSession()
         ScreenCaptureManager.stopCapture(context)
+    }
+
+    private fun handleMediaSignalOffer(payload: JSONObject) {
+        val sdp = payload.optString("sdp")
+        Log.i(TAG, "Received media.signal.offer from server/web")
+        webRtcManager?.handleRemoteOffer(sdp)
+    }
+
+    private fun handleMediaSignalCandidate(payload: JSONObject) {
+        val sdpMid = payload.optString("sdpMid")
+        val sdpMLineIndex = payload.optInt("sdpMLineIndex", 0)
+        val candidate = payload.optString("candidate")
+        webRtcManager?.handleRemoteCandidate(sdpMid, sdpMLineIndex, candidate)
+    }
+
+    private fun sendWSEnvelope(type: String, payload: JSONObject) {
+        val envelope = JSONObject().apply {
+            put("type", type)
+            put("message_id", "msg_${System.nanoTime()}")
+            put("payload", payload)
+        }
+        webSocket?.send(envelope.toString())
     }
 
     private fun startSignedHttpHeartbeat() {
@@ -301,6 +338,7 @@ class AgentWebSocketClient(
 
     fun disconnect() {
         stopHeartbeat()
+        webRtcManager?.closeSession()
         webSocket?.close(1000, "App Service Stopped")
     }
 }
