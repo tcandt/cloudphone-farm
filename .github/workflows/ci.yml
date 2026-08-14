@@ -26,6 +26,16 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -70,6 +80,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
+          REDIS_URL: localhost:6379
         run: go test -v ./...
 
       - name: Build Go Backend Server Binary

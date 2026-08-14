@@ -180,6 +180,11 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 
 	fenceRepo := pgrepo.NewFenceRepository(pool)
 	leaseRepo := redisrepo.NewLeaseRepository(rdb)
+
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Skipf("Skipping Redis lease test step: Redis unavailable on %s (%v)", redisURL, err)
+	}
+
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 
 	// Pre-create active lease in Redis for test
