@@ -115,7 +115,7 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 	_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE organization_id = $1", orgID)
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO devices (device_id, organization_id, status, display_name, model, android_version, serial_number)
+		INSERT INTO devices (device_id, organization_id, status, name, model, android_version, serial_number)
 		VALUES ($1, $2, 'online', 'Integration Device', 'Samsung S7', '11.0', 'SN12345')
 	`, deviceID, orgID)
 	if err != nil {
