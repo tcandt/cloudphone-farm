@@ -122,8 +122,8 @@ func main() {
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/ready", healthHandler.Ready)
 
-	// Persistent Agent WebSocket Endpoint (Separate from /api/v1)
-	r.Get("/agent/v1/connect", agentWSHandler.Connect)
+	// Persistent Agent WebSocket Endpoint (Separate from /api/v1 - Protected by Signed HTTP Upgrade)
+	r.With(agentAuthMiddleware.Handler).Get("/agent/v1/connect", agentWSHandler.Connect)
 
 	// API Gateway routes
 	r.Route("/api/v1", func(r chi.Router) {

@@ -87,6 +87,16 @@ func TestMigrationSQLFilesValidity(t *testing.T) {
 	if !strings.Contains(m4Content, "attempt_count") || !strings.Contains(m4Content, "dispatched_at") {
 		t.Error("Migration 000004 missing required attempt_count or dispatched_at columns")
 	}
+
+	// Verify Migration 000005
+	m5SQL, err := os.ReadFile("../../db/migrations/000005_harden_command_runtime.up.sql")
+	if err != nil {
+		t.Fatalf("Failed to read 000005_harden_command_runtime.up.sql: %v", err)
+	}
+	m5Content := string(m5SQL)
+	if !strings.Contains(m5Content, "last_status_sequence") || !strings.Contains(m5Content, "expires_at") {
+		t.Error("Migration 000005 missing required last_status_sequence or expires_at columns")
+	}
 }
 
 func TestArgon2idPasswordHashingAndVerification(t *testing.T) {

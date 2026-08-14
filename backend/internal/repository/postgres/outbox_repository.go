@@ -28,7 +28,7 @@ func NewOutboxRepository(pool *pgxpool.Pool) *OutboxRepository {
 	return &OutboxRepository{pool: pool}
 }
 
-// ClaimPendingOutboxMessages claims a batch of pending outbox messages using FOR UPDATE SKIP LOCKED
+// ClaimPendingOutboxMessages claims pending or stale claimed outbox messages using FOR UPDATE SKIP LOCKED
 func (r *OutboxRepository) ClaimPendingOutboxMessages(ctx context.Context, workerID string, limit int) ([]OutboxMessage, error) {
 	if r.pool == nil {
 		return nil, errors.New("postgres connection pool uninitialized")
@@ -43,8 +43,8 @@ func (r *OutboxRepository) ClaimPendingOutboxMessages(ctx context.Context, worke
 	selectQuery := `
 		SELECT outbox_id, command_id, device_id, organization_id, payload, status, attempt_count, created_at
 		FROM command_outbox
-		WHERE status = 'pending'
-		  AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP)
+		WHERE (status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= CURRENT_TIMESTAMP))
+		   OR (status = 'claimed' AND locked_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')
 		ORDER BY created_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1

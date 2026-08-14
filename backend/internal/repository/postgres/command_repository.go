@@ -14,16 +14,17 @@ import (
 )
 
 type CommandRecord struct {
-	CommandID      string
-	OrganizationID string
-	DeviceID       string
-	ActorID        string
-	CommandType    string
-	PayloadJSON    []byte
-	Status         string
-	ExpiresAt      time.Time
-	CreatedAt      time.Time
-	ExecutedAt     *time.Time
+	CommandID          string
+	OrganizationID     string
+	DeviceID           string
+	ActorID            string
+	CommandType        string
+	PayloadJSON        []byte
+	Status             string
+	LastStatusSequence int64
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	ExecutedAt         *time.Time
 }
 
 type CommandRepository struct {
@@ -41,12 +42,12 @@ func (r *CommandRepository) GetCommandByID(ctx context.Context, commandID string
 	}
 
 	query := `
-		SELECT command_id, organization_id, device_id, actor_id, command_type, payload, status, expires_at, created_at, executed_at
+		SELECT command_id, organization_id, device_id, actor_id, command_type, payload, status, COALESCE(last_status_sequence, 0), COALESCE(expires_at, created_at + INTERVAL '10 minutes'), created_at, executed_at
 		FROM commands
 		WHERE command_id = $1
 	`
 	var c CommandRecord
-	err := r.pool.QueryRow(ctx, query, commandID).Scan(&c.CommandID, &c.OrganizationID, &c.DeviceID, &c.ActorID, &c.CommandType, &c.PayloadJSON, &c.Status, &c.ExpiresAt, &c.CreatedAt, &c.ExecutedAt)
+	err := r.pool.QueryRow(ctx, query, commandID).Scan(&c.CommandID, &c.OrganizationID, &c.DeviceID, &c.ActorID, &c.CommandType, &c.PayloadJSON, &c.Status, &c.LastStatusSequence, &c.ExpiresAt, &c.CreatedAt, &c.ExecutedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, domain.ErrDeviceNotFound
@@ -57,8 +58,8 @@ func (r *CommandRepository) GetCommandByID(ctx context.Context, commandID string
 	return &c, nil
 }
 
-// UpdateCommandStatus enforces strict state machine transitions and records command_events
-func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID string, newStatus string, errStr string) error {
+// UpdateCommandStatus enforces strict state machine transitions, sequence persistence, and records command_events
+func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID string, newStatus string, errStr string, sequence int64) error {
 	if r.pool == nil {
 		return errors.New("postgres connection pool uninitialized")
 	}
@@ -69,17 +70,23 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Fetch current status FOR UPDATE
+	// 1. Fetch current status and last_status_sequence FOR UPDATE
 	var currentStatus string
-	selectSQL := `SELECT status FROM commands WHERE command_id = $1 FOR UPDATE`
-	if err := tx.QueryRow(ctx, selectSQL, commandID).Scan(&currentStatus); err != nil {
+	var lastSeq int64
+	selectSQL := `SELECT status, COALESCE(last_status_sequence, 0) FROM commands WHERE command_id = $1 FOR UPDATE`
+	if err := tx.QueryRow(ctx, selectSQL, commandID).Scan(&currentStatus, &lastSeq); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ErrDeviceNotFound
 		}
 		return fmt.Errorf("failed to query command status for update: %w", err)
 	}
 
-	// 2. Validate strict state machine transition
+	// 2. Sequence Protection Check per Command
+	if sequence > 0 && sequence <= lastSeq {
+		return nil // Stale sequence ignored
+	}
+
+	// 3. Validate strict state machine transition
 	if err := agentws.ValidateStateTransition(currentStatus, newStatus); err != nil {
 		if errors.Is(err, agentws.ErrTerminalStateLocked) || currentStatus == newStatus {
 			return nil // Idempotent ignore for terminal or same state
@@ -87,32 +94,34 @@ func (r *CommandRepository) UpdateCommandStatus(ctx context.Context, commandID s
 		return err
 	}
 
-	// 3. Update status
+	// 4. Update status and sequence
 	var updateSQL string
 	if agentws.IsTerminalState(newStatus) {
-		updateSQL = `UPDATE commands SET status = $1, error_message = $2, executed_at = CURRENT_TIMESTAMP WHERE command_id = $3`
-		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, commandID)
+		updateSQL = `UPDATE commands SET status = $1, error_message = $2, last_status_sequence = $3, executed_at = CURRENT_TIMESTAMP WHERE command_id = $4`
+		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, sequence, commandID)
 	} else {
-		updateSQL = `UPDATE commands SET status = $1, error_message = $2 WHERE command_id = $3`
-		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, commandID)
+		updateSQL = `UPDATE commands SET status = $1, error_message = $2, last_status_sequence = $3 WHERE command_id = $4`
+		_, err = tx.Exec(ctx, updateSQL, newStatus, errStr, sequence, commandID)
 	}
 	if err != nil {
 		return fmt.Errorf("failed to update command status: %w", err)
 	}
 
-	// 4. Record command_event
+	// 5. Record command_event (Schema compliant: command_id, status, payload)
 	eventSQL := `
-		INSERT INTO command_events (event_id, command_id, status, details)
-		VALUES ($1, $2, $3, $4::jsonb)
+		INSERT INTO command_events (command_id, status, payload)
+		VALUES ($1, $2, $3::jsonb)
 	`
-	eventID := fmt.Sprintf("evt_%d", time.Now().UnixNano())
-	evtDetails, _ := json.Marshal(map[string]interface{}{
+	evtPayload, _ := json.Marshal(map[string]interface{}{
 		"old_status": currentStatus,
 		"new_status": newStatus,
+		"sequence":   sequence,
 		"error":      errStr,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 	})
-	_, _ = tx.Exec(ctx, eventSQL, eventID, commandID, newStatus, string(evtDetails))
+	if _, err := tx.Exec(ctx, eventSQL, commandID, newStatus, string(evtPayload)); err != nil {
+		return fmt.Errorf("failed to insert command event log: %w", err)
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit command status transaction: %w", err)

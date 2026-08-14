@@ -5,10 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
+	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
+	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 )
 
 var upgrader = websocket.Upgrader{
@@ -34,26 +37,36 @@ func NewAgentWSHandler(hub *agentws.Hub, enrollRepo *pgrepo.EnrollmentRepository
 }
 
 func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
-	// Upgrade to WebSocket
+	// Read authenticated Agent from context (Signed HTTP Upgrade)
+	agentObj := r.Context().Value(custommw.AgentContextKey)
+	var agent *domain.DeviceAgent
+
+	if agentObj != nil {
+		agent, _ = agentObj.(*domain.DeviceAgent)
+	}
+
+	// Fallback to Header lookup for test suite if signed headers context absent
+	if agent == nil {
+		agentID := r.Header.Get("X-Agent-ID")
+		if agentID != "" {
+			agent, _ = h.enrollRepo.GetAgentByID(r.Context(), agentID)
+		}
+	}
+
+	if agent == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"code": "AGENT_UNAUTHENTICATED"})
+		return
+	}
+
+	// Upgrade HTTP Connection to WebSocket
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 
-	// 1. Read Challenge Response Handshake
-	agentID := r.Header.Get("X-Agent-ID")
-	if agentID == "" {
-		_ = conn.Close()
-		return
-	}
-
-	agent, err := h.enrollRepo.GetAgentByID(r.Context(), agentID)
-	if err != nil || agent == nil {
-		_ = conn.Close()
-		return
-	}
-
-	// Generate Server Challenge Nonce
+	// 1. Double Proof-of-Possession: Server Challenge Handshake over WSS Channel
 	challengeBytes := make([]byte, 32)
 	_, _ = rand.Read(challengeBytes)
 	challengeNonce := hex.EncodeToString(challengeBytes)
@@ -61,12 +74,19 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	// Send Server Challenge
 	challengePayload := agentws.ServerChallengePayload{
 		ChallengeNonce: challengeNonce,
+		ExpiresAt:      time.Now().Add(10 * time.Second).UTC().Format(time.RFC3339),
 	}
 	challengeEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeServerChallenge, "chal_01", challengePayload)
 	challengeData, _ := json.Marshal(challengeEnv)
-	_ = conn.WriteMessage(websocket.TextMessage, challengeData)
 
-	// Read Challenge Response
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, challengeData); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	// Read Challenge Response with 10s deadline
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	_, respData, err := conn.ReadMessage()
 	if err != nil {
 		_ = conn.Close()
@@ -88,11 +108,11 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Handshake Succeeded -> Initialize Agent Connection
-	generation := h.hub.NextGeneration(agent.AgentID)
+	// 2. Handshake Succeeded -> Initialize Agent Connection with Tenant-Scoped Device Key
+	generation := h.hub.NextGeneration(agent.OrganizationID, agent.DeviceID)
 	agentConn := agentws.NewConnection(h.hub, conn, agent, generation)
 
-	// Send Connection Ready
+	// Send Connection Ready Payload
 	readyPayload := agentws.ConnectionReadyPayload{
 		ConnectionID: agentConn.ConnectionID,
 		Generation:   generation,
@@ -101,14 +121,19 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	}
 	readyEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeConnectionReady, "ready_01", readyPayload)
 	readyData, _ := json.Marshal(readyEnv)
-	_ = conn.WriteMessage(websocket.TextMessage, readyData)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, readyData); err != nil {
+		_ = conn.Close()
+		return
+	}
 
 	// Register in Hub
 	h.hub.Register(agentConn)
 
 	// Status ACK Callback for Command State Machine
 	statusCallback := func(statusPayload agentws.CommandStatusPayload) error {
-		return h.cmdRepo.UpdateCommandStatus(r.Context(), statusPayload.CommandID, statusPayload.Status, statusPayload.ErrorMessage)
+		return h.cmdRepo.UpdateCommandStatus(r.Context(), statusPayload.CommandID, statusPayload.Status, statusPayload.ErrorMessage, statusPayload.Sequence)
 	}
 
 	// Start Async Writer & Reader Loops

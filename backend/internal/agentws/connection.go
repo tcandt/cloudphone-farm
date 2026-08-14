@@ -87,7 +87,11 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 		case MessageTypePing:
 			pongEnv, _ := NewWSEnvelope(MessageTypePong, env.MessageID, nil)
 			pongData, _ := json.Marshal(pongEnv)
-			_ = c.ws.WriteMessage(websocket.TextMessage, pongData)
+			select {
+			case c.Send <- pongData:
+			default:
+				slog.Warn("Failed to enqueue pong payload to Send channel", "connection_id", c.ConnectionID)
+			}
 
 		case MessageTypeCommandStatus:
 			var statusPayload CommandStatusPayload
@@ -125,28 +129,15 @@ func (c *Connection) WriteLoop(ctx context.Context) {
 				return
 			}
 
-			w, err := c.ws.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			_, _ = w.Write(message)
-
-			// Add queued frames
-			n := len(c.Send)
-			for i := 0; i < n; i++ {
-				_, _ = w.Write([]byte{'\n'})
-				_, _ = w.Write(<-c.Send)
-			}
-
-			if err := w.Close(); err != nil {
+			// Single WSEnvelope = 1 WebSocket text frame
+			if err := c.ws.WriteMessage(websocket.TextMessage, message); err != nil {
 				return
 			}
 
 		case <-ticker.C:
 			_ = c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			pingEnv, _ := NewWSEnvelope(MessageTypePing, fmt.Sprintf("ping_%d", time.Now().UnixNano()), nil)
-			pingData, _ := json.Marshal(pingEnv)
-			if err := c.ws.WriteMessage(websocket.TextMessage, pingData); err != nil {
+			// Native Gorilla WebSocket Control Frame
+			if err := c.ws.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
 				return
 			}
 

@@ -74,15 +74,22 @@ func (d *OutboxDispatcher) processBatch(ctx context.Context) {
 }
 
 func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo.OutboxMessage) {
-	agentID := fmt.Sprintf("agt_%s", msg.DeviceID)
-
-	// 1. Fetch Command Record to check TTL / expiration
+	// 1. Fetch Command Record to check TTL / expiration and payload
 	cmdRec, err := d.cmdRepo.GetCommandByID(ctx, msg.CommandID)
 	if err == nil && cmdRec != nil && time.Now().After(cmdRec.ExpiresAt) {
 		slog.Warn("Command expired before outbox dispatch", "command_id", msg.CommandID, "expires_at", cmdRec.ExpiresAt)
 		_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "command TTL expired before dispatch")
-		_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "expired", "command TTL expired before dispatch")
+		_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "expired", "command TTL expired before dispatch", 0)
 		return
+	}
+
+	// Unmarshal input parameters payload
+	var rawPayload map[string]interface{}
+	if len(msg.PayloadJSON) > 0 {
+		_ = json.Unmarshal(msg.PayloadJSON, &rawPayload)
+	}
+	if rawPayload == nil && cmdRec != nil && len(cmdRec.PayloadJSON) > 0 {
+		_ = json.Unmarshal(cmdRec.PayloadJSON, &rawPayload)
 	}
 
 	// 2. Construct WS Command Dispatch Envelope
@@ -90,6 +97,7 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		CommandID:   msg.CommandID,
 		DeviceID:    msg.DeviceID,
 		CommandType: "gesture.touch",
+		Payload:     rawPayload,
 		IssuedAt:    msg.CreatedAt.UTC().Format(time.RFC3339),
 	}
 	if cmdRec != nil {
@@ -105,25 +113,25 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 
 	envData, _ := json.Marshal(env)
 
-	// 3. Attempt Dispatch to Agent WebSocket Hub
-	err = d.wsHub.DispatchToAgent(agentID, envData)
+	// 3. Attempt Dispatch to Agent WebSocket Hub by Tenant-scoped Device Routing
+	err = d.wsHub.DispatchToDevice(msg.OrganizationID, msg.DeviceID, envData)
 	if err != nil {
 		// Retries with exponential backoff: 1s, 2s, 4s, 8s
 		if msg.AttemptCount+1 >= d.maxAttempts {
-			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "agent_id", agentID, "attempts", msg.AttemptCount+1)
+			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "attempts", msg.AttemptCount+1)
 			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, err.Error())
-			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Agent offline after %d attempts", d.maxAttempts))
+			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
 		} else {
 			backoffSec := 1 << msg.AttemptCount // 1, 2, 4, 8...
 			nextAttempt := time.Now().Add(time.Duration(backoffSec) * time.Second)
-			slog.Warn("Outbox message dispatch failed, scheduling retry", "outbox_id", msg.OutboxID, "agent_id", agentID, "next_attempt", nextAttempt, "error", err)
+			slog.Warn("Outbox message dispatch failed, scheduling retry", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "next_attempt", nextAttempt, "error", err)
 			_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, err.Error(), nextAttempt)
 		}
 		return
 	}
 
-	// 4. Dispatch Succeeded -> Mark Outbox as Dispatched (CRITICAL: DOES NOT MARK COMMAND SUCCEEDED!)
-	slog.Info("Successfully dispatched outbox command to Agent WS Hub", "command_id", msg.CommandID, "agent_id", agentID)
+	// 4. Dispatch Succeeded -> Mark Outbox as Dispatched
+	// (CRITICAL CORRECTNESS FIX: Outbox dispatched DOES NOT update commands.status to ack!)
+	slog.Info("Successfully dispatched outbox command to Agent WS Hub", "command_id", msg.CommandID, "device_id", msg.DeviceID)
 	_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
-	_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "ack", "")
 }

@@ -53,19 +53,20 @@ func TestCommandStateMachineTransitions(t *testing.T) {
 	}
 }
 
-func TestHubRegistrationAndBackpressure(t *testing.T) {
+func TestHubRegistrationAndDeviceRouting(t *testing.T) {
 	hub := agentws.NewHub()
-	agentID := "agt_test_01"
+	orgID := "org_pcp_enterprise_01"
+	deviceID := "dev_ce0416040be3"
 
 	// Verify unregistered dispatch returns error
-	err := hub.DispatchToAgent(agentID, []byte("test"))
-	if err == nil || !errors.Is(err, agentws.ErrAgentNotConnected) {
-		t.Errorf("Expected ErrAgentNotConnected for unregistered agent, got %v", err)
+	err := hub.DispatchToDevice(orgID, deviceID, []byte("test"))
+	if err == nil || !errors.Is(err, agentws.ErrDeviceNotConnected) {
+		t.Errorf("Expected ErrDeviceNotConnected for unregistered device, got %v", err)
 	}
 
 	// Test generation counter
-	gen1 := hub.NextGeneration(agentID)
-	gen2 := hub.NextGeneration(agentID)
+	gen1 := hub.NextGeneration(orgID, deviceID)
+	gen2 := hub.NextGeneration(orgID, deviceID)
 	if gen2 != gen1+1 {
 		t.Errorf("Expected generation counter to increment, got gen1=%d gen2=%d", gen1, gen2)
 	}
