@@ -157,7 +157,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     expect(receivedEvents.length).toBe(0);
   });
 
-  it('Verifies 10x full production WebRtcMediaClient lifecycle leaves ZERO active resources', async () => {
+  it('Verifies 10x full production WebRtcMediaClient lifecycle leaves ZERO active resources on EVERY cycle', async () => {
     let activeWS = 0;
     let activePC = 0;
     let activeTracks = 0;
@@ -185,7 +185,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
 
     // Mock MediaStream
     class MockMediaStream {
-      private tracks: MockTrack[] = [new MockTrack()];
+      constructor(private tracks: MockTrack[] = []) {}
       getTracks() {
         return this.tracks;
       }
@@ -288,7 +288,7 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
         client.bindVideoElement(mockElement);
         client.startSession();
 
-        // Simulate incoming signaling envelope
+        // Simulate incoming signaling envelope: created -> ready
         const wsInst = (client as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
         if (wsInst && wsInst.onmessage) {
           wsInst.onmessage({
@@ -297,14 +297,21 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
               payload: { session_id: `sess_${i}`, device_id: 'dev_sm_g930f_01' },
             }),
           });
+          wsInst.onmessage({
+            data: JSON.stringify({
+              type: 'media.session.ready',
+              payload: { session_id: `sess_${i}` },
+            }),
+          });
         }
 
         // Trigger remote track
         const pcInst = (client as unknown as { pc: { ontrack: (evt: { streams: MockMediaStream[]; track: MockTrack }) => void } }).pc;
         if (pcInst && pcInst.ontrack) {
+          const trackInst = new MockTrack();
           pcInst.ontrack({
-            streams: [new MockMediaStream()],
-            track: new MockTrack(),
+            streams: [new MockMediaStream([trackInst])],
+            track: trackInst,
           });
         }
 
@@ -314,13 +321,16 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
         // Close client cleanly
         client.close();
         expect(client.getState()).toBe('CLOSED');
+
+        // Assert ZERO leaked active resources AFTER EVERY SINGLE CYCLE
+        expect(activeWS).toBe(0);
+        expect(activePC).toBe(0);
+        expect(activeTracks).toBe(0);
+        expect(activeIntervals).toBe(0);
+        expect(activeTimeouts).toBe(0);
+        expect(client.getActiveReconnectTaskCount()).toBe(0);
         expect(mockElement.srcObject).toBeNull();
       }
-
-      // Assert ZERO leaked active resources
-      expect(activeWS).toBe(0);
-      expect(activePC).toBe(0);
-      expect(activeIntervals).toBe(0);
     } finally {
       globalThis.WebSocket = OriginalWS;
       globalThis.RTCPeerConnection = OriginalPC;
@@ -328,6 +338,74 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
       globalThis.clearInterval = OriginalClearInterval;
       globalThis.setTimeout = OriginalSetTimeout;
       globalThis.clearTimeout = OriginalClearTimeout;
+    }
+  });
+
+  it('Verifies WebRTC Failure Matrix: first-frame stall, ICE recovery vs reconnect, and backoff cancellation', async () => {
+    vi.useFakeTimers();
+
+    const OriginalWS = globalThis.WebSocket;
+    const OriginalPC = globalThis.RTCPeerConnection;
+
+    globalThis.WebSocket = class MockWS {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      public readyState = 1;
+      public onopen: any = null;
+      public onmessage: any = null;
+      public onclose: any = null;
+      public onerror: any = null;
+      send() {}
+      close() {}
+    } as any;
+
+    globalThis.RTCPeerConnection = class MockPC {
+      public iceConnectionState = 'connected';
+      public onicecandidate: any = null;
+      public oniceconnectionstatechange: any = null;
+      public ontrack: any = null;
+      addTransceiver() {
+        return {};
+      }
+      close() {}
+    } as any;
+
+    try {
+      const client = new WebRtcMediaClient({
+        deviceId: 'dev_sm_g930f_01',
+      });
+
+      client.startSession();
+
+      // 1. Simulate session created
+      const wsInst = (client as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+      if (wsInst && wsInst.onmessage) {
+        wsInst.onmessage({
+          data: JSON.stringify({
+            type: 'media.session.created',
+            payload: { session_id: 'sess_fail_01', device_id: 'dev_sm_g930f_01' },
+          }),
+        });
+      }
+
+      expect(client.getState()).toBe('WAITING_DEVICE_CONSENT');
+
+      // 2. Advance 5 seconds with ZERO frames -> transitions to DEGRADED
+      vi.advanceTimersByTime(5100);
+      expect(client.getState()).toBe('DEGRADED');
+
+      // 3. Advance to 10 seconds with ZERO frames -> triggers first_frame_timeout reconnect
+      vi.advanceTimersByTime(5100);
+      expect(client.getState()).toBe('RECONNECTING');
+
+      // 4. Verify explicit close during backoff cancels reconnect task immediately
+      client.close();
+      expect(client.getState()).toBe('CLOSED');
+      expect(client.getActiveReconnectTaskCount()).toBe(0);
+    } finally {
+      globalThis.WebSocket = OriginalWS;
+      globalThis.RTCPeerConnection = OriginalPC;
+      vi.useRealTimers();
     }
   });
 });

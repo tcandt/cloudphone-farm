@@ -89,6 +89,7 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 		"000004_harden_command_outbox.up.sql",
 		"000005_harden_command_runtime.up.sql",
 		"000006_control_lease_and_command_contract.up.sql",
+		"000007_phase14_command_delivery_attempts.up.sql",
 	}
 
 	migrationsDir := filepath.Join("..", "..", "db", "migrations")
@@ -266,3 +267,97 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 		t.Fatalf("expected returned DeviceCommand.Status to equal 'succeeded', got '%s'", retryCmd.Status)
 	}
 }
+
+func TestPostgresFastACKAndDeliveryAuthorityFailureMatrix(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed to connect to postgres: %v", err)
+	}
+	defer pool.Close()
+
+	cmdRepo := pgrepo.NewCommandRepository(pool)
+	orgID := "org_test_fastack"
+	deviceID := "dev_test_fastack"
+	agentID := "agent_test_fastack"
+	connID := "conn_gen_1"
+	gen := int64(1001)
+
+	// Clean tables
+	_, _ = pool.Exec(ctx, "DELETE FROM command_delivery_attempts WHERE organization_id = $1", orgID)
+	_, _ = pool.Exec(ctx, "DELETE FROM command_events WHERE command_id IN (SELECT command_id FROM commands WHERE organization_id = $1)", orgID)
+	_, _ = pool.Exec(ctx, "DELETE FROM commands WHERE organization_id = $1", orgID)
+
+	// 1. Test Fast-ACK Promotion: PREPARED -> DISPATCHED when valid ACK arrives before outbox update
+	cmd1ID := "cmd_fastack_001"
+	_, err = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload_json, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+		cmd1ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", time.Now().Add(10*time.Minute))
+	if err != nil {
+		t.Fatalf("failed to insert test command 1: %v", err)
+	}
+
+	err = cmdRepo.RecordDeliveryAttempt(ctx, orgID, cmd1ID, deviceID, 1, agentID, connID, gen, "prepared")
+	if err != nil {
+		t.Fatalf("failed to record prepared attempt: %v", err)
+	}
+
+	// Fast ACK arrives: status = executing, sequence = 2
+	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd1ID, agentID, connID, gen, "executing", "", 2)
+	if err != nil {
+		t.Fatalf("Fast ACK failed to promote prepared attempt to dispatched: %v", err)
+	}
+
+	// Verify attempt status in DB is now 'dispatched'
+	var attemptStatus string
+	err = pool.QueryRow(ctx, "SELECT status FROM command_delivery_attempts WHERE command_id = $1 AND attempt_no = 1", cmd1ID).Scan(&attemptStatus)
+	if err != nil || attemptStatus != "dispatched" {
+		t.Fatalf("expected attempt status 'dispatched', got '%s' (err=%v)", attemptStatus, err)
+	}
+
+	// 2. Test No-Attempt Status Rejection (fail closed)
+	cmd2ID := "cmd_fastack_002"
+	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload_json, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+		cmd2ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", time.Now().Add(10*time.Minute))
+
+	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd2ID, agentID, connID, gen, "executing", "", 1)
+	if err == nil {
+		t.Fatalf("expected error when no delivery attempt exists, got nil")
+	}
+
+	// 3. Test Failed-Attempt Status Rejection (fail closed)
+	cmd3ID := "cmd_fastack_003"
+	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload_json, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+		cmd3ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", time.Now().Add(10*time.Minute))
+	_ = cmdRepo.RecordDeliveryAttempt(ctx, orgID, cmd3ID, deviceID, 1, agentID, connID, gen, "prepared")
+	_ = cmdRepo.UpdateDeliveryAttemptStatus(ctx, cmd3ID, 1, "failed", "socket_error")
+
+	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd3ID, agentID, connID, gen, "executing", "", 1)
+	if err == nil {
+		t.Fatalf("expected error when delivery attempt status is 'failed', got nil")
+	}
+
+	// 4. Test Generation Mismatch Rejection
+	cmd4ID := "cmd_fastack_004"
+	_, _ = pool.Exec(ctx, "INSERT INTO commands (command_id, organization_id, device_id, actor_id, command_type, payload_json, status, expires_at) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+		cmd4ID, orgID, deviceID, "actor_1", "global.home", "{}", "pending", time.Now().Add(10*time.Minute))
+	_ = cmdRepo.RecordDeliveryAttempt(ctx, orgID, cmd4ID, deviceID, 1, agentID, connID, gen, "dispatched")
+
+	err = cmdRepo.UpdateCommandStatusFromAgentWithGeneration(ctx, orgID, deviceID, cmd4ID, agentID, "conn_gen_2", 1002, "executing", "", 1)
+	if err == nil {
+		t.Fatalf("expected error on generation mismatch, got nil")
+	}
+
+	// 5. Test UpdateDeliveryAttemptStatus RowsAffected == 1 assertion
+	err = cmdRepo.UpdateDeliveryAttemptStatus(ctx, "non_existent_cmd", 99, "dispatched", "")
+	if err == nil {
+		t.Fatalf("expected error updating status of non-existent attempt row, got nil")
+	}
+}
+

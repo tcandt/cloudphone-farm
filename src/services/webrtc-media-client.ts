@@ -55,9 +55,11 @@ export class WebRtcMediaClient {
   private lastVideoFrameAt = 0;
   private lastFramesDecoded = 0;
   private stallWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private firstFrameTimer: ReturnType<typeof setTimeout> | null = null;
   private iceGraceTimer: ReturnType<typeof setTimeout> | null = null;
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectRejectHandler: (() => void) | null = null;
   private latestTelemetry: PeerTelemetry | null = null;
 
   private isReconnecting = false;
@@ -93,6 +95,10 @@ export class WebRtcMediaClient {
 
   public getLatestTelemetry(): PeerTelemetry | null {
     return this.latestTelemetry;
+  }
+
+  public getActiveReconnectTaskCount(): number {
+    return this.isReconnecting || this.reconnectTimer !== null ? 1 : 0;
   }
 
   public waitForServerMetadata(timeoutMs = 15000): Promise<ServerMediaMetadata> {
@@ -150,6 +156,11 @@ export class WebRtcMediaClient {
       console.warn(`[WebRtcMediaClient] Session already active or connecting for device ${this.options.deviceId}`);
       return;
     }
+
+    // Reset frame & telemetry baselines on fresh session start
+    this.lastFramesDecoded = 0;
+    this.lastVideoFrameAt = 0;
+    this.latestTelemetry = null;
 
     this.setState('CONNECTING_SIGNALING');
 
@@ -212,6 +223,7 @@ export class WebRtcMediaClient {
 
         this.initPeerConnection(iceServers);
         this.setState('WAITING_DEVICE_CONSENT');
+        this.startFirstFrameTimer();
         break;
       }
 
@@ -283,6 +295,26 @@ export class WebRtcMediaClient {
         break;
       }
     }
+  }
+
+  private startFirstFrameTimer(): void {
+    if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
+
+    // 5s first frame check -> DEGRADED
+    this.firstFrameTimer = setTimeout(() => {
+      if (this.lastVideoFrameAt === 0 && !this.isClosedExplicitly) {
+        console.warn('[WebRtcMediaClient] First video frame not received within 5s. Setting state to DEGRADED.');
+        this.setState('DEGRADED', 'Waiting for first video frame');
+
+        // 10s total first frame timeout -> performReconnect
+        this.firstFrameTimer = setTimeout(() => {
+          if (this.lastVideoFrameAt === 0 && !this.isClosedExplicitly) {
+            console.error('[WebRtcMediaClient] First video frame timeout (10s). Triggering reconnect.');
+            this.performReconnect('first_frame_timeout');
+          }
+        }, 5000);
+      }
+    }, 5000);
   }
 
   private initPeerConnection(iceServers: RTCIceServer[]): void {
@@ -462,7 +494,7 @@ export class WebRtcMediaClient {
             if (typeof r.packetsLost === 'number') packetsLost = r.packetsLost;
             if (typeof r.jitter === 'number') jitter = Math.round(r.jitter * 1000);
 
-            // Non-rVFC Fallback: Check framesDecoded progression
+            // Non-rVFC Fallback: Check framesDecoded progression from baseline 0
             if (typeof r.framesDecoded === 'number') {
               if (r.framesDecoded > this.lastFramesDecoded) {
                 this.lastFramesDecoded = r.framesDecoded;
@@ -527,15 +559,20 @@ export class WebRtcMediaClient {
     console.warn(`[WebRtcMediaClient] Initiating controlled reconnect #${this.reconnectAttempts}. Reason: ${reason}`);
     this.setState('RECONNECTING', `Reconnecting (${reason})`);
 
-    // 1. Clear timers
+    // 1. Clear all timers & active reconnect cancel callbacks
     if (this.stallWatchdogTimer) clearInterval(this.stallWatchdogTimer);
     if (this.statsTimer) clearInterval(this.statsTimer);
     if (this.iceGraceTimer) clearTimeout(this.iceGraceTimer);
+    if (this.firstFrameTimer) clearTimeout(this.firstFrameTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    if (this.reconnectRejectHandler) this.reconnectRejectHandler();
+
     this.stallWatchdogTimer = null;
     this.statsTimer = null;
     this.iceGraceTimer = null;
+    this.firstFrameTimer = null;
     this.reconnectTimer = null;
+    this.reconnectRejectHandler = null;
 
     // 2. Stop old MediaStream tracks & clear video srcObject
     this.cancelFrameAuthorityLoop();
@@ -547,24 +584,30 @@ export class WebRtcMediaClient {
       this.videoElement.srcObject = null;
     }
 
-    // 2. Best-effort stop frame to old signaling WS & close
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      try {
-        if (this.sessionId) {
-          this.ws.send(
-            JSON.stringify({
-              type: 'media.session.stop',
-              message_id: `stop_${Date.now()}`,
-              payload: { session_id: this.sessionId },
-            })
-          );
+    // 3. Detach handlers and close signaling WS for CONNECTING and OPEN
+    if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      this.ws.onclose = null;
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        try {
+          if (this.sessionId && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(
+              JSON.stringify({
+                type: 'media.session.stop',
+                message_id: `stop_${Date.now()}`,
+                payload: { session_id: this.sessionId },
+              })
+            );
+          }
+          this.ws.close();
+        } catch (err) {
+          console.warn('[WebRtcMediaClient] Error stopping old session on reconnect:', err);
         }
-        this.ws.close();
-      } catch (err) {
-        console.warn('[WebRtcMediaClient] Error stopping old session on reconnect:', err);
       }
+      this.ws = null;
     }
-    this.ws = null;
 
     // 4. Close old PeerConnection
     if (this.pc) {
@@ -572,30 +615,49 @@ export class WebRtcMediaClient {
       this.pc = null;
     }
 
-    // 5. Reset state & create new metadata promise
+    // 5. Reset per-session frame baselines & metadata
     this.sessionId = '';
     this.serverMetadata = null;
     this.isOfferCreated = false;
     this.pendingIceCandidates = [];
+    this.lastFramesDecoded = 0;
+    this.lastVideoFrameAt = 0;
+    this.latestTelemetry = null;
+
     this.metadataPromise = new Promise<ServerMediaMetadata>((resolve, reject) => {
       this.metadataResolve = resolve;
       this.metadataReject = reject;
     });
 
-    // 6. Cancellable Exponential backoff timer
+    // 6. Genuinely Cancellable Exponential Backoff Timer
     const backoffMs = Math.min(
       30000,
       Math.pow(2, Math.min(this.reconnectAttempts - 1, 5)) * 1000 + Math.floor(Math.random() * 500)
     );
     console.log(`[WebRtcMediaClient] Waiting ${backoffMs}ms before executing reconnect attempt #${this.reconnectAttempts}`);
 
-    this.reconnectTimer = setTimeout(() => {
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const cancelPromise = new Promise<void>((_, reject) => {
+      this.reconnectRejectHandler = () => {
+        if (timerId) clearTimeout(timerId);
+        reject(new Error('reconnect_cancelled'));
+      };
+    });
+
+    timerId = setTimeout(() => {
       this.reconnectTimer = null;
+      this.reconnectRejectHandler = null;
       if (!this.isClosedExplicitly) {
         this.isReconnecting = false;
         this.startSession();
       }
     }, backoffMs);
+    this.reconnectTimer = timerId;
+
+    cancelPromise.catch(() => {
+      // Reconnect task cleanly aborted
+      this.isReconnecting = false;
+    });
   }
 
   private async createAndSendOffer(): Promise<void> {
@@ -642,6 +704,10 @@ export class WebRtcMediaClient {
 
   public notifyVideoFrameReceived(): void {
     this.lastVideoFrameAt = performance.now();
+    if (this.firstFrameTimer) {
+      clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = null;
+    }
     if (this.state !== 'CLOSED' && this.state !== 'FAILED' && this.state !== 'IDLE') {
       this.setState('VIDEO_RECEIVING');
       // Reset backoff ONLY after authoritative video frame recovery
@@ -677,27 +743,45 @@ export class WebRtcMediaClient {
       clearTimeout(this.iceGraceTimer);
       this.iceGraceTimer = null;
     }
+    if (this.firstFrameTimer) {
+      clearTimeout(this.firstFrameTimer);
+      this.firstFrameTimer = null;
+    }
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      try {
-        const stopPayload = {
-          type: 'media.session.stop',
-          message_id: `msg_${Date.now()}`,
-          payload: {
-            session_id: this.sessionId,
-          },
-        };
-        this.ws.send(JSON.stringify(stopPayload));
-        this.ws.close();
-      } catch (err) {
-        console.warn('[WebRtcMediaClient] Error sending stop frame:', err);
-      }
+    if (this.reconnectRejectHandler) {
+      this.reconnectRejectHandler();
+      this.reconnectRejectHandler = null;
     }
-    this.ws = null;
+    this.isReconnecting = false;
+
+    // Detach handlers and close signaling WS for CONNECTING and OPEN
+    if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      this.ws.onclose = null;
+      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+        try {
+          if (this.sessionId && this.ws.readyState === WebSocket.OPEN) {
+            const stopPayload = {
+              type: 'media.session.stop',
+              message_id: `msg_${Date.now()}`,
+              payload: {
+                session_id: this.sessionId,
+              },
+            };
+            this.ws.send(JSON.stringify(stopPayload));
+          }
+          this.ws.close();
+        } catch (err) {
+          console.warn('[WebRtcMediaClient] Error sending stop frame:', err);
+        }
+      }
+      this.ws = null;
+    }
 
     if (this.pc) {
       this.pc.close();
@@ -713,7 +797,9 @@ export class WebRtcMediaClient {
 
     this.pendingIceCandidates = [];
     this.isOfferCreated = false;
+    this.lastFramesDecoded = 0;
     this.lastVideoFrameAt = 0;
+    this.latestTelemetry = null;
 
     if (!isAlreadyFailed) {
       this.setState('CLOSED');

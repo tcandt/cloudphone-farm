@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
@@ -230,15 +231,22 @@ func (r *CommandRepository) UpdateDeliveryAttemptStatus(ctx context.Context, com
 		return errors.New("postgres connection pool uninitialized")
 	}
 
-	var query string
+	var res pgconn.CommandTag
+	var err error
 	if status == "failed" {
-		query = `UPDATE command_delivery_attempts SET status = $1, failed_at = CURRENT_TIMESTAMP, failure_reason = $2 WHERE command_id = $3 AND attempt_no = $4`
-		_, err := r.pool.Exec(ctx, query, status, failureReason, commandID, attemptNo)
-		return err
+		query := `UPDATE command_delivery_attempts SET status = $1, failed_at = CURRENT_TIMESTAMP, failure_reason = $2 WHERE command_id = $3 AND attempt_no = $4`
+		res, err = r.pool.Exec(ctx, query, status, failureReason, commandID, attemptNo)
+	} else {
+		query := `UPDATE command_delivery_attempts SET status = $1 WHERE command_id = $2 AND attempt_no = $3`
+		res, err = r.pool.Exec(ctx, query, status, commandID, attemptNo)
 	}
-	query = `UPDATE command_delivery_attempts SET status = $1 WHERE command_id = $2 AND attempt_no = $3`
-	_, err := r.pool.Exec(ctx, query, status, commandID, attemptNo)
-	return err
+	if err != nil {
+		return fmt.Errorf("failed to update delivery attempt status: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("no delivery attempt row matching command_id %s attempt_no %d to update status to %s", commandID, attemptNo, status)
+	}
+	return nil
 }
 
 // UpdateCommandStatusFromAgentWithGeneration verifies latest delivery attempt generation matches sender before applying status transition
@@ -253,23 +261,45 @@ func (r *CommandRepository) UpdateCommandStatusFromAgentWithGeneration(ctx conte
 	}
 	defer tx.Rollback(ctx)
 
-	// Verify latest dispatched delivery attempt matches sender generation (FAIL CLOSED)
+	// Verify latest delivery attempt matches sender generation (FAIL CLOSED)
+	// Supports both 'prepared' and 'dispatched' attempts to prevent fast-ACK race
 	attemptQuery := `
-		SELECT agent_id, connection_id, generation
+		SELECT attempt_no, agent_id, connection_id, generation, status
 		FROM command_delivery_attempts
-		WHERE command_id = $1 AND status = 'dispatched'
+		WHERE command_id = $1
 		ORDER BY attempt_no DESC
 		LIMIT 1
 	`
-	var latestAgentID, latestConnID string
+	var attemptNo int
+	var latestAgentID, latestConnID, attemptStatus string
 	var latestGen int64
-	err = tx.QueryRow(ctx, attemptQuery, commandID).Scan(&latestAgentID, &latestConnID, &latestGen)
+	err = tx.QueryRow(ctx, attemptQuery, commandID).Scan(&attemptNo, &latestAgentID, &latestConnID, &latestGen, &attemptStatus)
 	if err != nil {
-		return fmt.Errorf("no authoritative dispatched delivery attempt found for command %s: %w", commandID, err)
+		return fmt.Errorf("no authoritative delivery attempt found for command %s: %w", commandID, err)
+	}
+
+	if attemptStatus != "prepared" && attemptStatus != "dispatched" {
+		return fmt.Errorf("invalid delivery attempt status '%s' for command %s (must be prepared or dispatched)", attemptStatus, commandID)
 	}
 
 	if latestAgentID != agentID || latestConnID != connectionID || latestGen != generation {
 		return fmt.Errorf("stale generation delivery attempt mismatch: command %s was dispatched to gen %d (%s), received status from gen %d (%s)", commandID, latestGen, latestConnID, generation, connectionID)
+	}
+
+	// Transactional Fast-ACK Promotion: if status is prepared, promote to dispatched inside the SAME transaction
+	if attemptStatus == "prepared" {
+		promoteSQL := `
+			UPDATE command_delivery_attempts
+			SET status = 'dispatched', dispatched_at = CURRENT_TIMESTAMP
+			WHERE command_id = $1 AND attempt_no = $2 AND status = 'prepared'
+		`
+		tag, err := tx.Exec(ctx, promoteSQL, commandID, attemptNo)
+		if err != nil {
+			return fmt.Errorf("failed to promote prepared attempt to dispatched: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("failed to promote prepared attempt to dispatched for command %s attempt %d", commandID, attemptNo)
+		}
 	}
 
 	// Fetch current status and last_status_sequence WITH DEVICE OWNERSHIP BOUNDARY CHECK FOR UPDATE

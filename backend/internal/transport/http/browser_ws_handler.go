@@ -3,6 +3,7 @@ package http
 import (
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 
@@ -52,6 +53,35 @@ func (h *BrowserWSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSONError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
 		return
+	}
+
+	// Origin Check Guard
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		writeJSONError(w, http.StatusForbidden, "INVALID_ORIGIN", "Blank Origin header rejected")
+		return
+	}
+
+	appEnv := os.Getenv("APP_ENV")
+	allowedOrigins := os.Getenv("CORS_ALLOWED_ORIGINS")
+
+	if appEnv == "production" {
+		if allowedOrigins == "" || allowedOrigins == "*" {
+			writeJSONError(w, http.StatusForbidden, "INVALID_ORIGIN_CONFIG", "Wildcard or unconfigured Origin rejected in production")
+			return
+		}
+		if origin != allowedOrigins {
+			writeJSONError(w, http.StatusForbidden, "ORIGIN_MISMATCH", "Origin header does not match allowed origin")
+			return
+		}
+	} else {
+		// Development mode policy
+		if allowedOrigins != "*" && allowedOrigins != "" && origin != allowedOrigins &&
+			!strings.HasPrefix(origin, "http://localhost") && !strings.HasPrefix(origin, "http://127.0.0.1") &&
+			!strings.HasPrefix(origin, "https://localhost") {
+			writeJSONError(w, http.StatusForbidden, "ORIGIN_MISMATCH", "Origin header does not match development allowed origin")
+			return
+		}
 	}
 
 	deviceID := chi.URLParam(r, "id")

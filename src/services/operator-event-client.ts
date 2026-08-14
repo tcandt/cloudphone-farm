@@ -27,6 +27,9 @@ export interface CommandDeliveryChangeEvent {
 
 export type OperatorEvent = CommandStatusChangeEvent | CommandDeliveryChangeEvent;
 
+const VALID_EXEC_STATUSES = new Set(['ack', 'executing', 'succeeded', 'failed', 'expired', 'completed']);
+const VALID_DELIVERY_STATUSES = new Set(['prepared', 'dispatched', 'failed']);
+
 export class OperatorEventClient {
   private ws: WebSocket | null = null;
   private isClosed = false;
@@ -64,36 +67,65 @@ export class OperatorEventClient {
 
           if (raw.type === 'command.status.changed') {
             const d = raw.data;
-            const status = d.execution_status || d.status;
-            if (!d.command_id || !d.device_id || typeof status !== 'string' || typeof d.sequence !== 'number' || !d.occurred_at) {
+            const statusStr = typeof d.execution_status === 'string' ? d.execution_status.toLowerCase() : '';
+            const seq = Number(d.sequence);
+            const ts = String(d.occurred_at || '');
+
+            if (
+              !d.command_id ||
+              typeof d.command_id !== 'string' ||
+              !d.device_id ||
+              typeof d.device_id !== 'string' ||
+              !VALID_EXEC_STATUSES.has(statusStr) ||
+              !Number.isInteger(seq) ||
+              seq <= 0 ||
+              !ts ||
+              isNaN(Date.parse(ts))
+            ) {
               console.warn('[OperatorEventClient] Rejected malformed command.status.changed event payload:', raw);
               return;
             }
+
             parsedEvent = {
               type: 'command.status.changed',
               data: {
-                command_id: String(d.command_id),
-                device_id: String(d.device_id),
-                execution_status: String(status),
-                sequence: Number(d.sequence),
+                command_id: d.command_id,
+                device_id: d.device_id,
+                execution_status: statusStr,
+                sequence: seq,
                 error_message: d.error_message ? String(d.error_message) : undefined,
-                occurred_at: String(d.occurred_at),
+                occurred_at: ts,
               },
             };
           } else if (raw.type === 'command.delivery.changed') {
             const d = raw.data;
-            if (!d.command_id || !d.device_id || typeof d.delivery_status !== 'string' || typeof d.attempt_count !== 'number' || !d.dispatched_at) {
+            const delivStr = typeof d.delivery_status === 'string' ? d.delivery_status.toLowerCase() : '';
+            const attempts = Number(d.attempt_count);
+            const ts = String(d.dispatched_at || '');
+
+            if (
+              !d.command_id ||
+              typeof d.command_id !== 'string' ||
+              !d.device_id ||
+              typeof d.device_id !== 'string' ||
+              !VALID_DELIVERY_STATUSES.has(delivStr) ||
+              !Number.isInteger(attempts) ||
+              attempts <= 0 ||
+              !ts ||
+              isNaN(Date.parse(ts))
+            ) {
               console.warn('[OperatorEventClient] Rejected malformed command.delivery.changed event payload:', raw);
               return;
             }
+
             parsedEvent = {
               type: 'command.delivery.changed',
               data: {
-                command_id: String(d.command_id),
-                device_id: String(d.device_id),
-                delivery_status: String(d.delivery_status),
-                attempt_count: Number(d.attempt_count),
-                dispatched_at: String(d.dispatched_at),
+                command_id: d.command_id,
+                device_id: d.device_id,
+                delivery_status: delivStr,
+                attempt_count: attempts,
+                dispatched_at: ts,
               },
             };
           } else {
@@ -102,43 +134,32 @@ export class OperatorEventClient {
           }
 
           if (parsedEvent) {
-            for (const l of this.listeners) {
+            for (const listener of this.listeners) {
               try {
-                l(parsedEvent);
+                listener(parsedEvent);
               } catch (err) {
                 console.error('[OperatorEventClient] Listener error:', err);
               }
             }
           }
         } catch (err) {
-          console.warn('[OperatorEventClient] Failed to parse operator event:', err);
+          console.error('[OperatorEventClient] Error parsing event data:', err);
         }
+      };
+
+      this.ws.onerror = (err) => {
+        console.warn('[OperatorEventClient] WebSocket error:', err);
       };
 
       this.ws.onclose = () => {
         this.ws = null;
         if (!this.isClosed) {
-          this.scheduleReconnect();
-        }
-      };
-
-      this.ws.onerror = () => {
-        if (this.ws) {
-          this.ws.close();
+          this.reconnectTimer = setTimeout(() => this.connect(), 3000);
         }
       };
     } catch (err) {
-      console.warn('[OperatorEventClient] Connection initialization error:', err);
-      this.scheduleReconnect();
+      console.error('[OperatorEventClient] Connection error:', err);
     }
-  }
-
-  private scheduleReconnect(): void {
-    if (this.reconnectTimer || this.isClosed) return;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, 3000);
   }
 
   public close(): void {
@@ -148,8 +169,13 @@ export class OperatorEventClient {
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      this.ws.onclose = null;
       this.ws.close();
       this.ws = null;
     }
+    this.listeners.clear();
   }
 }
