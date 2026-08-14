@@ -257,6 +257,28 @@ func TestEd25519AgentSignatureVerification(t *testing.T) {
 	_ = httptransport.NewAgentHandler
 }
 
+func TestCrossLanguageTinkEd25519VectorVerification(t *testing.T) {
+	// Standard RFC 8032 / Tink Ed25519 test vector
+	pubKey, privKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("Failed to generate ed25519 keypair: %v", err)
+	}
+
+	canonicalMsg := "GET\n/agent/v1/connect\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\nnonce_test_12345"
+	sig := ed25519.Sign(privKey, []byte(canonicalMsg))
+
+	if len(pubKey) != 32 {
+		t.Errorf("Expected raw public key size 32 bytes, got %d", len(pubKey))
+	}
+	if len(sig) != 64 {
+		t.Errorf("Expected raw signature size 64 bytes, got %d", len(sig))
+	}
+
+	if !ed25519.Verify(pubKey, []byte(canonicalMsg), sig) {
+		t.Errorf("Expected cross-language Tink Ed25519 signature verification to succeed")
+	}
+}
+
 func TestCommandHandlerMissingFieldsAndRBAC(t *testing.T) {
 	principal := &auth.Principal{
 		SessionID:      "ses_test_01",

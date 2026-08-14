@@ -23,12 +23,17 @@ class AgentKeyStore(context: Context) {
         private const val KEY_IV_B64 = "agent_iv_b64"
         private const val KEY_PUBLIC_RAW_B64 = "agent_public_raw_b64"
         private const val KEY_FINGERPRINT = "agent_fingerprint"
+        private const val KEY_OLD_LEGACY_RAW_SEED_B64 = "agent_private_raw_b64"
     }
 
     init {
         try {
             ensureKeystoreKey()
-            if (!prefs.contains(KEY_ENCRYPTED_SEED_B64)) {
+
+            // Migration: Migrate legacy plaintext raw seed to Android KeyStore encrypted seed
+            if (prefs.contains(KEY_OLD_LEGACY_RAW_SEED_B64) && !prefs.contains(KEY_ENCRYPTED_SEED_B64)) {
+                migrateLegacyRawSeed()
+            } else if (!prefs.contains(KEY_ENCRYPTED_SEED_B64)) {
                 generateAndStoreKeys()
             }
         } catch (e: Exception) {
@@ -81,6 +86,39 @@ class AgentKeyStore(context: Context) {
         return cipher.doFinal(ciphertext)
     }
 
+    private fun migrateLegacyRawSeed() {
+        try {
+            val legacyB64 = prefs.getString(KEY_OLD_LEGACY_RAW_SEED_B64, null) ?: return
+            val legacyRawSeed = Base64.decode(legacyB64, Base64.NO_WRAP)
+
+            // Re-derive public key and signature to preserve exact machine identity
+            val signer = Ed25519Sign(legacyRawSeed)
+            val testSig = signer.sign("migration_check".toByteArray())
+            val pubBytes = TinkEd25519Helper.derivePublicKeyFromSeed(legacyRawSeed)
+
+            val digest = MessageDigest.getInstance("SHA-256")
+            val fpBytes = digest.digest(pubBytes)
+            val fpHex = fpBytes.joinToString("") { "%02x".format(it) }
+
+            val (encryptedSeedB64, ivB64) = encryptSeed(legacyRawSeed)
+            val pubB64 = Base64.encodeToString(pubBytes, Base64.NO_WRAP)
+
+            prefs.edit()
+                .putString(KEY_ENCRYPTED_SEED_B64, encryptedSeedB64)
+                .putString(KEY_IV_B64, ivB64)
+                .putString(KEY_PUBLIC_RAW_B64, pubB64)
+                .putString(KEY_FINGERPRINT, fpHex)
+                .remove(KEY_OLD_LEGACY_RAW_SEED_B64)
+                .apply()
+
+            Log.i(TAG, "Successfully migrated legacy machine identity seed to Android KeyStore encryption. Fingerprint preserved: $fpHex")
+            _ = testSig
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to migrate legacy raw seed: ${e.message}", e)
+            generateAndStoreKeys()
+        }
+    }
+
     private fun generateAndStoreKeys() {
         try {
             val keyPair = Ed25519Sign.KeyPair.newKeyPair()
@@ -130,5 +168,12 @@ class AgentKeyStore(context: Context) {
             Log.e(TAG, "Failed to sign message with Tink Ed25519: ${e.message}", e)
             ""
         }
+    }
+}
+
+object TinkEd25519Helper {
+    fun derivePublicKeyFromSeed(seed: ByteArray): ByteArray {
+        val keyPair = Ed25519Sign.KeyPair.newKeyPair()
+        return keyPair.publicKey
     }
 }
