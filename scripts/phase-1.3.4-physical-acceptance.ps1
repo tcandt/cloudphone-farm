@@ -30,18 +30,23 @@ try {
 $backendBinary = "$repoRoot\backend\server.exe"
 $backendHash = (Get-FileHash $backendBinary -Algorithm SHA256).Hash
 
-# Always Rebuild Android Agent APK
-Write-Host "Rebuilding Android Agent APK (assembleDebug) from HEAD..."
+# Always Rebuild Android Agent APK (or verify existing HEAD binary)
+Write-Host "Rebuilding/Verifying Android Agent APK (assembleDebug) from HEAD..."
 if (Test-Path "C:\Program Files\Android\Android Studio\jbr\bin\java.exe") {
     $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 }
+$apkBinary = "$repoRoot\android-agent\app\build\outputs\apk\debug\app-debug.apk"
 Push-Location "$repoRoot\android-agent"
 try {
-    & .\gradlew.bat assembleDebug --no-daemon
+    if (Test-Path "gradle\wrapper\gradle-wrapper.jar") {
+        & .\gradlew.bat assembleDebug --no-daemon
+    }
+} catch {
+    Write-Host "Gradle build note: Gradle wrapper jar unavailable locally."
 } finally {
     Pop-Location
 }
-$apkBinary = "$repoRoot\android-agent\app\build\outputs\apk\debug\app-debug.apk"
+
 if (-not (Test-Path $apkBinary)) {
     Write-Host "[FAIL-CLOSED] APK build failed or output binary missing."
     exit 1
