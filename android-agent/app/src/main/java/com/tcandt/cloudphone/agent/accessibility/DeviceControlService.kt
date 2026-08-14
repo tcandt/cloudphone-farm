@@ -1,4 +1,4 @@
-package com.tcandt/cloudphone.agent.accessibility
+package com.tcandt.cloudphone.agent.accessibility
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
