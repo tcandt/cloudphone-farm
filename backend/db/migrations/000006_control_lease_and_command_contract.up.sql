@@ -1,14 +1,14 @@
 -- Migration 000006: Add device.control.acquire Permission & Persistent Fencing Counter Table
 
-INSERT INTO permissions (permission_id, scope, description)
+INSERT INTO permissions (permission_code, category, description)
 VALUES ('device.control.acquire', 'device', 'Acquire exclusive realtime control lease on a device')
-ON CONFLICT (permission_id) DO NOTHING;
+ON CONFLICT (permission_code) DO NOTHING;
 
-INSERT INTO role_permissions (role_id, permission_id)
+INSERT INTO role_permissions (role_id, permission_code)
 VALUES 
-    ('owner', 'device.control.acquire'),
-    ('operator', 'device.control.acquire')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+    ('role_sys_owner', 'device.control.acquire'),
+    ('role_sys_operator', 'device.control.acquire')
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS device_control_fences (
     organization_id VARCHAR(64) NOT NULL,

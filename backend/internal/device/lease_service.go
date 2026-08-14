@@ -46,16 +46,18 @@ func (s *LeaseService) AcquireLease(ctx context.Context, orgID, deviceID, userID
 		TTLSeconds:      30,
 	}
 
-	// 2. Set exclusive lease in Redis with CAS NX check
+	// 2. Set exclusive lease in Redis with CAS NX check (Realtime authority)
 	if err := s.leaseRepo.AcquireLease(ctx, lease); err != nil {
 		return nil, err
 	}
+
+	// 3. Persist historical audit record in PostgreSQL
+	_ = s.fenceRepo.InsertLeaseAudit(ctx, lease)
 
 	return lease, nil
 }
 
 func (s *LeaseService) RenewLease(ctx context.Context, orgID, deviceID, leaseID, userID string) (*domain.ControlLease, error) {
-	// Fetch active lease to read fencing token
 	existing, err := s.leaseRepo.GetLease(ctx, orgID, deviceID)
 	if err != nil {
 		return nil, err
@@ -65,7 +67,15 @@ func (s *LeaseService) RenewLease(ctx context.Context, orgID, deviceID, leaseID,
 		return nil, domain.ErrLeaseNotOwned
 	}
 
-	return s.leaseRepo.RenewLease(ctx, orgID, deviceID, leaseID, userID, existing.FencingToken)
+	renewedLease, err := s.leaseRepo.RenewLease(ctx, orgID, deviceID, leaseID, userID, existing.FencingToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update historical audit record expiry in PostgreSQL
+	_ = s.fenceRepo.UpdateLeaseAuditExpiry(ctx, leaseID, renewedLease.ExpiresAt)
+
+	return renewedLease, nil
 }
 
 func (s *LeaseService) ReleaseLease(ctx context.Context, orgID, deviceID, leaseID, userID string) error {
@@ -78,7 +88,14 @@ func (s *LeaseService) ReleaseLease(ctx context.Context, orgID, deviceID, leaseI
 		return domain.ErrLeaseNotOwned
 	}
 
-	return s.leaseRepo.ReleaseLease(ctx, orgID, deviceID, leaseID, userID, existing.FencingToken)
+	if err := s.leaseRepo.ReleaseLease(ctx, orgID, deviceID, leaseID, userID, existing.FencingToken); err != nil {
+		return err
+	}
+
+	// Mark historical audit record revoked_at in PostgreSQL
+	_ = s.fenceRepo.RevokeLeaseAudit(ctx, leaseID)
+
+	return nil
 }
 
 func (s *LeaseService) GetActiveLease(ctx context.Context, orgID, deviceID string) (*domain.ControlLease, error) {
