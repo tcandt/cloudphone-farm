@@ -96,7 +96,7 @@ func main() {
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo)
-	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub)
+	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
 
@@ -160,6 +160,11 @@ func main() {
 				r.Use(custommw.RequirePermission("device.read"))
 				r.Get("/devices", deviceHandler.List)
 				r.Get("/devices/{id}", deviceHandler.GetByID)
+			})
+
+			// Device Stream WebRTC Media Signaling Route (Require device.stream.view permission)
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("device.stream.view"))
 				r.Get("/devices/{id}/media/ws", browserMediaHandler.ServeHTTP)
 			})
 

@@ -2,31 +2,71 @@ package ws
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
+	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 )
 
 type BrowserMediaHandler struct {
-	hub      *agentws.Hub
-	upgrader websocket.Upgrader
+	hub           *agentws.Hub
+	deviceService *devservice.DeviceService
+	coturnSecret  string
+	coturnHost    string
+	upgrader      websocket.Upgrader
 }
 
-func NewBrowserMediaHandler(hub *agentws.Hub) *BrowserMediaHandler {
+func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceService, allowedOrigins []string) *BrowserMediaHandler {
+	coturnSecret := os.Getenv("COTURN_SHARED_SECRET")
+	if coturnSecret == "" {
+		coturnSecret = "pcp_coturn_secret_key"
+	}
+	coturnHost := os.Getenv("COTURN_HOST")
+	if coturnHost == "" {
+		coturnHost = "turn.phonecontrol.io"
+	}
+
 	return &BrowserMediaHandler{
-		hub: hub,
+		hub:           hub,
+		deviceService: deviceService,
+		coturnSecret:  coturnSecret,
+		coturnHost:    coturnHost,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				return true // Origin checked via CORS middleware & Auth Token
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true
+				}
+				u, err := url.Parse(origin)
+				if err != nil {
+					return false
+				}
+				if strings.EqualFold(u.Host, r.Host) {
+					return true
+				}
+				for _, allowed := range allowedOrigins {
+					if strings.EqualFold(origin, allowed) || allowed == "*" {
+						return true
+					}
+				}
+				return false
 			},
 		},
 	}
@@ -41,14 +81,31 @@ type ICEServer struct {
 func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Extract device_id & org_id from query params or path
-	deviceID := r.URL.Query().Get("device_id")
-	orgID := r.URL.Query().Get("org_id")
-	if deviceID == "" {
-		deviceID = "dev_s7_edge_01"
+	// 1. Strict Tenant Authority & Authentication Check
+	principal, err := auth.GetPrincipal(ctx)
+	if err != nil || principal == nil {
+		slog.Warn("Unauthorized browser media WebSocket connection attempt")
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
 	}
-	if orgID == "" {
-		orgID = "org_default"
+
+	deviceID := chi.URLParam(r, "id")
+	if deviceID == "" {
+		slog.Warn("Missing device ID in path for browser media connection")
+		http.Error(w, "Missing Device ID", http.StatusBadRequest)
+		return
+	}
+
+	orgID := principal.OrganizationID
+
+	// 2. Validate Tenant Ownership: Device must belong to principal's organization
+	if h.deviceService != nil {
+		device, err := h.deviceService.GetDeviceByID(ctx, orgID, deviceID)
+		if err != nil || device == nil {
+			slog.Warn("Device tenant isolation check failed for browser media stream", "device_id", deviceID, "org_id", orgID, "error", err)
+			http.Error(w, "Device Not Found or Access Denied", http.StatusNotFound)
+			return
+		}
 	}
 
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -61,13 +118,23 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	sessionID := fmt.Sprintf("sess_%s", uuid.New().String()[:8])
 	browserChan := make(chan []byte, 128)
 
-	// Ephemeral Short-Lived TURN Credential Configuration
+	// 3. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
+	unixExpiry := time.Now().Add(10 * time.Minute).Unix()
+	username := fmt.Sprintf("%d:%s", unixExpiry, sessionID)
+
+	mac := hmac.New(sha1.New, []byte(h.coturnSecret))
+	mac.Write([]byte(username))
+	credential := base64.StdEncoding.EncodeToString(mac.Sum(nil))
+
 	iceServers := []ICEServer{
-		{URLs: []string{"stun:stun.l.google.com:19302"}},
+		{URLs: []string{fmt.Sprintf("stun:%s:3478", h.coturnHost)}},
 		{
-			URLs:       []string{"turn:stun.l.google.com:19302?transport=udp"},
-			Username:   fmt.Sprintf("turn_usr_%s", sessionID),
-			Credential: fmt.Sprintf("turn_pwd_%s", sessionID),
+			URLs: []string{
+				fmt.Sprintf("turn:%s:3478?transport=udp", h.coturnHost),
+				fmt.Sprintf("turn:%s:3478?transport=tcp", h.coturnHost),
+			},
+			Username:   username,
+			Credential: credential,
 		},
 	}
 
@@ -75,9 +142,20 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	h.hub.RegisterMediaSubscriber(sessionID, browserChan)
 	defer h.hub.UnregisterMediaSubscriber(sessionID)
 
-	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID)
+	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID)
 
-	// Dispatch media.session.start to Device Agent via Hub
+	// 4. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
+	createdPayload := map[string]interface{}{
+		"session_id":  sessionID,
+		"device_id":   deviceID,
+		"org_id":      orgID,
+		"ice_servers": iceServers,
+	}
+	createdEnv, _ := agentws.NewWSEnvelope(agentws.WSMessageType("media.session.created"), "msg_created_01", createdPayload)
+	createdBytes, _ := json.Marshal(createdEnv)
+	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
+
+	// 5. Dispatch media.session.start to Device Agent via Hub
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -102,7 +180,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Goroutine 1: Relay messages from Browser -> Device Agent
+	// Goroutine 1: Relay messages from Browser -> Device Agent (Validating session_id)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -124,6 +202,14 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			var env agentws.WSEnvelope
 			if err := json.Unmarshal(message, &env); err != nil {
 				continue
+			}
+
+			var payloadMap map[string]interface{}
+			if err := json.Unmarshal(env.Payload, &payloadMap); err == nil {
+				if reqSessID, ok := payloadMap["session_id"].(string); ok && reqSessID != sessionID {
+					slog.Warn("SessionID mismatch in incoming browser signaling message. Dropping.", "expected", sessionID, "got", reqSessID)
+					continue
+				}
 			}
 
 			switch env.Type {

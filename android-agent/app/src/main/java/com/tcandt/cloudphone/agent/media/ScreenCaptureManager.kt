@@ -30,6 +30,9 @@ object ScreenCaptureManager {
     private var activeSessionId: String = ""
     private var sessionRequestGeneration: Long = 0L
 
+    private var projectionResultCode: Int = 0
+    private var projectionResultData: Intent? = null
+
     private var pendingWidth: Int = 720
     private var pendingHeight: Int = 1280
     private var pendingBitrate: Int = 2_500_000
@@ -74,8 +77,7 @@ object ScreenCaptureManager {
             Log.w(TAG, "Notification permission denied on Android 13+. Failing capture request for SessionID=$sessionId")
             currentState = ScreenCaptureState.FAILED
             sessionListener?.onSessionFailed(sessionId, "notification_permission_required")
-            clearToken()
-            currentState = ScreenCaptureState.IDLE
+            clearAllSessionState()
             return
         }
 
@@ -89,7 +91,7 @@ object ScreenCaptureManager {
 
         val currentGen = sessionRequestGeneration
 
-        Log.i(TAG, "Requesting MediaProjection consent. Transitioning state IDLE -> CONSENT_REQUIRED (Gen=$currentGen)")
+        Log.i(TAG, "Requesting MediaProjection consent. Transitioning state IDLE -> CONSENT_REQUIRED (Gen=$currentGen, SessionID=$activeSessionId)")
         currentState = ScreenCaptureState.CONSENT_REQUIRED
 
         // Send notification for Android 10+ Background Activity Launch (BAL) compliance
@@ -153,15 +155,16 @@ object ScreenCaptureManager {
             return
         }
 
-        Log.i(TAG, "Consent granted for Gen=$generation. Consuming single-use MediaProjection token immediately")
+        Log.i(TAG, "Consent granted for Gen=$generation. Consuming single-use MediaProjection token immediately for SessionID=$activeSessionId")
         val intentGrant = resultData
+        val currentSessionId = activeSessionId
 
-        // CONSUME IMMEDIATELY: Never store reusable permission Intent
-        clearToken()
+        // CONSUME PERMISSION GRANT IMMEDIATELY: Never store reusable permission Intent (preserves activeSessionId!)
+        clearPermissionGrantOnly()
         currentState = ScreenCaptureState.READY
 
         // Option A Single Owner: Pass MediaProjection Intent directly to WebRTC Manager
-        onConsentGrantedHandler?.invoke(activeSessionId, intentGrant)
+        onConsentGrantedHandler?.invoke(currentSessionId, intentGrant)
     }
 
     fun onConsentDenied(context: Context, generation: Long) {
@@ -172,12 +175,12 @@ object ScreenCaptureManager {
         Log.w(TAG, "Consent denied by user for Gen=$generation")
         currentState = ScreenCaptureState.FAILED
         sessionListener?.onSessionFailed(activeSessionId, "MediaProjection consent denied by user")
-        clearToken()
-        currentState = ScreenCaptureState.IDLE
+        clearAllSessionState()
     }
 
     fun markReady(sessionId: String) {
-        if (activeSessionId == sessionId) {
+        if (activeSessionId == sessionId || activeSessionId.isEmpty()) {
+            activeSessionId = sessionId
             currentState = ScreenCaptureState.READY
             Log.i(TAG, "ScreenCaptureState -> READY (SessionID=$sessionId)")
         }
@@ -198,20 +201,26 @@ object ScreenCaptureManager {
         }
     }
 
+    fun onEncoderFormatConfirmed() {
+        if (currentState == ScreenCaptureState.STARTING || currentState == ScreenCaptureState.READY) {
+            currentState = ScreenCaptureState.CAPTURING
+            Log.i(TAG, "Transitioning state -> CAPTURING (SessionID=$activeSessionId)")
+            sessionListener?.onSessionStarted(activeSessionId)
+        }
+    }
+
     fun onEncoderFailed(errorMsg: String) {
         Log.e(TAG, "Encoder setup failed: $errorMsg")
         currentState = ScreenCaptureState.FAILED
         sessionListener?.onSessionFailed(activeSessionId, errorMsg)
-        clearToken()
-        currentState = ScreenCaptureState.IDLE
+        clearAllSessionState()
     }
 
     fun onProjectionStoppedBySystem() {
         Log.w(TAG, "Projection stopped by system/user")
         currentState = ScreenCaptureState.STOPPING
         val sessId = activeSessionId
-        clearToken()
-        currentState = ScreenCaptureState.IDLE
+        clearAllSessionState()
         sessionListener?.onSessionStopped(sessId, "projection_stopped_by_system")
     }
 
@@ -226,13 +235,27 @@ object ScreenCaptureManager {
         Log.i(TAG, "Stopping capture session (SessionID=$activeSessionId, invalidated Gen=$sessionRequestGeneration)")
 
         val sessId = activeSessionId
-        clearToken()
-        currentState = ScreenCaptureState.IDLE
+        clearAllSessionState()
         sessionListener?.onSessionStopped(sessId, "operator_requested")
     }
 
-    private fun clearToken() {
+    fun onServiceStoppedFully(sessionId: String, reason: String) {
+        val sessId = if (sessionId.isNotEmpty()) sessionId else activeSessionId
+        clearAllSessionState()
+        sessionListener?.onSessionStopped(sessId, reason)
+    }
+
+    private fun clearPermissionGrantOnly() {
+        projectionResultCode = 0
+        projectionResultData = null
+        Log.d(TAG, "Cleared MediaProjection permission grant Intent (consumed per targetSdk 34 rules)")
+    }
+
+    private fun clearAllSessionState() {
+        projectionResultCode = 0
+        projectionResultData = null
         activeSessionId = ""
-        Log.d(TAG, "Cleared MediaProjection token context (consumed per Android 14 targetSdk 34 rules)")
+        currentState = ScreenCaptureState.IDLE
+        Log.d(TAG, "Cleared all MediaProjection session state and activeSessionId")
     }
 }
