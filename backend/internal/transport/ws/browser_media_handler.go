@@ -179,6 +179,8 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		"session_id":  sessionID,
 		"device_id":   deviceID,
 		"org_id":      orgID,
+		"user_id":     principal.UserID,
+		"expires_at":  expiresAt.UTC().Format(time.RFC3339Nano),
 		"ice_servers": iceServers,
 	}
 	createdEnv, _ := agentws.NewWSEnvelope(agentws.WSMessageType("media.session.created"), "msg_created_01", createdPayload)

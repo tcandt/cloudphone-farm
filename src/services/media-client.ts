@@ -60,15 +60,17 @@ export class ProductionWebRtcMediaClient implements MediaClient {
       this.webRtcClient.startSession();
     }
 
+    const meta = this.webRtcClient.getServerMetadata();
+
     const session: StreamSession = {
-      stream_session_id: this.webRtcClient.getSessionId() || this.sessionId,
+      stream_session_id: meta?.sessionId || this.webRtcClient.getSessionId() || this.sessionId,
       device_id: deviceId,
-      organization_id: 'org_authenticated',
-      user_id: 'usr_authenticated',
+      organization_id: meta?.orgId || '',
+      user_id: meta?.userId || '',
       profile: this.profile,
       status: 'signaling',
       started_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 900 * 1000).toISOString(),
+      expires_at: meta?.expiresAt || '',
     };
 
     return session;

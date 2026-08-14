@@ -13,7 +13,9 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(true);
   const [playerState, setPlayerState] = useState<string>('CONNECTING');
-  const [sessionId] = useState(() => `str_live_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
+  const [playerError, setPlayerError] = useState<string | null>(null);
+  const [serverSessionId, setServerSessionId] = useState<string>('');
+  const [viewerSessionId] = useState(() => `str_live_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
   const mediaClientRef = useRef<MediaClient | null>(null);
 
   useEffect(() => {
@@ -21,9 +23,17 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
       return;
     }
 
-    const mediaClient = defaultMediaRegistry.acquire(sessionId);
+    const mediaClient = defaultMediaRegistry.acquire(viewerSessionId);
     mediaClientRef.current = mediaClient;
     let mounted = true;
+
+    const unsubscribe = mediaClient.onStateChange?.((state, err, serverSessId) => {
+      if (mounted) {
+        setPlayerState(state);
+        if (err) setPlayerError(err);
+        if (serverSessId) setServerSessionId(serverSessId);
+      }
+    });
 
     async function start() {
       await mediaClient.startSession(device.device_id, {
@@ -51,12 +61,13 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
 
     return () => {
       mounted = false;
-      defaultMediaRegistry.release(sessionId);
+      unsubscribe?.();
+      defaultMediaRegistry.release(viewerSessionId);
     };
-  }, [device.device_id, isStreaming, sessionId]);
+  }, [device.device_id, isStreaming, viewerSessionId]);
 
   const handleFrameReceived = () => {
-    setPlayerState('LIVE');
+    setPlayerState('VIDEO_RECEIVING');
     mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived();
   };
 
@@ -64,7 +75,8 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
     setIsStreaming((prev) => !prev);
   };
 
-  const displayStatus = !isStreaming ? 'STOPPED' : playerState === 'LIVE' ? 'LIVE 30fps' : playerState;
+  const displayStatus = !isStreaming ? 'STOPPED' : playerState === 'VIDEO_RECEIVING' ? 'LIVE 30fps' : playerState;
+  const displaySessionId = serverSessionId || viewerSessionId;
   const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
 
   return (
@@ -76,8 +88,11 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
         </div>
         <div className="flex items-center gap-2">
           {isStreaming ? (
-            <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> {displayStatus}
+            <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] flex items-center gap-1 ${
+              playerState === 'FAILED' ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${playerState === 'FAILED' ? 'bg-rose-500' : 'bg-emerald-500 animate-pulse'}`}></span>
+              {displayStatus}
             </span>
           ) : (
             <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold text-[10px]">
@@ -101,7 +116,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
               ref={canvasRef}
               width={360}
               height={640}
-              data-session-id={sessionId}
+              data-session-id={displaySessionId}
               className="w-full h-full object-contain"
             />
           ) : (
@@ -111,7 +126,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
                 autoPlay
                 playsInline
                 muted
-                data-session-id={sessionId}
+                data-session-id={displaySessionId}
                 onLoadedData={handleFrameReceived}
                 onPlaying={handleFrameReceived}
                 className="w-full h-full object-contain bg-black"
@@ -120,9 +135,16 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
                 ref={canvasRef}
                 width={360}
                 height={640}
-                data-session-id={sessionId}
+                data-session-id={displaySessionId}
                 className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-0"
               />
+              {playerState === 'FAILED' && (
+                <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-3 text-center space-y-1 z-10">
+                  <AlertCircle size={24} className="text-rose-500" />
+                  <p className="text-[11px] font-bold text-rose-400">Stream Failed</p>
+                  <p className="text-[10px] text-slate-400 font-mono line-clamp-2">{playerError || 'Connection error'}</p>
+                </div>
+              )}
             </>
           )
         ) : (
@@ -133,7 +155,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
         )}
       </div>
 
-      <p className="text-[10px] text-slate-400 font-mono truncate">Session: {sessionId}</p>
+      <p className="text-[10px] text-slate-400 font-mono truncate">Session: {displaySessionId}</p>
     </div>
   );
 };

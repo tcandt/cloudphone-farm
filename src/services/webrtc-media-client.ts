@@ -10,6 +10,14 @@ export type WebRtcState =
   | 'CLOSED'
   | 'FAILED';
 
+export interface ServerMediaMetadata {
+  sessionId: string;
+  deviceId: string;
+  orgId: string;
+  userId: string;
+  expiresAt: string;
+}
+
 export interface WebRtcMediaClientOptions {
   deviceId: string;
   onStateChange?: (state: WebRtcState, error?: string, serverSessionId?: string) => void;
@@ -21,6 +29,7 @@ export class WebRtcMediaClient {
   private pc: RTCPeerConnection | null = null;
   private state: WebRtcState = 'IDLE';
   private sessionId = '';
+  private serverMetadata: ServerMediaMetadata | null = null;
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
   private mediaStream: MediaStream | null = null;
   private isOfferCreated = false;
@@ -38,6 +47,10 @@ export class WebRtcMediaClient {
 
   public getSessionId(): string {
     return this.sessionId;
+  }
+
+  public getServerMetadata(): ServerMediaMetadata | null {
+    return this.serverMetadata;
   }
 
   public getMediaStream(): MediaStream | null {
@@ -86,7 +99,7 @@ export class WebRtcMediaClient {
 
       this.ws.onclose = (event) => {
         console.warn(`[WebRtcMediaClient] WebSocket closed: ${event.reason} (${event.code})`);
-        if (this.state !== 'CLOSED') {
+        if (this.state !== 'FAILED' && this.state !== 'CLOSED') {
           this.setState('CLOSED', event.reason || 'Signaling connection closed');
         }
       };
@@ -102,8 +115,15 @@ export class WebRtcMediaClient {
     switch (envelope.type) {
       case 'media.session.created': {
         this.sessionId = (payload.session_id as string) || '';
+        this.serverMetadata = {
+          sessionId: this.sessionId,
+          deviceId: (payload.device_id as string) || this.options.deviceId,
+          orgId: (payload.org_id as string) || '',
+          userId: (payload.user_id as string) || '',
+          expiresAt: (payload.expires_at as string) || '',
+        };
         const iceServers = (payload.ice_servers as RTCIceServer[]) || [{ urls: 'stun:stun.l.google.com:19302' }];
-        console.log(`[WebRtcMediaClient] Session Created: ${this.sessionId}. Initializing RTCPeerConnection with STUN/TURN servers`);
+        console.log(`[WebRtcMediaClient] Session Created: ${this.sessionId}. Metadata loaded. Initializing RTCPeerConnection.`);
 
         this.initPeerConnection(iceServers);
         this.setState('WAITING_DEVICE_CONSENT');
@@ -285,7 +305,7 @@ export class WebRtcMediaClient {
 
   public close(): void {
     if (this.state === 'CLOSED') return;
-    this.state = 'CLOSED';
+    const isAlreadyFailed = this.state === 'FAILED';
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
@@ -316,7 +336,9 @@ export class WebRtcMediaClient {
 
     this.pendingIceCandidates = [];
     this.isOfferCreated = false;
-    this.setState('CLOSED');
+    if (!isAlreadyFailed) {
+      this.setState('CLOSED');
+    }
     console.log(`[WebRtcMediaClient] WebRTC session closed cleanly for SessionID=${this.sessionId}`);
   }
 }
