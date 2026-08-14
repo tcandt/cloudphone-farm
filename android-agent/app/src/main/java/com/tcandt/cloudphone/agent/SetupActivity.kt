@@ -1,7 +1,6 @@
 package com.tcandt.cloudphone.agent
 
 import android.content.Intent
-import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -9,10 +8,8 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
-import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
 import com.tcandt.cloudphone.agent.security.AgentKeyStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -28,17 +25,6 @@ class SetupActivity : AppCompatActivity() {
 
     private lateinit var configStore: AgentConfigStore
     private lateinit var keyStore: AgentKeyStore
-
-    private val projectionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK && result.data != null) {
-            ScreenCaptureManager.initConsent(result.resultCode, result.data!!)
-            Toast.makeText(this, "MediaProjection Permission Granted!", Toast.LENGTH_SHORT).show()
-            Log.i("SetupActivity", "MediaProjection permission granted")
-        } else {
-            Toast.makeText(this, "MediaProjection Permission Denied", Toast.LENGTH_SHORT).show()
-            Log.w("SetupActivity", "MediaProjection permission denied")
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,7 +43,6 @@ class SetupActivity : AppCompatActivity() {
         if (configStore.isEnrolled()) {
             tvStatus.text = "Device Enrolled!\nAgent ID: ${configStore.getAgentId()}\nDevice ID: ${configStore.getDeviceId()}"
             startAgentService()
-            requestMediaProjectionConsent()
         }
 
         btnEnroll.setOnClickListener {
@@ -75,13 +60,6 @@ class SetupActivity : AppCompatActivity() {
             CoroutineScope(Dispatchers.IO).launch {
                 performEnrollment(serverUrl, tokenCode, tvStatus, btnEnroll)
             }
-        }
-    }
-
-    private fun requestMediaProjectionConsent() {
-        if (!ScreenCaptureManager.hasConsent()) {
-            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            projectionLauncher.launch(projectionManager.createScreenCaptureIntent())
         }
     }
 
@@ -125,7 +103,6 @@ class SetupActivity : AppCompatActivity() {
                     Toast.makeText(this@SetupActivity, "Enrollment Successful!", Toast.LENGTH_LONG).show()
 
                     startAgentService()
-                    requestMediaProjectionConsent()
                 } else {
                     tvStatus.text = "Enrollment Failed: HTTP ${response.code}\n$respStr"
                     Log.e("SetupActivity", "Enrollment failed: $respStr")

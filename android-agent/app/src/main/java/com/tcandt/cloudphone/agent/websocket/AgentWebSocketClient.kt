@@ -52,6 +52,52 @@ class AgentWebSocketClient(
             sendStatusMessage(commandId, status, error, sequence)
         }
 
+        ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {
+            override fun onSessionStarted(sessionId: String) {
+                val respPayload = JSONObject().apply {
+                    put("session_id", sessionId)
+                    put("status", "started")
+                }
+                val envelope = JSONObject().apply {
+                    put("type", "media.session.started")
+                    put("message_id", "msg_${System.nanoTime()}")
+                    put("payload", respPayload)
+                }
+                webSocket?.send(envelope.toString())
+                Log.i(TAG, "Sent media.session.started WSS envelope (SessionID=$sessionId)")
+            }
+
+            override fun onSessionStopped(sessionId: String, reason: String) {
+                val respPayload = JSONObject().apply {
+                    put("session_id", sessionId)
+                    put("status", "stopped")
+                    put("reason", reason)
+                }
+                val envelope = JSONObject().apply {
+                    put("type", "media.session.stopped")
+                    put("message_id", "msg_${System.nanoTime()}")
+                    put("payload", respPayload)
+                }
+                webSocket?.send(envelope.toString())
+                Log.i(TAG, "Sent media.session.stopped WSS envelope (SessionID=$sessionId, reason=$reason)")
+            }
+
+            override fun onSessionFailed(sessionId: String, error: String) {
+                val respPayload = JSONObject().apply {
+                    put("session_id", sessionId)
+                    put("status", "failed")
+                    put("error_message", error)
+                }
+                val envelope = JSONObject().apply {
+                    put("type", "media.session.started")
+                    put("message_id", "msg_${System.nanoTime()}")
+                    put("payload", respPayload)
+                }
+                webSocket?.send(envelope.toString())
+                Log.w(TAG, "Sent media.session.started [failed] WSS envelope (SessionID=$sessionId, error=$error)")
+            }
+        }
+
         val timestamp = (System.currentTimeMillis() / 1000).toString()
         val nonce = "nonce_${UUID.randomUUID().toString().substring(0, 8)}"
 
@@ -153,23 +199,7 @@ class AgentWebSocketClient(
         val fps = payload.optInt("fps", 30)
 
         Log.i(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
-        val success = ScreenCaptureManager.startCapture(context, width, height, bitrate, fps)
-
-        val respPayload = JSONObject().apply {
-            put("session_id", sessionId)
-            put("status", if (success) "started" else "failed")
-            if (!success) {
-                put("error_message", "MediaProjection permission consent missing on device")
-            }
-        }
-
-        val envelope = JSONObject().apply {
-            put("type", "media.session.started")
-            put("message_id", "msg_${System.nanoTime()}")
-            put("payload", respPayload)
-        }
-
-        webSocket?.send(envelope.toString())
+        ScreenCaptureManager.requestCapture(context, sessionId, width, height, bitrate, fps)
     }
 
     private fun handleMediaSessionStop(payload: JSONObject) {
@@ -177,19 +207,6 @@ class AgentWebSocketClient(
         Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
         ScreenCaptureManager.stopCapture(context)
-
-        val respPayload = JSONObject().apply {
-            put("session_id", sessionId)
-            put("status", "stopped")
-        }
-
-        val envelope = JSONObject().apply {
-            put("type", "media.session.stopped")
-            put("message_id", "msg_${System.nanoTime()}")
-            put("payload", respPayload)
-        }
-
-        webSocket?.send(envelope.toString())
     }
 
     private fun startSignedHttpHeartbeat() {

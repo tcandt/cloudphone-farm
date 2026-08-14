@@ -14,7 +14,9 @@ import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -30,6 +32,9 @@ class MediaCaptureService : Service() {
     private var encoderThreadJob: Job? = null
     private var isEncoderRunning = false
 
+    private var currentWidth = 720
+    private var currentHeight = 1280
+
     companion object {
         private const val TAG = "MediaCaptureService"
         private const val NOTIFICATION_ID = 2001
@@ -44,6 +49,18 @@ class MediaCaptureService : Service() {
         const val EXTRA_HEIGHT = "extra_height"
         const val EXTRA_BITRATE = "extra_bitrate"
         const val EXTRA_FPS = "extra_fps"
+
+        var videoSink: EncodedVideoSink? = null
+    }
+
+    private val projectionCallback = object : MediaProjection.Callback() {
+        override fun onStop() {
+            Log.i(TAG, "MediaProjection.Callback.onStop triggered (user/system stopped sharing)")
+            stopMediaProjectionEncoder(stopProjection = false)
+            ScreenCaptureManager.onProjectionStoppedBySystem()
+            stopForeground(true)
+            stopSelf()
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -70,10 +87,11 @@ class MediaCaptureService : Service() {
                     startMediaProjectionEncoder(resultCode, resultData, width, height, bitrate, fps)
                 } else {
                     Log.e(TAG, "Invalid result code or result data for MediaProjection")
+                    ScreenCaptureManager.onEncoderFailed("Invalid MediaProjection token result")
                 }
             }
             ACTION_STOP_CAPTURE -> {
-                stopMediaProjectionEncoder()
+                stopMediaProjectionEncoder(stopProjection = true)
                 stopForeground(true)
                 stopSelf()
             }
@@ -117,8 +135,21 @@ class MediaCaptureService : Service() {
         fps: Int
     ) {
         try {
+            currentWidth = width
+            currentHeight = height
+
             val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+
+            if (mediaProjection == null) {
+                Log.e(TAG, "MediaProjectionManager returned null projection")
+                ScreenCaptureManager.onEncoderFailed("MediaProjection token returned null")
+                return
+            }
+
+            // MANDATORY for Android 14 targetSdk 34: Register callback BEFORE createVirtualDisplay
+            mediaProjection?.registerCallback(projectionCallback, Handler(Looper.getMainLooper()))
+            Log.i(TAG, "Registered MediaProjection.Callback successfully")
 
             // Setup MediaCodec H.264 AVC Encoder
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
@@ -154,7 +185,8 @@ class MediaCaptureService : Service() {
             Log.i(TAG, "MediaCodec H.264 Encoder & VirtualDisplay created successfully (${width}x${height})")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start MediaProjection H.264 encoder: ${e.message}", e)
-            stopMediaProjectionEncoder()
+            ScreenCaptureManager.onEncoderFailed(e.message ?: "MediaCodec setup failed")
+            stopMediaProjectionEncoder(stopProjection = true)
         }
     }
 
@@ -162,6 +194,7 @@ class MediaCaptureService : Service() {
         encoderThreadJob = CoroutineScope(Dispatchers.IO).launch {
             val bufferInfo = MediaCodec.BufferInfo()
             val codec = mediaCodec ?: return@launch
+            var hasNotifiedFormat = false
 
             while (isEncoderRunning) {
                 try {
@@ -172,13 +205,32 @@ class MediaCaptureService : Service() {
                             outputBuffer.position(bufferInfo.offset)
                             outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
 
-                            // NAL unit ready: Ready for WebRTC video track packetization
-                            // (In Phase 1.3.2 this feeds directly into WebRTC VideoTrack / PeerConnection)
+                            // Copy byte array before releasing output buffer
+                            val frameData = ByteArray(bufferInfo.size)
+                            outputBuffer.get(frameData)
+
+                            val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                            val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+
+                            val frame = EncodedVideoFrame(
+                                data = frameData,
+                                ptsUs = bufferInfo.presentationTimeUs,
+                                isKeyFrame = isKeyFrame,
+                                isCodecConfig = isCodecConfig
+                            )
+
+                            if (!hasNotifiedFormat && (isKeyFrame || isCodecConfig)) {
+                                hasNotifiedFormat = true
+                                ScreenCaptureManager.onEncoderFormatConfirmed()
+                            }
+
+                            videoSink?.onEncodedFrame(frame)
                         }
                         codec.releaseOutputBuffer(outputBufferId, false)
                     } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val newFormat = codec.outputFormat
                         Log.i(TAG, "MediaCodec output format changed: $newFormat")
+                        videoSink?.onFormatChanged(newFormat)
                     }
                 } catch (e: Exception) {
                     if (isEncoderRunning) {
@@ -189,7 +241,7 @@ class MediaCaptureService : Service() {
         }
     }
 
-    private fun stopMediaProjectionEncoder() {
+    private fun stopMediaProjectionEncoder(stopProjection: Boolean) {
         isEncoderRunning = false
         encoderThreadJob?.cancel()
         encoderThreadJob = null
@@ -202,8 +254,11 @@ class MediaCaptureService : Service() {
             mediaCodec?.release()
             mediaCodec = null
 
-            mediaProjection?.stop()
-            mediaProjection = null
+            if (stopProjection && mediaProjection != null) {
+                mediaProjection?.unregisterCallback(projectionCallback)
+                mediaProjection?.stop()
+                mediaProjection = null
+            }
 
             Log.i(TAG, "Released MediaProjection, VirtualDisplay and MediaCodec hardware encoder")
         } catch (e: Exception) {
@@ -212,7 +267,7 @@ class MediaCaptureService : Service() {
     }
 
     override fun onDestroy() {
-        stopMediaProjectionEncoder()
+        stopMediaProjectionEncoder(stopProjection = true)
         super.onDestroy()
     }
 }

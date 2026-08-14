@@ -24,6 +24,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".media.ConsentPromptActivity"
+            android:exported="false"
+            android:theme="@style/Theme.AppCompat.Translucent" />
+
         <!-- Physical Gesture Execution Accessibility Service -->
         <service
             android:name=".accessibility.DeviceControlService"
