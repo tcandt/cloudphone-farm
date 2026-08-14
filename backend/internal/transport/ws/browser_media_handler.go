@@ -210,7 +210,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Expiry Timer: Immediate stop & close when TTL expires
+	// Expiry Timer: Immediate stop & close when TTL expires (Uses DispatchStopToMediaSession to bypass expiry rejection for cleanup)
 	expiryTimer := time.NewTimer(time.Until(expiresAt))
 	defer expiryTimer.Stop()
 
@@ -223,7 +223,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			stopPayload := map[string]interface{}{"session_id": sessionID, "reason": "session_ttl_expired"}
 			stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_ttl_stop", stopPayload)
 			stopBytes, _ := json.Marshal(stopEnv)
-			_ = h.hub.DispatchToMediaSession(sessionID, stopBytes)
+			_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
 
 			_ = conn.SetReadDeadline(time.Now())
 			_ = conn.Close()
@@ -273,12 +273,19 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			}
 
 			switch env.Type {
-			case agentws.MessageTypeMediaSignalOffer, agentws.MessageTypeMediaSignalCandidate, agentws.MessageTypeMediaSessionStop:
+			case agentws.MessageTypeMediaSignalOffer, agentws.MessageTypeMediaSignalCandidate:
 				// Fenced Dispatch: Verify exact Agent Connection Snapshot
 				if err := h.hub.DispatchToMediaSession(sessionID, message); err != nil {
 					slog.Warn("Failed to dispatch fenced browser media signal to device agent", "type", env.Type, "error", err)
 				} else {
 					slog.Info("Dispatched fenced browser media signal to device agent", "type", env.Type, "session_id", sessionID)
+				}
+			case agentws.MessageTypeMediaSessionStop:
+				// Fenced Stop Dispatch: Dispatches stop even if expiry boundary was reached
+				if err := h.hub.DispatchStopToMediaSession(sessionID, message); err != nil {
+					slog.Warn("Failed to dispatch fenced browser media stop to device agent", "type", env.Type, "error", err)
+				} else {
+					slog.Info("Dispatched fenced browser media stop to device agent", "type", env.Type, "session_id", sessionID)
 				}
 			}
 		}
@@ -320,6 +327,6 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	stopPayload := map[string]interface{}{"session_id": sessionID}
 	stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_stop_01", stopPayload)
 	stopBytes, _ := json.Marshal(stopEnv)
-	_ = h.hub.DispatchToMediaSession(sessionID, stopBytes)
+	_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
 	slog.Info("Browser Media Session closed cleanly", "session_id", sessionID)
 }

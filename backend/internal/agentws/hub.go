@@ -150,6 +150,40 @@ func (h *Hub) DispatchToMediaSession(sessionID string, data []byte) error {
 	}
 }
 
+func (h *Hub) DispatchStopToMediaSession(sessionID string, data []byte) error {
+	h.mu.RLock()
+	session, sessionExists := h.mediaSessions[sessionID]
+	if !sessionExists || session == nil {
+		h.mu.RUnlock()
+		return ErrSessionNotFound
+	}
+
+	key := DeviceKey(session.OrganizationID, session.DeviceID)
+	conn, connExists := h.connections[key]
+	h.mu.RUnlock()
+
+	if !connExists || conn == nil {
+		return ErrDeviceNotConnected
+	}
+
+	// Connection Fencing: Verify Agent identity, connection ID, and generation match media session snapshot (Allowing TTL stop after expiry)
+	if conn.AgentID != session.AgentID || conn.ConnectionID != session.ConnectionID || conn.Generation != session.Generation {
+		slog.Warn("Stale connection generation fencing mismatch for media session stop dispatch. Dropping.",
+			"session_id", sessionID,
+			"sess_conn_id", session.ConnectionID, "curr_conn_id", conn.ConnectionID,
+			"sess_gen", session.Generation, "curr_gen", conn.Generation)
+		return ErrUnauthorizedMediaSession
+	}
+
+	select {
+	case conn.Send <- data:
+		return nil
+	default:
+		slog.Error("Media stop dispatch failed due to agent send channel buffer full", "session_id", sessionID)
+		return ErrBufferOverflow
+	}
+}
+
 func (h *Hub) RegisterMediaSession(session *MediaSession) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
