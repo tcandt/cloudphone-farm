@@ -115,10 +115,10 @@ func (h *Hub) GetConnectionSnapshot(orgID, deviceID string) (ConnectionSnapshot,
 
 func (h *Hub) DispatchToConnectionSnapshot(orgID, deviceID string, snap ConnectionSnapshot, data []byte) error {
 	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	key := DeviceKey(orgID, deviceID)
 	conn, exists := h.connections[key]
-	h.mu.RUnlock()
-
 	if !exists || conn == nil {
 		return ErrDeviceNotConnected
 	}

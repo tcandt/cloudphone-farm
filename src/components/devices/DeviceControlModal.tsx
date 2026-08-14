@@ -8,6 +8,7 @@ import { PermissionGuard } from '../common/PermissionGuard';
 import { computeVideoGeometry, mapPointerToNormalizedCoordinates, VideoContentGeometry } from '../../lib/video-geometry';
 import { PointerGestureRecognizer, DispatchedGesture } from '../../lib/pointer-gesture-engine';
 import { OperatorEventClient } from '../../services/operator-event-client';
+import { OperationalCommandStore } from '../../services/operational-command-store';
 import { PeerTelemetry } from '../../services/webrtc-media-client';
 import {
   X,
@@ -56,6 +57,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const lastPointerUpTimeRef = useRef<number>(0);
   const isRenewingLeaseRef = useRef<boolean>(false);
   const geometryRevisionRef = useRef<number>(0);
+  const commandStoreRef = useRef<OperationalCommandStore | null>(null);
 
   // Keep leaseRef updated for async callbacks & unmount cleanup
   useEffect(() => {
@@ -109,31 +111,39 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     }
   }, [isOpen, updateGeometry]);
 
-  // Subscribe to real-time operator WebSocket command status events
+  // Subscribe to real-time operator WebSocket command status events & OperationalCommandStore
   useEffect(() => {
     if (!isOpen) return;
     const isMockMode = getApiMode() === 'mock';
     if (isMockMode) return;
 
-    const opClient = new OperatorEventClient(device.device_id);
-    const unsub = opClient.subscribe((evt) => {
-      if (evt.type === 'command.status.changed') {
-        const data = evt.data;
-        if (data.device_id !== device.device_id) return;
-        const statusMsg = data.error_message
-          ? `FAIL: ${data.error_message}`
-          : data.execution_status.toUpperCase();
-        addLog(`Cmd #${data.command_id} [Seq #${data.sequence}]: ${statusMsg}`);
-      } else if (evt.type === 'command.delivery.changed') {
-        const data = evt.data;
-        if (data.device_id !== device.device_id) return;
-        addLog(`Cmd #${data.command_id} DISPATCHED (Attempt #${data.attempt_count})`);
+    const store = new OperationalCommandStore(device.device_id);
+    commandStoreRef.current = store;
+
+    const storeUnsub = store.subscribe((commands) => {
+      const latest = commands[0];
+      if (latest) {
+        let statusStr = latest.executionStatus?.toUpperCase() || latest.deliveryStatus?.toUpperCase() || 'ACCEPTED';
+        if (latest.operationalStatus === 'confirmation_timeout') {
+          statusStr = 'CONFIRMATION_TIMEOUT (RESULT UNKNOWN)';
+        } else if (latest.errorMessage) {
+          statusStr = `FAIL: ${latest.errorMessage}`;
+        }
+        addLog(`Cmd #${latest.commandId} [Seq #${latest.lastSequence}]: ${statusStr}`);
       }
+    });
+
+    const opClient = new OperatorEventClient(device.device_id);
+    const opUnsub = opClient.subscribe((evt) => {
+      store.processEvent(evt);
     });
     opClient.connect();
 
     return () => {
-      unsub();
+      storeUnsub();
+      store.destroy();
+      commandStoreRef.current = null;
+      opUnsub();
       opClient.close();
     };
   }, [device.device_id, isOpen, addLog]);
@@ -307,6 +317,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
         controlLeaseId: lease.control_lease_id,
         idempotencyKey: `cmd_${gesture.type}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       });
+
+      if (commandStoreRef.current) {
+        commandStoreRef.current.trackAcceptedCommand(command.command_id, device.device_id);
+      }
 
       if (gesture.type === 'gesture.touch') {
         const { x, y } = gesture.payload;

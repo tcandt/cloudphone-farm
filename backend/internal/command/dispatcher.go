@@ -131,11 +131,13 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 
 	envData, _ := json.Marshal(env)
 
+	attemptNo := msg.AttemptCount + 1
+
 	// Snapshot active connection generation authority
 	snap, ok := d.wsHub.GetConnectionSnapshot(msg.OrganizationID, msg.DeviceID)
 	if !ok {
 		slog.Warn("Device agent not connected to hub for outbox dispatch", "device_id", msg.DeviceID, "command_id", msg.CommandID)
-		if msg.AttemptCount+1 >= d.maxAttempts {
+		if attemptNo >= d.maxAttempts {
 			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, "Device offline after max attempts")
 			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
 		} else {
@@ -145,11 +147,20 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	// Dispatch to exact snapshot
+	// 1. PERSIST delivery attempt with status 'prepared' BEFORE socket dispatch
+	err = d.cmdRepo.RecordDeliveryAttempt(ctx, msg.OrganizationID, msg.CommandID, msg.DeviceID, attemptNo, snap.AgentID, snap.ConnectionID, snap.Generation, "prepared")
+	if err != nil {
+		slog.Error("Failed to record prepared command delivery attempt in DB", "error", err, "command_id", msg.CommandID)
+		_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, fmt.Sprintf("DB record delivery attempt error: %v", err), time.Now().Add(1*time.Second))
+		return
+	}
+
+	// 2. Dispatch to exact snapshot atomically
 	err = d.wsHub.DispatchToConnectionSnapshot(msg.OrganizationID, msg.DeviceID, snap, envData)
 	if err != nil {
-		if msg.AttemptCount+1 >= d.maxAttempts {
-			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "attempts", msg.AttemptCount+1)
+		_ = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "failed", err.Error())
+		if attemptNo >= d.maxAttempts {
+			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "attempts", attemptNo)
 			_ = d.outboxRepo.UpdateOutboxFailed(ctx, msg.OutboxID, err.Error())
 			_ = d.cmdRepo.UpdateCommandStatus(ctx, msg.CommandID, "failed", fmt.Sprintf("Device offline after %d attempts", d.maxAttempts), 0)
 		} else {
@@ -161,10 +172,21 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		return
 	}
 
-	attemptNo := msg.AttemptCount + 1
-	_ = d.cmdRepo.RecordDeliveryAttempt(ctx, msg.OrganizationID, msg.CommandID, msg.DeviceID, attemptNo, snap.AgentID, snap.ConnectionID, snap.Generation)
-	_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
+	// 3. Mark delivery attempt status 'dispatched' and outbox 'dispatched'
+	err = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "dispatched", "")
+	if err != nil {
+		slog.Error("Failed to update delivery attempt status to dispatched", "error", err, "command_id", msg.CommandID)
+		_ = d.outboxRepo.UpdateOutboxRetry(ctx, msg.OutboxID, fmt.Sprintf("DB update delivery attempt status error: %v", err), time.Now().Add(1*time.Second))
+		return
+	}
 
+	err = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
+	if err != nil {
+		slog.Error("Failed to update outbox dispatched status", "error", err, "outbox_id", msg.OutboxID)
+		return
+	}
+
+	// 4. ONLY AFTER authoritative delivery DB persistence succeeds: broadcast DISPATCHED to browser
 	if d.browserHub != nil {
 		d.browserHub.BroadcastCommandDelivery(msg.OrganizationID, msg.DeviceID, msg.CommandID, "dispatched", attemptNo)
 	}

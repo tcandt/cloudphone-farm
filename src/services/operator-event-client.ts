@@ -55,33 +55,50 @@ export class OperatorEventClient {
       this.ws.onmessage = (evt) => {
         try {
           const raw = JSON.parse(evt.data);
-          if (!raw || typeof raw !== 'object' || !raw.type) return;
+          if (!raw || typeof raw !== 'object' || !raw.type || !raw.data || typeof raw.data !== 'object') {
+            console.warn('[OperatorEventClient] Rejected malformed event missing envelope structure:', evt.data);
+            return;
+          }
 
           let parsedEvent: OperatorEvent | null = null;
 
-          if (raw.type === 'command.status.changed' && raw.data) {
+          if (raw.type === 'command.status.changed') {
+            const d = raw.data;
+            const status = d.execution_status || d.status;
+            if (!d.command_id || !d.device_id || typeof status !== 'string' || typeof d.sequence !== 'number' || !d.occurred_at) {
+              console.warn('[OperatorEventClient] Rejected malformed command.status.changed event payload:', raw);
+              return;
+            }
             parsedEvent = {
               type: 'command.status.changed',
               data: {
-                command_id: String(raw.data.command_id || ''),
-                device_id: String(raw.data.device_id || ''),
-                execution_status: String(raw.data.execution_status || raw.data.status || 'ack'),
-                sequence: Number(raw.data.sequence || 0),
-                error_message: raw.data.error_message ? String(raw.data.error_message) : undefined,
-                occurred_at: String(raw.data.occurred_at || new Date().toISOString()),
+                command_id: String(d.command_id),
+                device_id: String(d.device_id),
+                execution_status: String(status),
+                sequence: Number(d.sequence),
+                error_message: d.error_message ? String(d.error_message) : undefined,
+                occurred_at: String(d.occurred_at),
               },
             };
-          } else if (raw.type === 'command.delivery.changed' && raw.data) {
+          } else if (raw.type === 'command.delivery.changed') {
+            const d = raw.data;
+            if (!d.command_id || !d.device_id || typeof d.delivery_status !== 'string' || typeof d.attempt_count !== 'number' || !d.dispatched_at) {
+              console.warn('[OperatorEventClient] Rejected malformed command.delivery.changed event payload:', raw);
+              return;
+            }
             parsedEvent = {
               type: 'command.delivery.changed',
               data: {
-                command_id: String(raw.data.command_id || ''),
-                device_id: String(raw.data.device_id || ''),
-                delivery_status: String(raw.data.delivery_status || 'dispatched'),
-                attempt_count: Number(raw.data.attempt_count || 1),
-                dispatched_at: String(raw.data.dispatched_at || new Date().toISOString()),
+                command_id: String(d.command_id),
+                device_id: String(d.device_id),
+                delivery_status: String(d.delivery_status),
+                attempt_count: Number(d.attempt_count),
+                dispatched_at: String(d.dispatched_at),
               },
             };
+          } else {
+            console.warn('[OperatorEventClient] Ignored unrecognized event type:', raw.type);
+            return;
           }
 
           if (parsedEvent) {

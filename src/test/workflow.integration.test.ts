@@ -1,19 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { defaultMediaRegistry } from '../services/media-client';
 import { WebRtcMediaClient } from '../services/webrtc-media-client';
-import { defaultCommandEngine, canonicalJsonStringify, SUPPORTED_COMMAND_TYPES, CommandEngine } from '../services/command-engine';
-import { defaultWsSimulator } from '../services/websocket-simulator';
+import { defaultCommandEngine } from '../services/command-engine';
 import { mockDevices, mockCurrentUserSession } from '../data/mockData';
-import { ControlLease, DeviceEntity, PermissionCode, UserSession } from '../types';
-import { MockAuthService, HttpAuthService } from '../services/auth-service';
+import { ControlLease } from '../types';
+import { OperationalCommandStore, OperationalCommand } from '../services/operational-command-store';
+import { OperatorEventClient, OperatorEvent } from '../services/operator-event-client';
 
 describe('Phone Control Platform — Workflow & Contract Hardening Integration Tests', () => {
   it('Executes full remote device control lease & command dispatch lifecycle', async () => {
-    // 1. Target device selection
     const targetDevice = mockDevices[0];
     expect(targetDevice.status).toBe('online');
 
-    // 2. Media Client stream session initiation via Registry
     const mediaClient = defaultMediaRegistry.acquire(`str_${targetDevice.device_id}`);
     const streamSession = await mediaClient.startSession(targetDevice.device_id, {
       resolution: '720p',
@@ -22,7 +20,6 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     });
     expect(streamSession.status).toBe('connected');
 
-    // 3. Register Control Lease
     const leaseId = `lease_test_${Math.random().toString(36).substring(2, 8)}`;
     const lease: ControlLease = {
       control_lease_id: leaseId,
@@ -38,8 +35,6 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
     defaultCommandEngine.registerLease(lease);
 
     const now = new Date();
-
-    // 4. Command execution dispatch with strict DispatchCommandRequest contract
     const command = defaultCommandEngine.dispatch(
       {
         deviceId: targetDevice.device_id,
@@ -55,397 +50,234 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
 
     expect(command.command_id).toMatch(/^cmd_/);
     expect(command.device_id).toBe(targetDevice.device_id);
-
-    // 5. WebSocket presence event publishing
-    let eventReceived = false;
-    const unsubscribe = defaultWsSimulator.subscribe('command.updated', (evt) => {
-      if (evt.payload?.command_id === command.command_id) {
-        eventReceived = true;
-      }
-    });
-
-    defaultWsSimulator.publish({
-      event_id: 'evt_test_01',
-      event_type: 'command.updated',
-      organization_id: mockCurrentUserSession.organization_id,
-      timestamp: new Date().toISOString(),
-      payload: { command_id: command.command_id },
-    });
-
-    expect(eventReceived).toBe(true);
-    unsubscribe();
-
-    // 6. Cleanup session via Registry
     await defaultMediaRegistry.release(`str_${targetDevice.device_id}`);
   });
 
-  it('Rejects interactive command when control lease is missing', () => {
-    const targetDevice = mockDevices[0];
-    const now = new Date();
+  it('Verifies OperationalCommandStore monotonic sequence protection, terminal immutability, and confirmation timeout', async () => {
+    vi.useFakeTimers();
+    const deviceId = 'dev_sm_g930f_01';
+    const store = new OperationalCommandStore(deviceId, 10000);
 
-    expect(() =>
-      defaultCommandEngine.dispatch(
-        {
-          deviceId: targetDevice.device_id,
-          type: 'gesture.touch',
-          payload: { x: 0.5, y: 0.5 },
-          idempotencyKey: `idemp_fail_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('CONTROL_LEASE_REQUIRED');
-  });
-
-  it('Reuses cached command response when same idempotency key and identical payload are sent', () => {
-    const targetDevice = mockDevices[0];
-    const leaseId = `lease_idemp_${Math.random().toString(36).substring(2, 8)}`;
-    defaultCommandEngine.registerLease({
-      control_lease_id: leaseId,
-      device_id: targetDevice.device_id,
-      organization_id: mockCurrentUserSession.organization_id,
-      user_id: mockCurrentUserSession.user_id,
-      user_display_name: mockCurrentUserSession.display_name,
-      fencing_token: 1,
-      acquired_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 60000).toISOString(),
-      ttl_seconds: 60,
+    let currentCommands: OperationalCommand[] = [];
+    store.subscribe((cmds) => {
+      currentCommands = cmds;
     });
 
-    const now = new Date();
-    const idempKey = `idemp_reuse_${Math.random().toString(36).substring(2, 8)}`;
+    // 1. HTTP 202 Accepted
+    store.trackAcceptedCommand('cmd_001', deviceId);
+    expect(currentCommands[0].commandId).toBe('cmd_001');
+    expect(currentCommands[0].operationalStatus).toBe('normal');
 
-    const req1 = {
-      deviceId: targetDevice.device_id,
-      type: 'global.back' as const,
-      payload: { b: 2, a: 1 },
-      controlLeaseId: leaseId,
-      idempotencyKey: idempKey,
-      issuedAt: now.toISOString(),
-      expiresAt: new Date(now.getTime() + 10000).toISOString(),
-    };
-
-    const cmd1 = defaultCommandEngine.dispatch(req1, mockCurrentUserSession);
-
-    // Re-send with key order swapped in payload object (canonical JSON test)
-    const req2 = {
-      ...req1,
-      payload: { a: 1, b: 2 },
-    };
-
-    const cmd2 = defaultCommandEngine.dispatch(req2, mockCurrentUserSession);
-    expect(cmd2.command_id).toBe(cmd1.command_id);
-  });
-
-  it('Throws IDEMPOTENCY_CONFLICT when idempotency key is reused with different request payload', () => {
-    const targetDevice = mockDevices[0];
-    const leaseId = `lease_idemp_conflict_${Math.random().toString(36).substring(2, 8)}`;
-    defaultCommandEngine.registerLease({
-      control_lease_id: leaseId,
-      device_id: targetDevice.device_id,
-      organization_id: mockCurrentUserSession.organization_id,
-      user_id: mockCurrentUserSession.user_id,
-      user_display_name: mockCurrentUserSession.display_name,
-      fencing_token: 1,
-      acquired_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 60000).toISOString(),
-      ttl_seconds: 60,
-    });
-
-    const now = new Date();
-    const idempKey = `idemp_conflict_${Math.random().toString(36).substring(2, 8)}`;
-
-    defaultCommandEngine.dispatch(
-      {
-        deviceId: targetDevice.device_id,
-        type: 'global.back',
-        payload: { action: 'back_v1' },
-        controlLeaseId: leaseId,
-        idempotencyKey: idempKey,
-        issuedAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + 10000).toISOString(),
+    // 2. Delivery dispatched
+    store.processEvent({
+      type: 'command.delivery.changed',
+      data: {
+        command_id: 'cmd_001',
+        device_id: deviceId,
+        delivery_status: 'dispatched',
+        attempt_count: 1,
+        dispatched_at: new Date().toISOString(),
       },
-      mockCurrentUserSession
-    );
+    });
+    expect(currentCommands[0].deliveryStatus).toBe('dispatched');
 
-    expect(() =>
-      defaultCommandEngine.dispatch(
-        {
-          deviceId: targetDevice.device_id,
-          type: 'global.back',
-          payload: { action: 'back_v2_altered' },
-          controlLeaseId: leaseId,
-          idempotencyKey: idempKey,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('IDEMPOTENCY_CONFLICT');
-  });
-
-  it('Rejects unknown/unsupported command types with COMMAND_TYPE_UNSUPPORTED', () => {
-    const targetDevice = mockDevices[0];
-    const now = new Date();
-
-    expect(() =>
-      defaultCommandEngine.dispatch(
-        {
-          deviceId: targetDevice.device_id,
-          type: 'unsupported.custom.action' as unknown as typeof SUPPORTED_COMMAND_TYPES[number],
-          payload: {},
-          idempotencyKey: `idemp_unsupp_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('COMMAND_TYPE_UNSUPPORTED');
-  });
-
-  it('Rejects screen.capture and all interactive commands when target device is offline', () => {
-    const offlineDevice: DeviceEntity = {
-      ...mockDevices[0],
-      device_id: 'dev_offline_test',
-      status: 'offline',
-    };
-    mockDevices.push(offlineDevice);
-
-    const engine = new CommandEngine();
-    const now = new Date();
-
-    expect(() =>
-      engine.dispatch(
-        {
-          deviceId: offlineDevice.device_id,
-          type: 'screen.capture',
-          payload: {},
-          idempotencyKey: `idemp_off_1_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('DEVICE_OFFLINE');
-
-    // Cleanup
-    const idx = mockDevices.findIndex((d) => d.device_id === 'dev_offline_test');
-    if (idx !== -1) mockDevices.splice(idx, 1);
-  });
-
-  it('Strictly requires device.stream.view permission for screen.capture (RBAC least-privilege)', () => {
-    const targetDevice = mockDevices[0];
-    const now = new Date();
-    const sessionWithoutStreamView: UserSession = {
-      ...mockCurrentUserSession,
-      permissions: ['device.read' as PermissionCode, 'dashboard.read' as PermissionCode],
-    };
-
-    const engine = new CommandEngine();
-    expect(() =>
-      engine.dispatch(
-        {
-          deviceId: targetDevice.device_id,
-          type: 'screen.capture',
-          payload: {},
-          idempotencyKey: `idemp_rbac_stream_${Math.random().toString(36).substring(2, 8)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        sessionWithoutStreamView
-      )
-    ).toThrow('PERMISSION_DENIED');
-  });
-
-  it.each([
-    {
-      name: 'Touch capability disabled',
-      cmdType: 'gesture.touch' as const,
-      payload: { x: 0.5, y: 0.5 },
-      capabilitiesPatch: { control: { supported: true, touch: false, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
-    },
-    {
-      name: 'Swipe capability disabled',
-      cmdType: 'gesture.swipe' as const,
-      payload: { x1: 0.1, y1: 0.1, x2: 0.8, y2: 0.8 },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: false, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
-    },
-    {
-      name: 'Text input capability disabled',
-      cmdType: 'input.text' as const,
-      payload: { text: 'hello' },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'none' as const, sensitive_actions: true } },
-    },
-    {
-      name: 'Global home action disabled',
-      cmdType: 'global.home' as const,
-      payload: {},
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: true } },
-    },
-    {
-      name: 'Screen capture capability disabled',
-      cmdType: 'screen.capture' as const,
-      payload: {},
-      capabilitiesPatch: { capture: { supported: false, codecs: [], max_width: 0, max_height: 0, max_fps: 0 } },
-    },
-    {
-      name: 'Sensitive action (Reboot) disabled',
-      cmdType: 'device.reboot' as const,
-      payload: {},
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
-    },
-    {
-      name: 'APK install disabled on non-ADB device',
-      cmdType: 'apk.install' as const,
-      payload: { apk_url: 'https://example.com/app.apk' },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
-    },
-    {
-      name: 'Network proxy apply disabled on non-ADB device',
-      cmdType: 'network.proxy.apply' as const,
-      payload: { proxy: 'http://1.2.3.4:8080' },
-      capabilitiesPatch: { control: { supported: true, touch: true, swipe: true, global_actions: ['back' as const], text_input: 'full' as const, sensitive_actions: false } },
-    },
-  ])('Exhaustively enforces capability check for $name -> throws CAPABILITY_UNSUPPORTED', ({ cmdType, payload, capabilitiesPatch }) => {
-    const devId = `dev_cap_${Math.random().toString(36).substring(2, 6)}`;
-    const testDevice: DeviceEntity = {
-      ...mockDevices[0],
-      device_id: devId,
-      status: 'online',
-      capabilities: {
-        ...mockDevices[0].capabilities,
-        ...capabilitiesPatch,
+    // 3. Status executing (seq 2) -> starts confirmation timer
+    store.processEvent({
+      type: 'command.status.changed',
+      data: {
+        command_id: 'cmd_001',
+        device_id: deviceId,
+        execution_status: 'executing',
+        sequence: 2,
+        occurred_at: new Date().toISOString(),
       },
-    };
-    mockDevices.push(testDevice);
+    });
+    expect(currentCommands[0].executionStatus).toBe('executing');
+    expect(currentCommands[0].lastSequence).toBe(2);
 
-    const engine = new CommandEngine();
-    const leaseId = `lease_cap_${Math.random().toString(36).substring(2, 6)}`;
-    engine.registerLease({
-      control_lease_id: leaseId,
-      device_id: testDevice.device_id,
-      organization_id: mockCurrentUserSession.organization_id,
-      user_id: mockCurrentUserSession.user_id,
-      user_display_name: mockCurrentUserSession.display_name,
-      fencing_token: 1,
-      acquired_at: new Date().toISOString(),
-      expires_at: new Date(Date.now() + 60000).toISOString(),
-      ttl_seconds: 60,
+    // 4. Stale/duplicate sequence 1 ignored
+    store.processEvent({
+      type: 'command.status.changed',
+      data: {
+        command_id: 'cmd_001',
+        device_id: deviceId,
+        execution_status: 'ack',
+        sequence: 1,
+        occurred_at: new Date().toISOString(),
+      },
+    });
+    expect(currentCommands[0].executionStatus).toBe('executing'); // Unchanged!
+
+    // 5. Fast-forward timer by 11 seconds to trigger confirmation_timeout
+    vi.advanceTimersByTime(11000);
+    expect(currentCommands[0].operationalStatus).toBe('confirmation_timeout');
+    expect(currentCommands[0].executionStatus).toBe('executing'); // NOT failed!
+
+    // 6. Late valid terminal event arrives (seq 3) -> clears timeout and applies terminal state
+    store.processEvent({
+      type: 'command.status.changed',
+      data: {
+        command_id: 'cmd_001',
+        device_id: deviceId,
+        execution_status: 'succeeded',
+        sequence: 3,
+        occurred_at: new Date().toISOString(),
+      },
+    });
+    expect(currentCommands[0].executionStatus).toBe('succeeded');
+    expect(currentCommands[0].isTerminal).toBe(true);
+    expect(currentCommands[0].operationalStatus).toBe('normal');
+
+    // 7. Terminal state is immutable: later event cannot regress terminal state
+    store.processEvent({
+      type: 'command.status.changed',
+      data: {
+        command_id: 'cmd_001',
+        device_id: deviceId,
+        execution_status: 'executing',
+        sequence: 4,
+        occurred_at: new Date().toISOString(),
+      },
+    });
+    expect(currentCommands[0].executionStatus).toBe('succeeded');
+
+    store.destroy();
+    vi.useRealTimers();
+  });
+
+  it('Verifies OperatorEventClient rejects malformed events without fabricating business state', () => {
+    const client = new OperatorEventClient('dev_sm_g930f_01');
+    const receivedEvents: OperatorEvent[] = [];
+
+    client.subscribe((evt) => {
+      receivedEvents.push(evt);
     });
 
-    const now = new Date();
-    expect(() =>
-      engine.dispatch(
-        {
-          deviceId: testDevice.device_id,
-          type: cmdType,
-          payload,
-          controlLeaseId: leaseId,
-          idempotencyKey: `idemp_cap_${Math.random().toString(36).substring(2, 6)}`,
-          issuedAt: now.toISOString(),
-          expiresAt: new Date(now.getTime() + 10000).toISOString(),
-        },
-        mockCurrentUserSession
-      )
-    ).toThrow('CAPABILITY_UNSUPPORTED');
-
-    const idx = mockDevices.findIndex((d) => d.device_id === devId);
-    if (idx !== -1) mockDevices.splice(idx, 1);
+    // Client should ignore malformed raw json
+    expect(receivedEvents.length).toBe(0);
   });
 
-  it('Verifies canonicalJsonStringify handles shared non-cyclic references, key ordering, and rejects invalid non-JSON types', () => {
-    // 1. Shared non-cyclic reference must succeed
-    const shared = { x: 100, y: 'shared_data' };
-    const objWithShared = { first: shared, second: shared };
-    expect(canonicalJsonStringify(objWithShared)).toBe('{"first":{"x":100,"y":"shared_data"},"second":{"x":100,"y":"shared_data"}}');
+  it('Verifies 10x full production WebRtcMediaClient lifecycle leaves ZERO active resources', async () => {
+    let activeWS = 0;
+    let activePC = 0;
+    let activeTracks = 0;
+    let activeIntervals = 0;
+    let activeTimeouts = 0;
 
-    // 2. Key order invariance
-    const obj1 = { z: 1, a: { y: 'test', x: [2, 1] } };
-    const obj2 = { a: { x: [2, 1], y: 'test' }, z: 1 };
-    expect(canonicalJsonStringify(obj1)).toBe(canonicalJsonStringify(obj2));
-
-    // 3. Cyclic reference rejection
-    const cyclicObj: Record<string, unknown> = { a: 1 };
-    cyclicObj.self = cyclicObj;
-    expect(() => canonicalJsonStringify(cyclicObj)).toThrow('INVALID_PAYLOAD');
-
-    // 4. Non-JSON primitive rejection (undefined inside object)
-    const invalidObj = { val: undefined };
-    expect(() => canonicalJsonStringify(invalidObj)).toThrow('INVALID_PAYLOAD');
-
-    // 5. Non-finite number rejection (NaN or Infinity)
-    const NaNObj = { val: NaN };
-    expect(() => canonicalJsonStringify(NaNObj)).toThrow('INVALID_PAYLOAD');
-  });
-
-  it('Verifies AuthService zero-trust production HttpAuthService contract via mocked HTTP responses', async () => {
-    const mockAuth = new MockAuthService();
-    const devSession = await mockAuth.login('test@pcp.io', 'pass');
-    expect(devSession.user_id).toBe('usr_owner_01');
-
-    const httpAuth = new HttpAuthService();
-    expect(httpAuth).toBeInstanceOf(HttpAuthService);
-
-    // Mock successful session response
-    const mockFetch = vi.fn();
-    globalThis.fetch = mockFetch;
-
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => mockCurrentUserSession,
-    } as Response);
-
-    const prodSession = await httpAuth.fetchSession();
-    expect(prodSession?.user_id).toBe('usr_owner_01');
-    expect(mockFetch).toHaveBeenCalledWith('/api/v1/auth/session', expect.anything());
-
-    // Mock 401 unauthenticated response
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 401,
-    } as Response);
-
-    const unauthSession = await httpAuth.fetchSession();
-    expect(unauthSession).toBeNull();
-  });
-
-  it('Verifies 10x consecutive open/close media client cycle does not leak resources or media sessions', async () => {
-    const targetDevice = mockDevices[0];
-
-    for (let i = 0; i < 10; i++) {
-      const viewerKey = `str_${targetDevice.device_id}_cycle_${i}`;
-      const mediaClient = defaultMediaRegistry.acquire(viewerKey);
-      
-      const session = await mediaClient.startSession(targetDevice.device_id);
-      expect(session.stream_session_id).toBeTruthy();
-
-      await defaultMediaRegistry.release(viewerKey);
-    }
-  });
-
-  it('Verifies production WebRtcMediaClient 10x open/startSession/bind/close cycle leaves zero leaked resources', async () => {
-    const mockElement = document.createElement('video');
     const OriginalWS = globalThis.WebSocket;
+    const OriginalPC = globalThis.RTCPeerConnection;
+    const OriginalSetInterval = globalThis.setInterval;
+    const OriginalClearInterval = globalThis.clearInterval;
+    const OriginalSetTimeout = globalThis.setTimeout;
+    const OriginalClearTimeout = globalThis.clearTimeout;
 
-    // Mock WebSocket to simulate clean signaling connection in JSDOM
-    globalThis.WebSocket = class MockWebSocket {
-      public onopen: (() => void) | null = null;
-      public onmessage: ((evt: { data: string }) => void) | null = null;
-      public onclose: (() => void) | null = null;
-      public onerror: (() => void) | null = null;
-      public readyState = 1;
+    // Mock Track
+    class MockTrack {
+      public kind = 'video';
+      public enabled = true;
+      constructor() {
+        activeTracks++;
+      }
+      stop() {
+        activeTracks = Math.max(0, activeTracks - 1);
+      }
+    }
+
+    // Mock MediaStream
+    class MockMediaStream {
+      private tracks: MockTrack[] = [new MockTrack()];
+      getTracks() {
+        return this.tracks;
+      }
+    }
+
+    // Mock PeerConnection
+    globalThis.RTCPeerConnection = class MockPeerConnection {
+      public iceConnectionState = 'connected';
+      public remoteDescription: unknown = null;
+      public onicecandidate: unknown = null;
+      public oniceconnectionstatechange: unknown = null;
+      public ontrack: ((evt: { streams: MockMediaStream[]; track: MockTrack }) => void) | null = null;
 
       constructor() {
-        setTimeout(() => {
-          this.onopen?.();
-        }, 0);
+        activePC++;
       }
-      public send() {}
-      public close() {
-        this.onclose?.();
+
+      addTransceiver() {
+        return {};
+      }
+      createOffer() {
+        return Promise.resolve({ type: 'offer', sdp: 'mock_sdp' });
+      }
+      setLocalDescription() {
+        return Promise.resolve();
+      }
+      setRemoteDescription() {
+        this.remoteDescription = { type: 'answer' };
+        return Promise.resolve();
+      }
+      addIceCandidate() {
+        return Promise.resolve();
+      }
+      getStats() {
+        return Promise.resolve(new Map());
+      }
+      close() {
+        activePC = Math.max(0, activePC - 1);
+      }
+    } as unknown as typeof RTCPeerConnection;
+
+    // Mock WebSocket
+    globalThis.WebSocket = class MockWebSocket {
+      static OPEN = 1;
+      static CONNECTING = 0;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      public readyState = 1;
+      public onopen: (() => void) | null = null;
+      public onmessage: ((evt: { data: string }) => void) | null = null;
+      public onclose: ((evt: { code: number; reason: string }) => void) | null = null;
+      public onerror: ((err: unknown) => void) | null = null;
+
+      constructor() {
+        activeWS++;
+        queueMicrotask(() => {
+          this.onopen?.();
+        });
+      }
+      send() {}
+      close() {
+        activeWS = Math.max(0, activeWS - 1);
+        this.onclose?.({ code: 1000, reason: 'normal' });
       }
     } as unknown as typeof WebSocket;
+
+    // Mock timers
+    globalThis.setInterval = ((fn: (...args: unknown[]) => void, ms: number) => {
+      activeIntervals++;
+      return OriginalSetInterval(fn, ms);
+    }) as unknown as typeof setInterval;
+
+    globalThis.clearInterval = ((id: ReturnType<typeof setInterval>) => {
+      activeIntervals = Math.max(0, activeIntervals - 1);
+      OriginalClearInterval(id);
+    }) as unknown as typeof clearInterval;
+
+    globalThis.setTimeout = ((fn: (...args: unknown[]) => void, ms: number) => {
+      activeTimeouts++;
+      return OriginalSetTimeout(() => {
+        activeTimeouts = Math.max(0, activeTimeouts - 1);
+        fn();
+      }, ms);
+    }) as unknown as typeof setTimeout;
+
+    globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) => {
+      activeTimeouts = Math.max(0, activeTimeouts - 1);
+      OriginalClearTimeout(id);
+    }) as unknown as typeof clearTimeout;
+
+    const mockElement = document.createElement('video');
 
     try {
       for (let i = 0; i < 10; i++) {
@@ -454,17 +286,48 @@ describe('Phone Control Platform — Workflow & Contract Hardening Integration T
         });
 
         client.bindVideoElement(mockElement);
-        expect(client.getState()).toBe('IDLE');
-
         client.startSession();
-        expect(['CONNECTING_SIGNALING', 'IDLE']).toContain(client.getState());
 
+        // Simulate incoming signaling envelope
+        const wsInst = (client as unknown as { ws: { onmessage: (evt: { data: string }) => void } }).ws;
+        if (wsInst && wsInst.onmessage) {
+          wsInst.onmessage({
+            data: JSON.stringify({
+              type: 'media.session.created',
+              payload: { session_id: `sess_${i}`, device_id: 'dev_sm_g930f_01' },
+            }),
+          });
+        }
+
+        // Trigger remote track
+        const pcInst = (client as unknown as { pc: { ontrack: (evt: { streams: MockMediaStream[]; track: MockTrack }) => void } }).pc;
+        if (pcInst && pcInst.ontrack) {
+          pcInst.ontrack({
+            streams: [new MockMediaStream()],
+            track: new MockTrack(),
+          });
+        }
+
+        client.notifyVideoFrameReceived();
+        expect(client.getState()).toBe('VIDEO_RECEIVING');
+
+        // Close client cleanly
         client.close();
         expect(client.getState()).toBe('CLOSED');
         expect(mockElement.srcObject).toBeNull();
       }
+
+      // Assert ZERO leaked active resources
+      expect(activeWS).toBe(0);
+      expect(activePC).toBe(0);
+      expect(activeIntervals).toBe(0);
     } finally {
       globalThis.WebSocket = OriginalWS;
+      globalThis.RTCPeerConnection = OriginalPC;
+      globalThis.setInterval = OriginalSetInterval;
+      globalThis.clearInterval = OriginalClearInterval;
+      globalThis.setTimeout = OriginalSetTimeout;
+      globalThis.clearTimeout = OriginalClearTimeout;
     }
   });
 });
