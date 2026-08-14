@@ -1,25 +1,47 @@
-package com.tcandt/cloudphone.agent.command
+package com.tcandt.cloudphone.agent.command
 
 import android.content.Context
 import android.util.Log
 import com.tcandt.cloudphone.agent.accessibility.DeviceControlService
+import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 class CommandProcessor(
     private val context: Context,
     private val statusPublisher: (commandId: String, status: String, error: String?, sequence: Int) -> Unit
 ) {
+    private val configStore = AgentConfigStore(context)
     private val fencingStore = FencingStore(context)
     private val journal = CommandJournal(context)
+    private val commandChannel = Channel<JSONObject>(Channel.UNLIMITED)
 
     companion object {
         private const val TAG = "CommandProcessor"
     }
 
-    fun processCommand(commandDispatch: JSONObject) {
+    init {
+        // Start single-threaded Serial Worker Coroutine for physical gestures
+        CoroutineScope(Dispatchers.IO).launch {
+            for (commandDispatch in commandChannel) {
+                processSingleCommandSerial(commandDispatch)
+            }
+        }
+    }
+
+    fun enqueueCommand(commandDispatch: JSONObject) {
+        commandChannel.trySend(commandDispatch)
+    }
+
+    private fun processSingleCommandSerial(commandDispatch: JSONObject) {
         val commandId = commandDispatch.optString("command_id")
+        val deviceId = commandDispatch.optString("device_id")
         val fencingToken = commandDispatch.optLong("fencing_token", 0L)
         val commandType = commandDispatch.optString("command_type")
+        val expiresAtStr = commandDispatch.optString("expires_at")
         val payload = commandDispatch.optJSONObject("payload") ?: JSONObject()
 
         if (commandId.isEmpty()) {
@@ -27,15 +49,29 @@ class CommandProcessor(
             return
         }
 
-        // 1. Deduplication check against persistent SQLite journal
-        val existingRecord = journal.getRecord(commandId)
-        if (existingRecord != null) {
-            Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
-            statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
+        // 1. Target Device ID Validation
+        val myDeviceId = configStore.getDeviceId()
+        if (myDeviceId.isNotEmpty() && deviceId.isNotEmpty() && deviceId != myDeviceId) {
+            Log.w(TAG, "Command $commandId target device $deviceId mismatch with local device $myDeviceId")
             return
         }
 
-        // 2. Monotonic Fencing Token check
+        // 2. Persistent SQLite Deduplication & Crash Window Protection Check
+        val existingRecord = journal.getRecord(commandId)
+        if (existingRecord != null) {
+            if (existingRecord.status == "succeeded" || existingRecord.status == "failed") {
+                Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
+                statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
+                return
+            } else if (existingRecord.status == "executing") {
+                Log.w(TAG, "Command $commandId was interrupted in 'executing' state (process crash/restart). Preventing 2nd touch, marking failed")
+                journal.saveRecord(commandId, fencingToken, "failed", "Interrupted during process restart")
+                statusPublisher(commandId, "failed", "Interrupted during process restart", 3)
+                return
+            }
+        }
+
+        // 3. Monotonic Fencing Token check
         if (!fencingStore.validateAndUpdate(fencingToken)) {
             val errStr = "Stale fencing token $fencingToken (highest known: ${fencingStore.getHighestFencingToken()})"
             Log.w(TAG, "Rejecting command $commandId: $errStr")
@@ -44,10 +80,11 @@ class CommandProcessor(
             return
         }
 
-        // 3. Sequenced execution reporting: Sequence 1 -> ACK
+        // 4. Sequenced execution reporting: Sequence 1 -> ACK
         statusPublisher(commandId, "ack", null, 1)
 
-        // Sequence 2 -> EXECUTING
+        // 5. Pre-execution Durable Crash Window Protection: Record 'executing' in SQLite BEFORE physical touch
+        journal.saveRecord(commandId, fencingToken, "executing", null)
         statusPublisher(commandId, "executing", null, 2)
 
         val service = DeviceControlService.instance
@@ -59,7 +96,7 @@ class CommandProcessor(
             return
         }
 
-        // 4. Physical gesture execution via AccessibilityService
+        // 6. Physical gesture execution via AccessibilityService
         when (commandType) {
             "gesture.touch" -> {
                 val x = payload.optDouble("x", 0.0).toFloat()

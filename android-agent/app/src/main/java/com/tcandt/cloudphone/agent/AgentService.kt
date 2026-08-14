@@ -9,11 +9,13 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.tcandt.cloudphone.agent.config.AgentConfigStore
 import com.tcandt.cloudphone.agent.websocket.AgentWebSocketClient
 
 class AgentService : Service() {
 
     private var wsClient: AgentWebSocketClient? = null
+    private lateinit var configStore: AgentConfigStore
 
     companion object {
         private const val TAG = "AgentService"
@@ -23,15 +25,21 @@ class AgentService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        configStore = AgentConfigStore(applicationContext)
+
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
 
-        val serverUrl = "ws://10.0.2.2:8080/agent/v1/connect" // Default dev server URL
-        val agentId = "agt_s7_edge_001"
+        val wssUrl = configStore.getWssUrl()
+        val agentId = configStore.getAgentId()
 
-        wsClient = AgentWebSocketClient(applicationContext, serverUrl, agentId)
-        wsClient?.connect()
-        Log.i(TAG, "AgentService started successfully")
+        if (agentId.isNotEmpty()) {
+            wsClient = AgentWebSocketClient(applicationContext, wssUrl, agentId)
+            wsClient?.connect()
+            Log.i(TAG, "AgentService started and connecting to $wssUrl for AgentID=$agentId")
+        } else {
+            Log.w(TAG, "AgentService started but device is not yet enrolled. Open SetupActivity to enroll.")
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

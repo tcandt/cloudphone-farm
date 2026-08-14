@@ -2,8 +2,13 @@ package com.tcandt.cloudphone.agent.websocket
 
 import android.content.Context
 import android.util.Log
-import com.tcandt.cloudphone.agent.command.CommandProcessor
-import com.tcandt.cloudphone.agent.security.AgentKeyStore
+import com.tcandt/cloudphone.agent.command.CommandProcessor
+import com.tcandt/cloudphone.agent.security.AgentKeyStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -15,7 +20,7 @@ import java.util.concurrent.TimeUnit
 
 class AgentWebSocketClient(
     private val context: Context,
-    private val serverUrl: String,
+    private val wssUrl: String,
     private val agentId: String
 ) {
     private val client = OkHttpClient.Builder()
@@ -27,8 +32,13 @@ class AgentWebSocketClient(
     private val keyStore = AgentKeyStore(context)
     private var commandProcessor: CommandProcessor? = null
 
+    private var connectionId: String = ""
+    private var generation: Long = 0
+    private var heartbeatJob: Job? = null
+
     companion object {
         private const val TAG = "AgentWebSocketClient"
+        private const val EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
 
     fun connect() {
@@ -38,11 +48,13 @@ class AgentWebSocketClient(
 
         val timestamp = (System.currentTimeMillis() / 1000).toString()
         val nonce = "nonce_${UUID.randomUUID().toString().substring(0, 8)}"
-        val canonicalMessage = "GET\n/agent/v1/connect\n\n$timestamp\n$nonce"
+
+        // Canonical WSS Upgrade Signed Message Contract Alignment
+        val canonicalMessage = "GET\n/agent/v1/connect\n$EMPTY_BODY_SHA256\n$timestamp\n$nonce"
         val signature = keyStore.signMessage(canonicalMessage)
 
         val request = Request.Builder()
-            .url(serverUrl)
+            .url(wssUrl)
             .addHeader("X-Agent-ID", agentId)
             .addHeader("X-Agent-Timestamp", timestamp)
             .addHeader("X-Agent-Nonce", nonce)
@@ -51,7 +63,7 @@ class AgentWebSocketClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.i(TAG, "Connected to Phone Control Platform WSS Server: $serverUrl")
+                Log.i(TAG, "Connected to Phone Control Platform WSS: $wssUrl")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -64,8 +76,11 @@ class AgentWebSocketClient(
                         "server.challenge" -> {
                             handleChallenge(webSocket, payload)
                         }
+                        "connection.ready" -> {
+                            handleConnectionReady(payload)
+                        }
                         "command.dispatch" -> {
-                            commandProcessor?.processCommand(payload)
+                            commandProcessor?.enqueueCommand(payload)
                         }
                         else -> {
                             Log.d(TAG, "Received frame of type: $type")
@@ -78,27 +93,26 @@ class AgentWebSocketClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket error: ${t.message}", t)
+                stopHeartbeat()
                 scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "WebSocket connection closed: $reason ($code)")
+                stopHeartbeat()
                 scheduleReconnect()
             }
         })
     }
 
     private fun handleChallenge(webSocket: WebSocket, challengePayload: JSONObject) {
-        val nonce = challengePayload.optString("nonce")
-        val timestamp = (System.currentTimeMillis() / 1000).toString()
-        val canonicalChallenge = "CHALLENGE\n$nonce\n$timestamp"
-        val signature = keyStore.signMessage(canonicalChallenge)
+        val challengeNonce = challengePayload.optString("challenge_nonce")
+        val signature = keyStore.signMessage(challengeNonce)
 
         val responsePayload = JSONObject().apply {
             put("agent_id", agentId)
-            put("nonce", nonce)
-            put("timestamp", timestamp)
-            put("signature", signature)
+            put("challenge_nonce", challengeNonce)
+            put("challenge_signature", signature)
         }
 
         val envelope = JSONObject().apply {
@@ -109,6 +123,40 @@ class AgentWebSocketClient(
 
         webSocket.send(envelope.toString())
         Log.i(TAG, "Sent agent.challenge_response to server")
+    }
+
+    private fun handleConnectionReady(payload: JSONObject) {
+        connectionId = payload.optString("connection_id")
+        generation = payload.optLong("generation", 0L)
+        Log.i(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
+
+        startHeartbeat()
+    }
+
+    private fun startHeartbeat() {
+        stopHeartbeat()
+        heartbeatJob = CoroutineScope(Dispatchers.IO).launch {
+            while (true) {
+                delay(10000) // 10s heartbeat
+                val pingPayload = JSONObject().apply {
+                    put("agent_id", agentId)
+                    put("connection_id", connectionId)
+                    put("timestamp", System.currentTimeMillis() / 1000)
+                }
+                val pingEnvelope = JSONObject().apply {
+                    put("type", "agent.ping")
+                    put("message_id", "msg_${System.nanoTime()}")
+                    put("payload", pingPayload)
+                }
+                webSocket?.send(pingEnvelope.toString())
+                Log.d(TAG, "Sent 10s agent.ping heartbeat to server")
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
     }
 
     private fun sendStatusMessage(commandId: String, status: String, error: String?, sequence: Int) {
@@ -139,6 +187,7 @@ class AgentWebSocketClient(
     }
 
     fun disconnect() {
+        stopHeartbeat()
         webSocket?.close(1000, "App Service Stopped")
     }
 }
