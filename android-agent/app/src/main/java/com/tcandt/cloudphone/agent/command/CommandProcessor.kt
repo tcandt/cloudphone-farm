@@ -11,7 +11,6 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 
@@ -61,9 +60,32 @@ class CommandProcessor(
             return
         }
 
-        // 2. TTL Expiration Check before ACK
-        if (isExpired(expiresAtStr)) {
-            Log.w(TAG, "Command $commandId expired (expires_at=$expiresAtStr). Dropping execution.")
+        // 2. Strict Fail-Closed Expiration Validation
+        if (expiresAtStr.isBlank()) {
+            Log.w(TAG, "Rejecting command $commandId: missing required expires_at TTL")
+            journal.saveRecord(commandId, fencingToken, "failed", "Missing required expires_at TTL")
+            statusPublisher(commandId, "failed", "Missing required expires_at TTL", 3)
+            return
+        }
+
+        val expiresAtMs = try {
+            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+            sdf.timeZone = TimeZone.getTimeZone("UTC")
+            sdf.parse(expiresAtStr)?.time ?: run {
+                Log.w(TAG, "Rejecting command $commandId: invalid expires_at format $expiresAtStr")
+                journal.saveRecord(commandId, fencingToken, "failed", "Invalid expires_at format")
+                statusPublisher(commandId, "failed", "Invalid expires_at format", 3)
+                return
+            }
+        } catch (_: Exception) {
+            Log.w(TAG, "Rejecting command $commandId: unparseable expires_at $expiresAtStr")
+            journal.saveRecord(commandId, fencingToken, "failed", "Unparseable expires_at format")
+            statusPublisher(commandId, "failed", "Unparseable expires_at format", 3)
+            return
+        }
+
+        if (System.currentTimeMillis() > expiresAtMs) {
+            Log.w(TAG, "Command $commandId expired (expires_at=$expiresAtStr). Rejecting execution.")
             journal.saveRecord(commandId, fencingToken, "expired", "TTL expired before execution")
             statusPublisher(commandId, "expired", "TTL expired before execution", 3)
             return
@@ -160,18 +182,6 @@ class CommandProcessor(
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
             }
-        }
-    }
-
-    private fun isExpired(expiresAtStr: String): Boolean {
-        if (expiresAtStr.isEmpty()) return false
-        return try {
-            val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-            sdf.timeZone = TimeZone.getTimeZone("UTC")
-            val expiresDate = sdf.parse(expiresAtStr) ?: return false
-            System.currentTimeMillis() > expiresDate.time
-        } catch (e: Exception) {
-            false
         }
     }
 }

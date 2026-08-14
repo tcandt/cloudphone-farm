@@ -38,6 +38,7 @@ class AgentWebSocketClient(
 
     private var connectionId: String = ""
     private var generation: Long = 0
+    private var heartbeatSequence: Long = 1
     private var heartbeatJob: Job? = null
 
     companion object {
@@ -158,7 +159,7 @@ class AgentWebSocketClient(
         val bodyJson = JSONObject().apply {
             put("connection_id", connectionId)
             put("generation", generation)
-            put("sequence", 1)
+            put("sequence", heartbeatSequence++)
             put("battery", 85)
             put("network", "wifi")
             put("cpu_usage", 15.0)
@@ -186,11 +187,12 @@ class AgentWebSocketClient(
             .addHeader("X-Agent-Signature", signature)
             .build()
 
-        val response = client.newCall(request).execute()
-        if (response.isSuccessful) {
-            Log.d(TAG, "10s Signed HTTP Heartbeat successful!")
-        } else {
-            Log.w(TAG, "Signed HTTP Heartbeat status: ${response.code}")
+        client.newCall(request).execute().use { response ->
+            if (response.isSuccessful) {
+                Log.d(TAG, "10s Signed HTTP Heartbeat successful! (HTTP ${response.code})")
+            } else {
+                Log.w(TAG, "Signed HTTP Heartbeat status: ${response.code}")
+            }
         }
     }
 
