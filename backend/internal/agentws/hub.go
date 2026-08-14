@@ -9,9 +9,10 @@ import (
 )
 
 var (
-	ErrDeviceNotConnected = errors.New("device agent is not connected to WebSocket hub")
-	ErrBufferOverflow     = errors.New("connection send channel buffer overflow")
-	ErrSessionNotFound    = errors.New("media session subscriber not found")
+	ErrDeviceNotConnected        = errors.New("device agent is not connected to WebSocket hub")
+	ErrBufferOverflow            = errors.New("connection send channel buffer overflow")
+	ErrSessionNotFound           = errors.New("media session subscriber not found")
+	ErrUnauthorizedMediaSession  = errors.New("unauthorized media session relay attempt")
 )
 
 type MediaSession struct {
@@ -115,7 +116,7 @@ func (h *Hub) RegisterMediaSession(session *MediaSession) {
 	defer h.mu.Unlock()
 
 	h.mediaSessions[session.SessionID] = session
-	slog.Info("Registered authenticated WebRTC MediaSession record", "session_id", session.SessionID, "org_id", session.OrganizationID, "device_id", session.DeviceID, "user_id", session.UserID)
+	slog.Info("Registered authenticated WebRTC MediaSession record", "session_id", session.SessionID, "org_id", session.OrganizationID, "device_id", session.DeviceID, "user_id", session.UserID, "agent_id", session.AgentID, "conn_id", session.ConnectionID, "gen", session.Generation)
 }
 
 func (h *Hub) UnregisterMediaSession(sessionID string) {
@@ -135,10 +136,20 @@ func (h *Hub) RelayMediaSignalFromAgent(conn *Connection, sessionID string, data
 		return ErrSessionNotFound
 	}
 
-	// Strict identity and tenant verification: Agent connection must match session registry
-	if conn.OrganizationID != session.OrganizationID || conn.DeviceID != session.DeviceID {
-		slog.Warn("Tenant/Device mismatch for MediaSession relay attempt. Rejecting.", "session_id", sessionID, "agent_org", conn.OrganizationID, "sess_org", session.OrganizationID, "agent_dev", conn.DeviceID, "sess_dev", session.DeviceID)
-		return errors.New("unauthorized media session relay attempt")
+	// Strict identity and connection fencing verification: Agent connection must match session registry snapshot
+	if conn.OrganizationID != session.OrganizationID ||
+		conn.DeviceID != session.DeviceID ||
+		conn.AgentID != session.AgentID ||
+		conn.ConnectionID != session.ConnectionID ||
+		conn.Generation != session.Generation {
+		slog.Warn("Agent identity / connection generation fencing mismatch for MediaSession relay attempt. Rejecting.",
+			"session_id", sessionID,
+			"agent_org", conn.OrganizationID, "sess_org", session.OrganizationID,
+			"agent_dev", conn.DeviceID, "sess_dev", session.DeviceID,
+			"agent_id", conn.AgentID, "sess_agent_id", session.AgentID,
+			"agent_conn_id", conn.ConnectionID, "sess_conn_id", session.ConnectionID,
+			"agent_gen", conn.Generation, "sess_gen", session.Generation)
+		return ErrUnauthorizedMediaSession
 	}
 
 	if time.Now().After(session.ExpiresAt) {

@@ -37,6 +37,10 @@ services:
       - PORT=8080
       - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
       - REDIS_URL=redis://redis:6379/0
+      - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
+      - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+    secrets:
+      - coturn_secret
     depends_on:
       postgres:
         condition: service_healthy

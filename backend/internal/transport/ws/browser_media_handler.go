@@ -118,6 +118,14 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// 3. Verify Active Agent Connection Before Registering Session
+	agentConn, ok := h.hub.GetConnection(orgID, deviceID)
+	if !ok || agentConn == nil {
+		slog.Warn("Device agent is not connected for browser media stream", "device_id", deviceID, "org_id", orgID)
+		http.Error(w, "Device Agent Not Connected", http.StatusServiceUnavailable)
+		return
+	}
+
 	conn, err := h.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("Failed to upgrade Browser Media WebSocket", "error", err)
@@ -129,7 +137,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	browserChan := make(chan []byte, 128)
 	expiresAt := time.Now().Add(15 * time.Minute)
 
-	// 3. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
+	// 4. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
 	unixExpiry := time.Now().Add(10 * time.Minute).Unix()
 	username := fmt.Sprintf("%d:%s", unixExpiry, sessionID)
 
@@ -149,21 +157,24 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	// 4. Register authenticated MediaSession record in agentws Hub
+	// 5. Register authenticated MediaSession record with Agent Connection Fencing Snapshot
 	mediaSession := &agentws.MediaSession{
 		SessionID:      sessionID,
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
 		UserID:         principal.UserID,
+		AgentID:        agentConn.AgentID,
+		ConnectionID:   agentConn.ConnectionID,
+		Generation:     agentConn.Generation,
 		ExpiresAt:      expiresAt,
 		Subscriber:     browserChan,
 	}
 	h.hub.RegisterMediaSession(mediaSession)
 	defer h.hub.UnregisterMediaSession(sessionID)
 
-	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID)
+	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID, "agent_id", agentConn.AgentID)
 
-	// 5. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
+	// 6. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
 	createdPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"device_id":   deviceID,
@@ -174,7 +185,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	createdBytes, _ := json.Marshal(createdEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
 
-	// 6. Dispatch media.session.start to Device Agent via Hub
+	// 7. Dispatch media.session.start to Device Agent via Hub
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -199,7 +210,21 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Goroutine 1: Relay messages from Browser -> Device Agent (Fail-closed session_id validation)
+	// Expiry Timer: Auto-close session when expiresAt is reached
+	expiryTimer := time.NewTimer(time.Until(expiresAt))
+	defer expiryTimer.Stop()
+
+	go func() {
+		select {
+		case <-ctxCancel.Done():
+			return
+		case <-expiryTimer.C:
+			slog.Info("Media session reached TTL expiration. Forcefully closing session.", "session_id", sessionID)
+			cancel()
+		}
+	}()
+
+	// Goroutine 1: Relay messages from Browser -> Device Agent (Fail-closed session_id & expiry validation)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -215,6 +240,11 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		for {
 			_, message, err := conn.ReadMessage()
 			if err != nil {
+				break
+			}
+
+			if time.Now().After(expiresAt) {
+				slog.Warn("Browser signaling message received post-expiry. Dropping.", "session_id", sessionID)
 				break
 			}
 
