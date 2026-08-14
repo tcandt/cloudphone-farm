@@ -34,7 +34,7 @@ $backendHash = (Get-FileHash $backendBinary -Algorithm SHA256).Hash
 Write-Host "Rebuilding Android Agent APK (assembleDebug) from HEAD..."
 Push-Location "$repoRoot"
 try {
-    cmd /c "if exist `"C:\Program Files\Android\Android Studio\jbr\bin\java.exe`" (set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr) & cd /d `"$repoRoot\android-agent`" & gradlew.bat assembleDebug --no-daemon"
+    cmd /c "if exist `"C:\Program Files\Android\Android Studio\jbr\bin\java.exe`" (set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr) & cd android-agent & gradlew.bat assembleDebug --no-daemon"
 } finally {
     Pop-Location
 }
