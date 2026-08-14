@@ -73,7 +73,7 @@ func main() {
 
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	deviceService := devservice.NewDeviceService(deviceRepo)
-	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo)
+	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo, rdb)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)

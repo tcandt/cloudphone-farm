@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
@@ -22,12 +24,14 @@ import (
 type AgentService struct {
 	enrollRepo   *pgrepo.EnrollmentRepository
 	presenceRepo *redisrepo.PresenceRepository
+	rdb          *redis.Client
 }
 
-func NewAgentService(enrollRepo *pgrepo.EnrollmentRepository, presenceRepo *redisrepo.PresenceRepository) *AgentService {
+func NewAgentService(enrollRepo *pgrepo.EnrollmentRepository, presenceRepo *redisrepo.PresenceRepository, rdb *redis.Client) *AgentService {
 	return &AgentService{
 		enrollRepo:   enrollRepo,
 		presenceRepo: presenceRepo,
+		rdb:          rdb,
 	}
 }
 
@@ -180,13 +184,26 @@ func (s *AgentService) ProcessHeartbeat(ctx context.Context, agent *domain.Devic
 		LastSeenAt:   time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// 1. Update 30s TTL Redis Presence (Atomic Lua CAS)
+	// 1. Update 30s TTL Redis Presence (Atomic Lua CAS on every 10s heartbeat tick)
 	if err := s.presenceRepo.UpdatePresence(ctx, agent.OrganizationID, agent.DeviceID, presence); err != nil {
 		return err
 	}
 
-	// 2. Persist sampled telemetry to PostgreSQL device_heartbeats table
-	_ = s.enrollRepo.RecordDeviceHeartbeat(ctx, agent.OrganizationID, agent.DeviceID, req.CPUUsage, req.RAMUsage, req.TemperatureC, req.Battery, req.Network)
+	// 2. Coalesced Telemetry Persistence to PostgreSQL (Once every 60s per device)
+	shouldPersist := true
+	if s.rdb != nil {
+		coalesceKey := fmt.Sprintf("pcp:telemetry:persist:v1:%s:%s", agent.OrganizationID, agent.DeviceID)
+		setOk, err := s.rdb.SetNX(ctx, coalesceKey, 1, 60*time.Second).Result()
+		if err == nil && !setOk {
+			shouldPersist = false // Telemetry write was already persisted within past 60s
+		}
+	}
+
+	if shouldPersist {
+		if err := s.enrollRepo.RecordDeviceHeartbeat(ctx, agent.OrganizationID, agent.DeviceID, req.CPUUsage, req.RAMUsage, req.TemperatureC, req.Battery, req.Network); err != nil {
+			slog.Error("Failed to record PostgreSQL device heartbeat telemetry", "error", err, "device_id", agent.DeviceID)
+		}
+	}
 
 	return nil
 }

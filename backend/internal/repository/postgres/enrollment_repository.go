@@ -50,6 +50,7 @@ type AgentEnrollmentPayload struct {
 	DeviceAndroidVersion string
 	DeviceDisplayName    string
 	CapabilitiesJSON     []byte
+	CorrelationID        string
 }
 
 type EnrollmentResult struct {
@@ -233,10 +234,10 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 		return nil, fmt.Errorf("failed to mark enrollment token as consumed: %w", err)
 	}
 
-	// 5. Audit Log (Schema compliant insert with JSONB details)
+	// 5. Audit Log (Schema compliant insert with correlation_id and JSONB details)
 	auditSQL := `
-		INSERT INTO audit_logs (organization_id, action, actor_id, resource_type, resource_id, details)
-		VALUES ($1, 'agent.enroll', $2, 'device_agent', $3, $4::jsonb)
+		INSERT INTO audit_logs (organization_id, actor_id, correlation_id, action, resource_type, resource_id, details)
+		VALUES ($1, $2, $3, 'agent.enroll', 'device_agent', $4, $5::jsonb)
 	`
 	detailsMap := map[string]interface{}{
 		"message":   fmt.Sprintf("Agent enrolled for device %s", deviceID),
@@ -246,7 +247,12 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 	}
 	detailsJSON, _ := json.Marshal(detailsMap)
 
-	if _, err := tx.Exec(ctx, auditSQL, orgID, createdBy, agentID, string(detailsJSON)); err != nil {
+	corrID := payload.CorrelationID
+	if corrID == "" {
+		corrID = fmt.Sprintf("cor_%d", time.Now().UnixNano())
+	}
+
+	if _, err := tx.Exec(ctx, auditSQL, orgID, createdBy, corrID, agentID, string(detailsJSON)); err != nil {
 		return nil, fmt.Errorf("failed to insert enrollment audit log: %w", err)
 	}
 

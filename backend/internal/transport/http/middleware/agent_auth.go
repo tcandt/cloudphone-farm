@@ -41,17 +41,6 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		nonce := r.Header.Get("X-Agent-Nonce")
 		signatureB64 := r.Header.Get("X-Agent-Signature")
 
-		// Fallback for simple dev/test header if signature headers absent
-		fingerprint := r.Header.Get("X-Agent-Fingerprint")
-		if agentID == "" && fingerprint != "" {
-			agent, err := m.enrollRepo.GetAgentByFingerprint(r.Context(), fingerprint)
-			if err == nil && agent != nil {
-				ctx := context.WithValue(r.Context(), AgentContextKey, agent)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-		}
-
 		if agentID == "" || timestampStr == "" || nonce == "" || signatureB64 == "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -88,20 +77,39 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 			return
 		}
 
-		// 2. Replay Protection via Redis Nonce Lock
-		if m.rdb != nil {
-			nonceKey := fmt.Sprintf("pcp:replay:%s:%s", agentID, nonce)
-			setOk, err := m.rdb.SetNX(r.Context(), nonceKey, 1, 120*time.Second).Result()
-			if err == nil && !setOk {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"code":      "REPLAY_ATTACK_DETECTED",
-					"message":   "Request nonce has already been processed",
-					"timestamp": time.Now().UTC().Format(time.RFC3339),
-				})
-				return
-			}
+		// 2. Replay Protection via Redis Nonce Lock (Strict Fail-Closed Policy)
+		if m.rdb == nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":      "SERVICE_UNAVAILABLE",
+				"message":   "Replay protection store (Redis) unavailable",
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+
+		nonceKey := fmt.Sprintf("pcp:replay:%s:%s", agentID, nonce)
+		setOk, err := m.rdb.SetNX(r.Context(), nonceKey, 1, 120*time.Second).Result()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":      "SERVICE_UNAVAILABLE",
+				"message":   "Replay protection store check failed",
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
+		}
+		if !setOk {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"code":      "REPLAY_ATTACK_DETECTED",
+				"message":   "Request nonce has already been processed",
+				"timestamp": time.Now().UTC().Format(time.RFC3339),
+			})
+			return
 		}
 
 		// 3. Load Agent & Public Key
