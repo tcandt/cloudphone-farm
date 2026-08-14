@@ -1,5 +1,6 @@
 import { StreamProfile, StreamSession } from '../types';
 import { WebRtcMediaClient } from './webrtc-media-client';
+import { getApiMode } from './command-service';
 
 export interface MediaClient {
   sessionId: string;
@@ -249,7 +250,8 @@ export class DefaultMediaClientRegistry {
     let entry = this.instances.get(sessionId);
     if (!entry) {
       const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
-      const client = isTestEnv ? new MockMediaClient(sessionId) : new ProductionWebRtcMediaClient(sessionId);
+      const isMockMode = isTestEnv || getApiMode() === 'mock';
+      const client = isMockMode ? new MockMediaClient(sessionId) : new ProductionWebRtcMediaClient(sessionId);
       entry = { client, refCount: 0 };
       this.instances.set(sessionId, entry);
     }

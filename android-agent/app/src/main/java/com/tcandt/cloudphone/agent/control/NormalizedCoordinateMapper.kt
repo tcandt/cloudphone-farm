@@ -6,17 +6,26 @@ data class PhysicalPoint(
 )
 
 object NormalizedCoordinateMapper {
+    @Throws(IllegalArgumentException::class)
     fun map(
         normalizedX: Float,
         normalizedY: Float,
         widthPx: Int,
         heightPx: Int
     ): PhysicalPoint {
-        val clampedX = normalizedX.coerceIn(0f, 1f)
-        val clampedY = normalizedY.coerceIn(0f, 1f)
+        if (normalizedX.isNaN() || normalizedY.isNaN() ||
+            normalizedX < 0f || normalizedX > 1f ||
+            normalizedY < 0f || normalizedY > 1f
+        ) {
+            throw IllegalArgumentException("Invalid normalized coordinates ($normalizedX, $normalizedY): must be finite numbers between 0.0 and 1.0")
+        }
 
-        val xPx = clampedX * (widthPx - 1).coerceAtLeast(1)
-        val yPx = clampedY * (heightPx - 1).coerceAtLeast(1)
+        if (widthPx <= 0 || heightPx <= 0) {
+            throw IllegalArgumentException("Invalid display geometry: ${widthPx}x${heightPx}")
+        }
+
+        val xPx = normalizedX * (widthPx - 1).coerceAtLeast(1)
+        val yPx = normalizedY * (heightPx - 1).coerceAtLeast(1)
 
         return PhysicalPoint(xPx, yPx)
     }

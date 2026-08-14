@@ -1,22 +1,22 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { DeviceEntity, ControlLease, DeviceCommandType } from '../../types';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { DeviceEntity, ControlLease } from '../../types';
 import { defaultMediaRegistry, MediaClient } from '../../services/media-client';
 import { deviceService } from '../../services/device-service';
-import { commandService } from '../../services/command-service';
+import { commandService, getApiMode } from '../../services/command-service';
 import { useAuth } from '../../context/AuthContext';
 import { PermissionGuard } from '../common/PermissionGuard';
 import { computeVideoGeometry, mapPointerToNormalizedCoordinates, VideoContentGeometry } from '../../lib/video-geometry';
 import { PointerGestureRecognizer, DispatchedGesture } from '../../lib/pointer-gesture-engine';
 import {
   X,
-  Play,
-  RotateCcw,
   Smartphone,
+  RotateCcw,
+  Home,
+  Layers,
+  Send,
+  Lock,
   CheckCircle,
-  Clock,
-  Shield,
-  Wifi,
-  AlertCircle,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface DeviceControlModalProps {
@@ -27,8 +27,8 @@ interface DeviceControlModalProps {
 
 interface CommandLogItem {
   id: string;
-  msg: string;
   time: string;
+  msg: string;
 }
 
 export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, isOpen = true, onClose }) => {
@@ -38,11 +38,12 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const [lease, setLease] = useState<ControlLease | null>(null);
+  const [isAcquiringLease, setIsAcquiringLease] = useState(false);
   const [leaseSecondsLeft, setLeaseSecondsLeft] = useState<number>(0);
   const [textPayload, setTextPayload] = useState('');
   const [commandLog, setCommandLog] = useState<CommandLogItem[]>([]);
   const [webrtcState, setWebrtcState] = useState<string>('CONNECTING');
-  const [webrtcError, setWebrtcError] = useState<string | null>(null);
+  const [_webrtcError, setWebrtcError] = useState<string | null>(null);
   const [activeServerSessionId, setActiveServerSessionId] = useState<string>('');
   const [geometry, setGeometry] = useState<VideoContentGeometry | null>(null);
   const [geometryRevision, setGeometryRevision] = useState(0);
@@ -51,6 +52,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const gestureRecognizerRef = useRef<PointerGestureRecognizer>(new PointerGestureRecognizer());
   const leaseRef = useRef<ControlLease | null>(null);
   const lastPointerUpTimeRef = useRef<number>(0);
+  const isRenewingLeaseRef = useRef<boolean>(false);
 
   // Keep leaseRef updated for async callbacks & unmount cleanup
   useEffect(() => {
@@ -60,57 +62,54 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const [viewerSessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
 
   const addLog = useCallback((msg: string) => {
-    setCommandLog((prev) => [
-      { id: Math.random().toString(), msg, time: new Date().toLocaleTimeString('vi-VN') },
-      ...prev.slice(0, 9),
-    ]);
+    const timeStr = new Date().toLocaleTimeString('vi-VN');
+    setCommandLog((prev) => [{ id: Math.random().toString(36).substring(2, 9), time: timeStr, msg }, ...prev.slice(0, 29)]);
   }, []);
 
-  // Recalculate video geometry on video metadata load or element resize
   const updateGeometry = useCallback(() => {
-    if (!videoRef.current) return;
-    const nextRevision = geometryRevision + 1;
-    const geom = computeVideoGeometry(videoRef.current, nextRevision);
-    if (geom) {
-      setGeometry(geom);
-      setGeometryRevision(nextRevision);
+    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
+      ? videoRef.current
+      : (canvasRef.current || videoRef.current);
+    if (!targetEl) return;
+    const newGeom = computeVideoGeometry(targetEl, geometryRevision + 1);
+    if (newGeom) {
+      setGeometry(newGeom);
+      setGeometryRevision((r) => r + 1);
     }
   }, [geometryRevision]);
 
+  // Update video geometry immediately on mount / open
   useEffect(() => {
-    if (!containerRef.current || !videoRef.current) return;
-    const ro = new ResizeObserver(() => {
+    if (isOpen) {
       updateGeometry();
-    });
-    ro.observe(containerRef.current);
-    ro.observe(videoRef.current);
-    return () => ro.disconnect();
-  }, [updateGeometry]);
+      const timer = setTimeout(updateGeometry, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isOpen, updateGeometry]);
 
-  // MediaClient Stream Initialization
+  // Handle WebRTC Stream Session Setup
   useEffect(() => {
     if (!isOpen) return;
 
-    const mediaClient = defaultMediaRegistry.acquire(viewerSessionId);
-    mediaClientRef.current = mediaClient;
-
     let mounted = true;
-
-    const unsubscribe = mediaClient.onStateChange?.((state, err, serverSessId) => {
-      if (mounted) {
-        setWebrtcState(state);
-        if (err) setWebrtcError(err);
-        if (serverSessId) setActiveServerSessionId(serverSessId);
-      }
-    });
+    let unsubscribe: (() => void) | null = null;
 
     async function initStream() {
       try {
-        await mediaClient.startSession(device.device_id, {
-          resolution: '720p',
-          fps: 30,
-          bitrate_kbps: 2500,
-        });
+        setWebrtcState('CONNECTING');
+        setWebrtcError(null);
+
+        const mediaClient = defaultMediaRegistry.acquire(viewerSessionId);
+        mediaClientRef.current = mediaClient;
+
+        unsubscribe = mediaClient.onStateChange?.((state: string, err?: string, serverSessId?: string) => {
+          if (!mounted) return;
+          setWebrtcState(state);
+          if (err) setWebrtcError(err);
+          if (serverSessId) setActiveServerSessionId(serverSessId);
+        }) || null;
+
+        await mediaClient.startSession(device.device_id);
 
         if (mounted) {
           if (videoRef.current) {
@@ -144,7 +143,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     };
   }, [device.device_id, isOpen, viewerSessionId]);
 
-  // Control Lease Expiry & Auto-Renew Loop
+  // Control Lease Expiry & Single Renewal Loop Guard
   useEffect(() => {
     if (!lease) return;
 
@@ -154,9 +153,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
       if (remaining <= 0) {
         setLease(null);
+        gestureRecognizerRef.current.cancelCurrentGesture();
         addLog('Control lease expired');
-      } else if (remaining <= 10) {
-        // Auto-renew lease 10s before expiry
+      } else if (remaining <= 10 && !isRenewingLeaseRef.current) {
+        isRenewingLeaseRef.current = true;
         deviceService
           .renewLease(device.device_id, lease.control_lease_id)
           .then((renewed) => {
@@ -166,7 +166,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
           .catch((err) => {
             console.warn('[Lease] Auto-renew failed:', err);
             setLease(null);
+            gestureRecognizerRef.current.cancelCurrentGesture();
             addLog('Lease auto-renew failed. Control revoked.');
+          })
+          .finally(() => {
+            isRenewingLeaseRef.current = false;
           });
       }
     }, 1000);
@@ -174,8 +178,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     return () => clearInterval(timer);
   }, [device.device_id, lease, addLog]);
 
-  const acquireLease = async () => {
-    if (!session) return;
+  const acquireLease = async (e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (isAcquiringLease || !session) return;
+    setIsAcquiringLease(true);
     try {
       const newLease = await deviceService.acquireLease(device.device_id);
       const remaining = Math.max(0, Math.floor((new Date(newLease.expires_at).getTime() - Date.now()) / 1000));
@@ -185,6 +191,8 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to acquire control lease';
       addLog(`Lease error: ${msg}`);
+    } finally {
+      setIsAcquiringLease(false);
     }
   };
 
@@ -197,6 +205,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
         console.warn('Error releasing lease:', err);
       } finally {
         setLease(null);
+        gestureRecognizerRef.current.cancelCurrentGesture();
       }
     }
   };
@@ -205,6 +214,17 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   const dispatchGestureCommand = async (gesture: DispatchedGesture) => {
     if (!lease || !session) {
       addLog('Cannot dispatch gesture: CONTROL_LEASE_REQUIRED');
+      return;
+    }
+
+    const isStreamActive = webrtcState === 'CONNECTED' || webrtcState === 'VIDEO_RECEIVING' || webrtcState === 'ready' || webrtcState === 'started';
+    if (!isStreamActive) {
+      addLog(`Cannot dispatch gesture: VIDEO_STREAM_NOT_RECEIVING (State: ${webrtcState})`);
+      return;
+    }
+
+    if (!geometry || geometry.videoWidth <= 0 || geometry.videoHeight <= 0) {
+      addLog('Cannot dispatch gesture: VIDEO_GEOMETRY_UNAVAILABLE');
       return;
     }
 
@@ -220,9 +240,9 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
       if (gesture.type === 'gesture.touch') {
         const { x, y } = gesture.payload;
         addLog(`Touch accepted at (${x.toFixed(3)}, ${y.toFixed(3)}) - Cmd #${command.command_id}`);
-      } else {
-        const { startX, startY, endX, endY } = gesture.payload;
-        addLog(`Swipe accepted (${startX.toFixed(2)},${startY.toFixed(2)})->(${endX.toFixed(2)},${endY.toFixed(2)}) - Cmd #${command.command_id}`);
+      } else if (gesture.type === 'gesture.swipe') {
+        const { startX, startY, endX, endY, durationMs } = gesture.payload;
+        addLog(`Swipe accepted (${startX.toFixed(3)}, ${startY.toFixed(3)}) -> (${endX.toFixed(3)}, ${endY.toFixed(3)}) in ${durationMs}ms - Cmd #${command.command_id}`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Command dispatch failed';
@@ -232,8 +252,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   // Pointer Event Handlers using Video Content Geometry Engine
   const handlePointerDown = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
-    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
+      ? videoRef.current
+      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
     const activeGeom = geometry || computeVideoGeometry(targetEl);
+    if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
     const position = { clientX: e.clientX, clientY: e.clientY };
 
@@ -248,8 +271,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
-    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
+      ? videoRef.current
+      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
     const activeGeom = geometry || computeVideoGeometry(targetEl);
+    if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
     const position = { clientX: e.clientX, clientY: e.clientY };
     gestureRecognizerRef.current.onPointerMove(e.pointerId, position, rect, activeGeom);
@@ -257,8 +283,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   const handlePointerUp = (e: React.PointerEvent<HTMLVideoElement | HTMLCanvasElement>) => {
     lastPointerUpTimeRef.current = Date.now();
-    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
+      ? videoRef.current
+      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
     const activeGeom = geometry || computeVideoGeometry(targetEl);
+    if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
     const position = { clientX: e.clientX, clientY: e.clientY };
 
@@ -276,7 +305,9 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     if (Date.now() - lastPointerUpTimeRef.current < 200) {
       return; // Ignore fallback click if pointerup already dispatched gesture
     }
-    const targetEl = videoRef.current || (e.target as HTMLElement);
+    const targetEl = (videoRef.current && videoRef.current.videoWidth > 0)
+      ? videoRef.current
+      : ((e.target as HTMLElement) || canvasRef.current || videoRef.current);
     const activeGeom = geometry || computeVideoGeometry(targetEl);
     if (!activeGeom) return;
     const rect = targetEl.getBoundingClientRect();
@@ -295,42 +326,31 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     }
   };
 
-  // Dispatch Global Hard Keys
-  const sendKey = async (keyName: string) => {
+  // Dispatch Hard Navigation Key Commands
+  const handleNavClick = async (actionType: 'global.back' | 'global.home' | 'global.recents') => {
     if (!lease || !session) {
-      addLog('Cannot send key: CONTROL_LEASE_REQUIRED');
+      addLog('Cannot dispatch key: CONTROL_LEASE_REQUIRED');
       return;
     }
-    const typeMap: Record<string, DeviceCommandType> = {
-      BACK: 'global.back',
-      HOME: 'global.home',
-      RECENTS: 'global.recents',
-    };
-    const cmdType = typeMap[keyName] || 'global.back';
-
     try {
       const command = await commandService.dispatch({
         deviceId: device.device_id,
-        type: cmdType,
-        payload: { key: keyName },
+        type: actionType,
+        payload: {},
         controlLeaseId: lease.control_lease_id,
-        idempotencyKey: `key_${keyName}_${Date.now()}`,
+        idempotencyKey: `nav_${actionType}_${Date.now()}`,
       });
-      addLog(`Sent key: ${keyName} - Cmd #${command.command_id}`);
+      addLog(`Dispatched Key ${actionType.replace('global.', '').toUpperCase()} - Cmd #${command.command_id}`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Key command failed';
-      addLog(`Key error: ${msg}`);
+      const msg = err instanceof Error ? err.message : 'Navigation failed';
+      addLog(`Nav Error: ${msg}`);
     }
   };
 
-  // Dispatch Text Input
-  const sendTextInput = async () => {
-    if (!lease || !session) {
-      addLog('Cannot send text: CONTROL_LEASE_REQUIRED');
-      return;
-    }
-    if (!textPayload.trim()) return;
-
+  // Dispatch Type Text Command
+  const handleSendText = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!textPayload.trim() || !lease || !session) return;
     try {
       const command = await commandService.dispatch({
         deviceId: device.device_id,
@@ -351,6 +371,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
 
   const displaySessionId = activeServerSessionId || viewerSessionId;
   const isLandscape = geometry?.orientation === 'landscape';
+  const isMockMode = getApiMode() === 'mock';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
@@ -370,6 +391,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 <span className="px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 font-bold text-[10px] border border-blue-500/20">
                   {webrtcState === 'VIDEO_RECEIVING' ? '● LIVE 30fps' : webrtcState}
                 </span>
+                {isMockMode && (
+                  <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-extrabold text-[10px] border border-amber-500/40 animate-pulse">
+                    MOCK CONTROL — NO PHYSICAL DEVICE
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-400 font-mono">
                 {device.model} ({device.android_version}) • Geometry: {geometry ? `${geometry.videoWidth}x${geometry.videoHeight} (${geometry.orientation})` : '720x1280'}
@@ -414,6 +440,10 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                   updateGeometry();
                   mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived();
                 }}
+                onResize={() => {
+                  updateGeometry();
+                  gestureRecognizerRef.current.cancelCurrentGesture();
+                }}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
@@ -434,148 +464,141 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 className="absolute inset-0 w-full h-full cursor-crosshair object-contain touch-none select-none"
               />
 
-              {webrtcState === 'FAILED' && (
-                <div className="absolute inset-0 bg-slate-950/90 flex flex-col items-center justify-center p-4 text-center space-y-2 z-20">
-                  <AlertCircle size={32} className="text-rose-500" />
-                  <p className="text-xs font-bold text-rose-400">WebRTC Media Error</p>
-                  <p className="text-[11px] text-slate-400 max-w-[200px] font-mono">{webrtcError || 'Media connection failed'}</p>
-                </div>
-              )}
-
+              {/* Interactive Control Lock Overlay */}
               {!lease && (
                 <div
                   className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer z-10"
-                  onClick={acquireLease}
+                  onClick={(e) => acquireLease(e)}
                 >
-                  <Shield size={32} className="text-amber-400 animate-bounce" />
-                  <p className="text-xs font-bold text-slate-200">Interactive Control Lock</p>
-                  <p className="text-[11px] text-slate-400 max-w-[180px]">
-                    Lấy quyền Control Lease để tương tác cảm ứng và phát lệnh tới thiết bị.
-                  </p>
+                  <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                    <Lock size={24} />
+                  </div>
+                  <div>
+                    <h4 className="font-extrabold text-sm text-white">Interactive Control Lock</h4>
+                    <p className="text-xs text-slate-300 mt-1 max-w-[200px]">
+                      Yêu cầu lấy Control Lease từ backend trước khi điều khiển màn hình điện thoại.
+                    </p>
+                  </div>
                   <PermissionGuard permission="device.control.acquire">
                     <button
-                      onClick={acquireLease}
-                      className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-blue-500/20 transition-all active:scale-95"
+                      onClick={(e) => acquireLease(e)}
+                      disabled={isAcquiringLease}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-xs shadow-lg hover:from-blue-500 hover:to-indigo-500 active:scale-95 transition-all disabled:opacity-50"
                     >
-                      Lấy Quyền (Lease)
+                      {isAcquiringLease ? 'Đang lấy quyền...' : 'Lấy Quyền (Lease)'}
                     </button>
                   </PermissionGuard>
                 </div>
               )}
             </div>
 
-            <p className="text-[10px] text-slate-500 mt-3 font-mono flex items-center gap-1">
-              <Wifi size={12} className="text-emerald-400" /> Session: {displaySessionId}
-            </p>
+            <p className="text-[11px] text-slate-500 mt-3 font-mono">Session: {displaySessionId}</p>
           </div>
 
-          {/* Control Panel Column */}
-          <div className="md:col-span-6 p-6 space-y-5 bg-slate-900/50 flex flex-col overflow-y-auto">
-            {/* Lease Status Card */}
-            <div className="bg-slate-800/60 border border-slate-800 rounded-2xl p-4 flex items-center justify-between">
-              <div className="space-y-1">
-                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                  Quyền Điều Khiển Backend
-                </span>
+          {/* Control Actions & Real-Time Log Column */}
+          <div className="md:col-span-6 p-6 flex flex-col justify-between bg-slate-900/60 space-y-6 overflow-y-auto">
+            {/* Lease Ownership Banner */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Trạng thái Quyền Điều Khiển</span>
                 {lease ? (
-                  <div className="flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                    <span className="text-xs font-extrabold text-emerald-400">
-                      Active ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
-                    </span>
-                  </div>
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 font-bold text-xs border border-emerald-500/20 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    Active ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
+                  </span>
                 ) : (
-                  <div className="text-xs font-bold text-amber-400">Chỉ xem (View Only)</div>
+                  <span className="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-bold text-xs border border-slate-700">
+                    Chưa đăng ký Lease
+                  </span>
                 )}
               </div>
 
-              {lease ? (
-                <button
-                  onClick={releaseLease}
-                  className="px-3 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 text-xs font-bold rounded-xl transition-all"
-                >
-                  Release Lease
-                </button>
-              ) : (
-                <PermissionGuard permission="device.control.acquire">
+              <div className="flex gap-2">
+                {!lease ? (
+                  <PermissionGuard permission="device.control.acquire">
+                    <button
+                      onClick={(e) => acquireLease(e)}
+                      disabled={isAcquiringLease}
+                      className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
+                    >
+                      {isAcquiringLease ? 'Đang xử lý...' : 'Xin quyền điều khiển (Acquire Lease)'}
+                    </button>
+                  </PermissionGuard>
+                ) : (
                   <button
-                    onClick={acquireLease}
-                    className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-blue-500/20"
+                    onClick={releaseLease}
+                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs border border-slate-700 transition-all"
                   >
-                    Lấy Quyền (Lease)
+                    Release Lease
                   </button>
-                </PermissionGuard>
-              )}
+                )}
+              </div>
             </div>
 
-            {/* Quick Action Buttons */}
-            <div className="space-y-2">
-              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                Phím Cứng Điều Hướng
-              </span>
-              <PermissionGuard permission="device.control.input">
-                <div className="grid grid-cols-3 gap-2">
+            {/* Navigation Buttons */}
+            <div className="space-y-3">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Phím Cứng Điều Hướng</span>
+              <div className="grid grid-cols-3 gap-2">
+                <PermissionGuard permission="device.command.basic">
                   <button
-                    onClick={() => sendKey('BACK')}
+                    onClick={() => handleNavClick('global.back')}
                     disabled={!lease}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-bold text-xs rounded-xl border border-slate-700/60 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 font-semibold text-xs border border-slate-700/80 flex items-center justify-center gap-2 transition-all active:scale-95"
                   >
                     <RotateCcw size={14} /> Back
                   </button>
+                </PermissionGuard>
+                <PermissionGuard permission="device.command.basic">
                   <button
-                    onClick={() => sendKey('HOME')}
+                    onClick={() => handleNavClick('global.home')}
                     disabled={!lease}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-bold text-xs rounded-xl border border-slate-700/60 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 font-semibold text-xs border border-slate-700/80 flex items-center justify-center gap-2 transition-all active:scale-95"
                   >
-                    <Smartphone size={14} /> Home
+                    <Home size={14} /> Home
                   </button>
+                </PermissionGuard>
+                <PermissionGuard permission="device.command.basic">
                   <button
-                    onClick={() => sendKey('RECENTS')}
+                    onClick={() => handleNavClick('global.recents')}
                     disabled={!lease}
-                    className="p-2.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 font-bold text-xs rounded-xl border border-slate-700/60 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    className="py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 font-semibold text-xs border border-slate-700/80 flex items-center justify-center gap-2 transition-all active:scale-95"
                   >
-                    <Play size={14} /> Recents
+                    <Layers size={14} /> Recents
                   </button>
-                </div>
-              </PermissionGuard>
-            </div>
-
-            {/* Text Input Panel */}
-            <div className="space-y-2">
-              <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">
-                Gửi Văn Bản (Type Text)
-              </span>
-              <PermissionGuard permission="device.control.input">
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={textPayload}
-                    onChange={(e) => setTextPayload(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && sendTextInput()}
-                    placeholder="Nhập nội dung cần truyền sang thiết bị..."
-                    disabled={!lease}
-                    className="flex-1 bg-slate-950 border border-slate-800 focus:border-blue-500 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 disabled:opacity-40 outline-none transition-all"
-                  />
-                  <button
-                    onClick={sendTextInput}
-                    disabled={!lease || !textPayload.trim()}
-                    className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-40 text-white font-extrabold text-xs rounded-xl transition-all shadow-md shadow-blue-500/20 active:scale-95"
-                  >
-                    Send
-                  </button>
-                </div>
-              </PermissionGuard>
-            </div>
-
-            {/* Real-time Command Audit Log */}
-            <div className="space-y-2 flex-1 flex flex-col min-h-[140px]">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                  <Clock size={12} /> Real-Time HTTP Command Audit Log
-                </span>
-                <span className="text-[10px] font-mono text-slate-500">{commandLog.length} events</span>
+                </PermissionGuard>
               </div>
+            </div>
 
+            {/* Text Input Payload */}
+            <form onSubmit={handleSendText} className="space-y-3">
+              <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Gửi Văn Bản (Type Text)</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={textPayload}
+                  onChange={(e) => setTextPayload(e.target.value)}
+                  placeholder="Nhập nội dung cần truyền sang thiết bị..."
+                  disabled={!lease}
+                  className="flex-1 px-3 py-2 rounded-xl bg-slate-950 border border-slate-800 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-blue-500 disabled:opacity-40"
+                />
+                <PermissionGuard permission="device.command.basic">
+                  <button
+                    type="submit"
+                    disabled={!lease || !textPayload.trim()}
+                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold text-xs flex items-center justify-center gap-1.5 transition-all"
+                  >
+                    <Send size={14} /> Send
+                  </button>
+                </PermissionGuard>
+              </div>
+            </form>
+
+            {/* Real-Time Command Log */}
+            <div className="space-y-2 flex-1 flex flex-col min-h-0">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Real-Time HTTP Command Audit Log</span>
+                <span className="text-[10px] text-slate-500 font-mono">{commandLog.length} events</span>
+              </div>
               <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-3 flex-1 overflow-y-auto font-mono text-[11px] space-y-1.5 max-h-[160px]">
                 {commandLog.length === 0 ? (
                   <p className="text-slate-600 text-center py-4 italic">Chưa có lệnh nào được phát đi...</p>
@@ -584,7 +607,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                     <div key={log.id} className="flex items-start justify-between text-slate-300 border-b border-slate-900 pb-1">
                       <span className="text-blue-400">[{log.time}]</span>
                       <span className="flex-1 ml-2 text-slate-200 truncate">{log.msg}</span>
-                      <CheckCircle size={12} className="text-emerald-400 ml-1 shrink-0 mt-0.5" />
+                      {log.msg.includes('Error') || log.msg.includes('error') ? (
+                        <AlertTriangle size={12} className="text-rose-400 ml-1 shrink-0 mt-0.5" />
+                      ) : (
+                        <CheckCircle size={12} className="text-emerald-400 ml-1 shrink-0 mt-0.5" />
+                      )}
                     </div>
                   ))
                 )}

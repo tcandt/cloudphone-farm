@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"reflect"
 	"time"
 
 	"github.com/google/uuid"
@@ -36,8 +36,11 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 	if req.ControlLeaseID == "" {
 		return nil, errors.New("missing control_lease_id")
 	}
+	if req.IdempotencyKey == "" {
+		return nil, domain.ErrIdempotencyKeyRequired
+	}
 
-	// 1. Verify Device Ownership (Tenant Isolation)
+	// 1. Verify Device Ownership & Status (Tenant Isolation)
 	var deviceOrg string
 	var deviceStatus string
 	err := s.pool.QueryRow(ctx, "SELECT organization_id, status FROM devices WHERE device_id = $1", req.DeviceID).Scan(&deviceOrg, &deviceStatus)
@@ -53,47 +56,54 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, fmt.Errorf("%w: device is %s", domain.ErrDeviceOffline, deviceStatus)
 	}
 
-	// 2. Validate Command Payload & Type
+	// 2. Validate Command Payload, Coordinate Space, & Type Invariants
 	switch req.Type {
-	case "gesture.touch":
+	case "gesture.touch", "gesture.swipe":
 		if req.Payload == nil {
-			return nil, errors.New("missing payload for gesture.touch")
+			return nil, fmt.Errorf("missing payload for %s", req.Type)
 		}
-		xVal, hasX := req.Payload["x"]
-		yVal, hasY := req.Payload["y"]
-		if !hasX || !hasY {
-			return nil, errors.New("missing x or y coordinate in gesture.touch payload")
+		space, _ := req.Payload["coordinateSpace"].(string)
+		if space != "normalized_display_v1" {
+			return nil, fmt.Errorf("invalid coordinateSpace '%s': required 'normalized_display_v1'", space)
 		}
-		xNum, isXNum := parseNumber(xVal)
-		yNum, isYNum := parseNumber(yVal)
-		if !isXNum || xNum < 0 || xNum > 1 {
-			return nil, errors.New("normalized coordinate x must be a number between 0.0 and 1.0")
-		}
-		if !isYNum || yNum < 0 || yNum > 1 {
-			return nil, errors.New("normalized coordinate y must be a number between 0.0 and 1.0")
+		orient, _ := req.Payload["orientation"].(string)
+		if orient != "portrait" && orient != "landscape" {
+			return nil, fmt.Errorf("invalid orientation '%s': required 'portrait' or 'landscape'", orient)
 		}
 
-	case "gesture.swipe":
-		if req.Payload == nil {
-			return nil, errors.New("missing payload for gesture.swipe")
-		}
-		for _, key := range []string{"startX", "startY", "endX", "endY"} {
-			val, ok := req.Payload[key]
+		if req.Type == "gesture.touch" {
+			xVal, hasX := req.Payload["x"]
+			yVal, hasY := req.Payload["y"]
+			if !hasX || !hasY {
+				return nil, errors.New("missing x or y coordinate in gesture.touch payload")
+			}
+			xNum, isXNum := parseNumber(xVal)
+			yNum, isYNum := parseNumber(yVal)
+			if !isXNum || xNum < 0 || xNum > 1 {
+				return nil, errors.New("normalized coordinate x must be a finite number between 0.0 and 1.0")
+			}
+			if !isYNum || yNum < 0 || yNum > 1 {
+				return nil, errors.New("normalized coordinate y must be a finite number between 0.0 and 1.0")
+			}
+		} else {
+			for _, key := range []string{"startX", "startY", "endX", "endY"} {
+				val, ok := req.Payload[key]
+				if !ok {
+					return nil, fmt.Errorf("missing required %s in gesture.swipe payload", key)
+				}
+				numVal, isNum := parseNumber(val)
+				if !isNum || numVal < 0 || numVal > 1 {
+					return nil, fmt.Errorf("normalized coordinate %s must be a finite number between 0.0 and 1.0", key)
+				}
+			}
+			durationVal, ok := req.Payload["durationMs"]
 			if !ok {
-				return nil, fmt.Errorf("missing required %s in gesture.swipe payload", key)
+				return nil, errors.New("missing required durationMs in gesture.swipe payload")
 			}
-			numVal, isNum := parseNumber(val)
-			if !isNum || numVal < 0 || numVal > 1 {
-				return nil, fmt.Errorf("normalized coordinate %s must be a number between 0.0 and 1.0", key)
+			durNum, isDurNum := parseNumber(durationVal)
+			if !isDurNum || durNum < 50 || durNum > 5000 {
+				return nil, errors.New("durationMs must be a number between 50ms and 5000ms")
 			}
-		}
-		durationVal, ok := req.Payload["durationMs"]
-		if !ok {
-			return nil, errors.New("missing required durationMs in gesture.swipe payload")
-		}
-		durNum, isDurNum := parseNumber(durationVal)
-		if !isDurNum || durNum < 50 || durNum > 5000 {
-			return nil, errors.New("durationMs must be a number between 50ms and 5000ms")
 		}
 
 	case "input.text":
@@ -112,7 +122,36 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, fmt.Errorf("%w: command type %s not allowed", domain.ErrUnauthorizedCommand, req.Type)
 	}
 
-	// 3. Active Lease & Fencing Token Validation
+	// 3. Check Idempotency Key against existing commands
+	var existingCmdID, existingDeviceID, existingType string
+	var existingPayloadBytes []byte
+	var existingCreatedAt time.Time
+	idempErr := s.pool.QueryRow(ctx, `
+		SELECT command_id, device_id, command_type, payload, created_at
+		FROM commands
+		WHERE organization_id = $1 AND actor_id = $2 AND idempotency_key = $3
+	`, orgID, userID, req.IdempotencyKey).Scan(&existingCmdID, &existingDeviceID, &existingType, &existingPayloadBytes, &existingCreatedAt)
+
+	if idempErr == nil {
+		// Existing command found for this idempotency key
+		if existingDeviceID == req.DeviceID && existingType == req.Type && comparePayloadFingerprint(existingPayloadBytes, req.Payload) {
+			var unmarshaledPayload map[string]interface{}
+			_ = json.Unmarshal(existingPayloadBytes, &unmarshaledPayload)
+			return &domain.DeviceCommand{
+				CommandID:      existingCmdID,
+				DeviceID:       existingDeviceID,
+				OrganizationID: orgID,
+				ActorID:        userID,
+				CommandType:    existingType,
+				Payload:        unmarshaledPayload,
+				Status:         "pending",
+				CreatedAt:      existingCreatedAt,
+			}, nil
+		}
+		return nil, domain.ErrIdempotencyConflict
+	}
+
+	// 4. Active Lease & Fencing Token Validation
 	lease, err := s.leaseService.GetActiveLease(ctx, orgID, req.DeviceID)
 	if err != nil {
 		return nil, err
@@ -126,14 +165,16 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, domain.ErrLeaseNotFound
 	}
 
-	// 4. Construct Command Record & Payload
+	// 5. Construct Command Record & Injected Payload
 	cmdID := fmt.Sprintf("cmd_%s", uuid.New().String()[:12])
 	now := time.Now().UTC()
 	expiresAt := now.Add(15 * time.Second)
 
-	payloadMap := req.Payload
-	if payloadMap == nil {
-		payloadMap = make(map[string]interface{})
+	payloadMap := make(map[string]interface{})
+	if req.Payload != nil {
+		for k, v := range req.Payload {
+			payloadMap[k] = v
+		}
 	}
 	payloadMap["control_lease_id"] = lease.ControlLeaseID
 	payloadMap["fencing_token"] = lease.FencingToken
@@ -143,52 +184,44 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 		return nil, fmt.Errorf("failed to marshal command payload: %w", err)
 	}
 
-	// 5. Single PostgreSQL Transaction (commands + command_events + command_outbox)
+	// 6. Execute Single PostgreSQL Transaction (commands + command_events + command_outbox)
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin command dispatch transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// Insert into commands table (Includes idempotency_key NOT NULL)
+	// Insert into commands table
 	insertCmdSQL := `
 		INSERT INTO commands (
 			command_id, device_id, organization_id, actor_id,
 			command_type, payload, status, idempotency_key, created_at, expires_at
 		) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9)
 	`
-	idempotencyKey := req.IdempotencyKey
-	if idempotencyKey == "" {
-		idempotencyKey = fmt.Sprintf("idemp_%s", uuid.New().String()[:12])
-	}
-
-	_, err = tx.Exec(ctx, insertCmdSQL, cmdID, req.DeviceID, orgID, userID, req.Type, payloadBytes, idempotencyKey, now, expiresAt)
+	_, err = tx.Exec(ctx, insertCmdSQL, cmdID, req.DeviceID, orgID, userID, req.Type, payloadBytes, req.IdempotencyKey, now, expiresAt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert command record: %w", err)
 	}
 
-	// Insert into command_events audit table
+	// Insert into command_events table (BIGSERIAL event_id auto-generated)
 	insertEventSQL := `
 		INSERT INTO command_events (
-			event_id, command_id, device_id, organization_id,
-			status, event_type, payload, created_at
-		) VALUES ($1, $2, $3, $4, 'pending', 'created', $5, $6)
+			command_id, status, payload, created_at
+		) VALUES ($1, 'pending', $2, $3)
 	`
-	eventID := fmt.Sprintf("evt_%s", uuid.New().String()[:12])
-	_, err = tx.Exec(ctx, insertEventSQL, eventID, cmdID, req.DeviceID, orgID, payloadBytes, now)
+	_, err = tx.Exec(ctx, insertEventSQL, cmdID, payloadBytes, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert command event record: %w", err)
 	}
 
-	// Insert into command_outbox table for asynchronous worker dispatch to agent
+	// Insert into command_outbox table (BIGSERIAL outbox_id auto-generated)
 	insertOutboxSQL := `
 		INSERT INTO command_outbox (
-			outbox_id, command_id, device_id, organization_id,
-			command_type, payload, status, created_at, scheduled_at
-		) VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+			command_id, organization_id, device_id, event_type,
+			payload, status, created_at
+		) VALUES ($1, $2, $3, 'command.dispatch', $4, 'pending', $5)
 	`
-	outboxID := fmt.Sprintf("out_%s", uuid.New().String()[:12])
-	_, err = tx.Exec(ctx, insertOutboxSQL, outboxID, cmdID, req.DeviceID, orgID, req.Type, payloadBytes, now, now)
+	_, err = tx.Exec(ctx, insertOutboxSQL, cmdID, orgID, req.DeviceID, payloadBytes, now)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert command outbox record: %w", err)
 	}
@@ -196,15 +229,6 @@ func (s *CommandService) DispatchCommand(ctx context.Context, orgID, userID stri
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit command dispatch transaction: %w", err)
 	}
-
-	slog.Info("Dispatched command successfully to transactional outbox",
-		"command_id", cmdID,
-		"device_id", req.DeviceID,
-		"org_id", orgID,
-		"type", req.Type,
-		"lease_id", lease.ControlLeaseID,
-		"fencing_token", lease.FencingToken,
-	)
 
 	return &domain.DeviceCommand{
 		CommandID:      cmdID,
@@ -231,4 +255,35 @@ func parseNumber(val interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func comparePayloadFingerprint(existingPayloadBytes []byte, reqPayload map[string]interface{}) bool {
+	var existingMap map[string]interface{}
+	if err := json.Unmarshal(existingPayloadBytes, &existingMap); err != nil {
+		return false
+	}
+
+	cleanExisting := cleanUserPayload(existingMap)
+	cleanReq := cleanUserPayload(reqPayload)
+
+	return reflect.DeepEqual(cleanExisting, cleanReq)
+}
+
+func cleanUserPayload(input map[string]interface{}) map[string]interface{} {
+	out := make(map[string]interface{})
+	if input == nil {
+		return out
+	}
+	for k, v := range input {
+		if k == "control_lease_id" || k == "fencing_token" {
+			continue
+		}
+		// Normalize numbers to float64 for JSON unmarshal compatibility
+		if num, ok := parseNumber(v); ok {
+			out[k] = num
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }

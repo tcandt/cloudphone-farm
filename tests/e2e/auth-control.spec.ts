@@ -56,10 +56,20 @@ const mockViewerSession = {
 };
 
 test.describe('Phone Control Platform — E2E Browser & Integration Contract Suite', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/login');
+    await page.evaluate(() => {
+      localStorage.setItem('pcp_api_mode', 'mock');
+    });
+  });
+
   // Test 1: Unauthenticated Redirect
   test('1. Redirects to /login when accessing protected /app without session', async ({ page }) => {
     await page.goto('/login');
-    await page.evaluate(() => localStorage.setItem('pcp_auth_session', 'null'));
+    await page.evaluate(() => {
+      localStorage.setItem('pcp_auth_session', 'null');
+      localStorage.setItem('pcp_api_mode', 'mock');
+    });
 
     await page.goto('/app');
     await expect(page).toHaveURL(/\/login/);
@@ -68,7 +78,10 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
   // Test 2: Login Flow Navigation
   test('2. Performs login flow and navigates to Dashboard', async ({ page }) => {
     await page.goto('/login');
-    await page.evaluate(() => localStorage.setItem('pcp_auth_session', 'null'));
+    await page.evaluate(() => {
+      localStorage.setItem('pcp_auth_session', 'null');
+      localStorage.setItem('pcp_api_mode', 'mock');
+    });
 
     await page.fill('input[type="email"]', 'admin@phonecontrol.io');
     await page.fill('input[type="password"]', 'password123');
@@ -86,6 +99,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      localStorage.setItem('pcp_api_mode', 'mock');
     }, mockViewerSession);
 
     await page.goto('/app/devices/dev_s7_001');
@@ -99,6 +113,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      localStorage.setItem('pcp_api_mode', 'mock');
     }, mockOperatorSession);
 
     await page.goto('/app/devices/dev_s7_001');
@@ -116,7 +131,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
 
     // Perform canvas touch click at center of content area
     await canvas.click();
-    await expect(page.locator('text=Touch accepted at')).toBeVisible();
+    await expect(page.locator('text=Touch accepted at').first()).toBeVisible();
   });
 
   // Test 5: Command without Lease Rejection & UI Lock Verification
@@ -124,6 +139,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      localStorage.setItem('pcp_api_mode', 'mock');
     }, mockAdminSession);
 
     await page.goto('/app/devices/dev_s7_001');
@@ -147,6 +163,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      localStorage.setItem('pcp_api_mode', 'mock');
     }, mockAdminSession);
 
     await page.goto('/app/devices/non_existent_device_9999');
@@ -158,6 +175,7 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/login');
     await page.evaluate((session) => {
       localStorage.setItem('pcp_auth_session', JSON.stringify(session));
+      localStorage.setItem('pcp_api_mode', 'mock');
     }, mockAdminSession);
 
     await page.goto('/app/live-monitor');

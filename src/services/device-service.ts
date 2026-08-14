@@ -1,5 +1,6 @@
 import { DeviceEntity, ControlLease } from '../types';
 import { mockDevices } from '../data/mockData';
+import { getApiMode } from './command-service';
 
 export interface DeviceListParams {
   page?: number;
@@ -179,10 +180,29 @@ export class HttpDeviceService implements DeviceService {
   }
 }
 
-const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
-const apiMode = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_MODE
-  ? import.meta.env.VITE_API_MODE
-  : (isTestEnv || (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.DEV) ? 'mock' : 'http');
+class DynamicDeviceService implements DeviceService {
+  private httpService = new HttpDeviceService();
+  private mockService = new MockDeviceService();
 
-export const deviceService: DeviceService =
-  apiMode === 'mock' ? new MockDeviceService() : new HttpDeviceService();
+  private get activeService(): DeviceService {
+    return getApiMode() === 'mock' ? this.mockService : this.httpService;
+  }
+
+  list(params?: DeviceListParams): Promise<DeviceListResponse> {
+    return this.activeService.list(params);
+  }
+  getById(id: string): Promise<DeviceEntity | null> {
+    return this.activeService.getById(id);
+  }
+  acquireLease(deviceId: string): Promise<ControlLease> {
+    return this.activeService.acquireLease(deviceId);
+  }
+  renewLease(deviceId: string, leaseId: string): Promise<ControlLease> {
+    return this.activeService.renewLease(deviceId, leaseId);
+  }
+  releaseLease(deviceId: string, leaseId: string): Promise<void> {
+    return this.activeService.releaseLease(deviceId, leaseId);
+  }
+}
+
+export const deviceService: DeviceService = new DynamicDeviceService();

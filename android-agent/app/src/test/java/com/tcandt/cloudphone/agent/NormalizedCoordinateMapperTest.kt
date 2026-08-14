@@ -28,13 +28,34 @@ class NormalizedCoordinateMapperTest {
     }
 
     @Test
-    fun testClampingOutOfBoundsCoordinates() {
-        val pointLow = NormalizedCoordinateMapper.map(-0.5f, -0.2f, 720, 1280)
-        assertEquals(0f, pointLow.x, 0.001f)
-        assertEquals(0f, pointLow.y, 0.001f)
+    fun testLandscapeMapping() {
+        val point = NormalizedCoordinateMapper.map(0.5f, 0.5f, 1280, 720)
+        assertEquals(639.5f, point.x, 0.5f)
+        assertEquals(359.5f, point.y, 0.5f)
+    }
 
-        val pointHigh = NormalizedCoordinateMapper.map(1.5f, 2.0f, 720, 1280)
-        assertEquals(719f, pointHigh.x, 0.001f)
-        assertEquals(1279f, pointHigh.y, 0.001f)
+    @Test(expected = IllegalArgumentException::class)
+    fun testNegativeXRejected() {
+        NormalizedCoordinateMapper.map(-0.1f, 0.5f, 720, 1280)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testOverboundXRejected() {
+        NormalizedCoordinateMapper.map(1.001f, 0.5f, 720, 1280)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testNegativeYRejected() {
+        NormalizedCoordinateMapper.map(0.5f, -0.05f, 720, 1280)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testOverboundYRejected() {
+        NormalizedCoordinateMapper.map(0.5f, 1.2f, 720, 1280)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun testZeroDisplayDimensionRejected() {
+        NormalizedCoordinateMapper.map(0.5f, 0.5f, 0, 1280)
     }
 }

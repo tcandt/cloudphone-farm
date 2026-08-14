@@ -23,61 +23,64 @@ export class MockCommandService implements CommandService {
 
 export class HttpCommandService implements CommandService {
   private baseUrl = '/api/v1/commands';
-  private mockFallback = new MockCommandService();
 
   async dispatch(request: DispatchCommandRequest): Promise<DeviceCommand> {
-    try {
-      const response = await fetch(this.baseUrl, {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
-        body: JSON.stringify({
-          deviceId: request.deviceId,
-          type: request.type,
-          payload: request.payload,
-          controlLeaseId: request.controlLeaseId,
-          idempotencyKey: request.idempotencyKey,
-        }),
-      });
+    const response = await fetch(this.baseUrl, {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        deviceId: request.deviceId,
+        type: request.type,
+        payload: request.payload,
+        controlLeaseId: request.controlLeaseId,
+        idempotencyKey: request.idempotencyKey,
+      }),
+    });
 
-      if (!response.ok) {
-        // Fallback to mock command service if running without backend endpoint in test/dev
-        const isTestOrDev = typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.DEV || import.meta.env.MODE === 'test');
-        if (isTestOrDev) {
-          return await this.mockFallback.dispatch(request);
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      let errMsg = `Command execution failed (HTTP ${response.status})`;
+      try {
+        const json = JSON.parse(errText);
+        if (json.error || json.message) {
+          errMsg = json.error || json.message;
         }
-        const errText = await response.text().catch(() => '');
-        let errMsg = `Command execution failed (HTTP ${response.status})`;
-        try {
-          const json = JSON.parse(errText);
-          if (json.error || json.message) {
-            errMsg = json.error || json.message;
-          }
-        } catch {
-          if (errText) errMsg = errText;
-        }
-        throw new Error(errMsg);
+      } catch {
+        if (errText) errMsg = errText;
       }
-
-      const command: DeviceCommand = await response.json();
-      return command;
-    } catch (err) {
-      const isTestOrDev = typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.DEV || import.meta.env.MODE === 'test');
-      if (isTestOrDev) {
-        return await this.mockFallback.dispatch(request);
-      }
-      throw err;
+      throw new Error(errMsg);
     }
+
+    const command: DeviceCommand = await response.json();
+    return command;
   }
 }
 
-const isTestOrDev = typeof import.meta !== 'undefined' && import.meta.env && (import.meta.env.DEV || import.meta.env.MODE === 'test');
-const apiMode = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_MODE
-  ? import.meta.env.VITE_API_MODE
-  : (isTestOrDev ? 'mock' : 'http');
+export const getApiMode = (): 'mock' | 'http' => {
+  if (typeof window !== 'undefined') {
+    const storageMode = localStorage.getItem('pcp_api_mode');
+    if (storageMode === 'mock' || storageMode === 'http') return storageMode;
+    // @ts-expect-error window injected api mode override
+    if (window.__PCP_VITE_API_MODE__ === 'mock') return 'mock';
+  }
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_MODE) {
+    return import.meta.env.VITE_API_MODE === 'mock' ? 'mock' : 'http';
+  }
+  return 'http';
+};
 
-export const commandService: CommandService =
-  apiMode === 'mock' ? new MockCommandService() : new HttpCommandService();
+class DynamicCommandService implements CommandService {
+  private httpService = new HttpCommandService();
+  private mockService = new MockCommandService();
+
+  async dispatch(request: DispatchCommandRequest): Promise<DeviceCommand> {
+    const service = getApiMode() === 'mock' ? this.mockService : this.httpService;
+    return await service.dispatch(request);
+  }
+}
+
+export const commandService: CommandService = new DynamicCommandService();

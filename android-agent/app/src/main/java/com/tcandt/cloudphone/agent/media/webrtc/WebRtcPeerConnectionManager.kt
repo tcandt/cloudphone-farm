@@ -2,7 +2,10 @@ package com.tcandt.cloudphone.agent.media.webrtc
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.display.DisplayManager
 import android.util.Log
+import com.tcandt.cloudphone.agent.control.DisplayGeometryProvider
+import com.tcandt.cloudphone.agent.control.DisplayOrientation
 import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
 import org.json.JSONArray
 import org.json.JSONObject
@@ -37,6 +40,13 @@ class WebRtcPeerConnectionManager(
     private var activeSessionId: String = ""
     private var isRemoteDescriptionSet: Boolean = false
     private val pendingIceCandidates = mutableListOf<IceCandidate>()
+
+    // Display Orientation Listener state
+    private var displayManager: DisplayManager? = null
+    private var displayListener: DisplayManager.DisplayListener? = null
+    private var lastOrientation: DisplayOrientation? = null
+    private var lastCaptureWidth: Int = 0
+    private var lastCaptureHeight: Int = 0
 
     companion object {
         private const val TAG = "WebRtcPeerConnection"
@@ -170,22 +180,83 @@ class WebRtcPeerConnectionManager(
             surfaceTextureHelper = SurfaceTextureHelper.create("PCP_WebRTC_Thread", rootEglBase.eglBaseContext)
             videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
 
+            val initialGeom = DisplayGeometryProvider.getGeometry(context)
+            lastOrientation = initialGeom.orientation
+            val (targetW, targetH) = if (initialGeom.orientation == DisplayOrientation.LANDSCAPE) {
+                Pair(1280, 720)
+            } else {
+                Pair(720, 1280)
+            }
+            lastCaptureWidth = targetW
+            lastCaptureHeight = targetH
+
             videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-            videoCapturer?.startCapture(720, 1280, 30)
+            videoCapturer?.startCapture(targetW, targetH, 30)
 
             videoTrack = peerConnectionFactory?.createVideoTrack("video_track_0", videoSource)
             videoTrack?.setEnabled(true)
 
             peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
-            Log.i(TAG, "Attached MediaProjection VideoTrack to WebRTC PeerConnection successfully")
+            Log.i(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH}) to WebRTC PeerConnection successfully")
+
+            // Register DisplayListener for orientation change handling
+            registerDisplayListener()
         } catch (e: Exception) {
             Log.e(TAG, "Error attaching ScreenCapturerAndroid: ${e.message}", e)
+            unregisterDisplayListener()
+        }
+    }
+
+    private fun registerDisplayListener() {
+        try {
+            displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            displayListener = object : DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) {}
+                override fun onDisplayRemoved(displayId: Int) {}
+                override fun onDisplayChanged(displayId: Int) {
+                    val currentGeom = DisplayGeometryProvider.getGeometry(context)
+                    if (currentGeom.orientation != lastOrientation) {
+                        Log.i(TAG, "Display orientation changed: $lastOrientation -> ${currentGeom.orientation}")
+                        lastOrientation = currentGeom.orientation
+                        val (newW, newH) = if (currentGeom.orientation == DisplayOrientation.LANDSCAPE) {
+                            Pair(1280, 720)
+                        } else {
+                            Pair(720, 1280)
+                        }
+                        updateCaptureFormat(newW, newH, 30)
+                    }
+                }
+            }
+            displayManager?.registerDisplayListener(displayListener, null)
+            Log.i(TAG, "Registered DisplayManager.DisplayListener for orientation changes")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register DisplayListener: ${e.message}")
+        }
+    }
+
+    private fun unregisterDisplayListener() {
+        try {
+            if (displayManager != null && displayListener != null) {
+                displayManager?.unregisterDisplayListener(displayListener)
+                Log.i(TAG, "Unregistered DisplayManager.DisplayListener cleanly")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering DisplayListener: ${e.message}")
+        } finally {
+            displayListener = null
+            displayManager = null
         }
     }
 
     fun updateCaptureFormat(width: Int, height: Int, fps: Int = 30) {
+        if (width == lastCaptureWidth && height == lastCaptureHeight) {
+            Log.d(TAG, "Ignoring duplicate changeCaptureFormat call (${width}x${height})")
+            return
+        }
         try {
             videoCapturer?.changeCaptureFormat(width, height, fps)
+            lastCaptureWidth = width
+            lastCaptureHeight = height
             Log.i(TAG, "Changed WebRTC ScreenCapturer format to ${width}x${height}@${fps}fps")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to change WebRTC capture format: ${e.message}")
@@ -265,6 +336,8 @@ class WebRtcPeerConnectionManager(
 
     fun closeSession() {
         try {
+            unregisterDisplayListener()
+
             videoCapturer?.stopCapture()
             videoCapturer?.dispose()
             videoCapturer = null

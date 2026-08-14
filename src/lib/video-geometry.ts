@@ -25,7 +25,7 @@ export interface PointerScreenPosition {
 export function computeVideoGeometry(
   videoElement: HTMLVideoElement | HTMLCanvasElement | { clientWidth?: number; clientHeight?: number; videoWidth?: number; videoHeight?: number; width?: number; height?: number },
   revision = 0
-): VideoContentGeometry {
+): VideoContentGeometry | null {
   const rawElementWidth = 'clientWidth' in videoElement && typeof videoElement.clientWidth === 'number' ? videoElement.clientWidth : 0;
   const rawElementHeight = 'clientHeight' in videoElement && typeof videoElement.clientHeight === 'number' ? videoElement.clientHeight : 0;
 
@@ -35,11 +35,16 @@ export function computeVideoGeometry(
   const attrWidth = 'width' in videoElement && typeof videoElement.width === 'number' ? videoElement.width : 0;
   const attrHeight = 'height' in videoElement && typeof videoElement.height === 'number' ? videoElement.height : 0;
 
-  const elementWidth = rawElementWidth > 0 ? rawElementWidth : (attrWidth > 0 ? attrWidth : 360);
-  const elementHeight = rawElementHeight > 0 ? rawElementHeight : (attrHeight > 0 ? attrHeight : 640);
+  const videoWidth = rawVideoWidth > 0 ? rawVideoWidth : attrWidth;
+  const videoHeight = rawVideoHeight > 0 ? rawVideoHeight : attrHeight;
 
-  const videoWidth = rawVideoWidth > 0 ? rawVideoWidth : elementWidth;
-  const videoHeight = rawVideoHeight > 0 ? rawVideoHeight : elementHeight;
+  // Fail closed if intrinsic video dimensions are not available yet (zero width or height)
+  if (videoWidth <= 0 || videoHeight <= 0) {
+    return null;
+  }
+
+  const elementWidth = rawElementWidth > 0 ? rawElementWidth : videoWidth;
+  const elementHeight = rawElementHeight > 0 ? rawElementHeight : videoHeight;
 
   const scale = Math.min(elementWidth / videoWidth, elementHeight / videoHeight);
   const contentWidth = videoWidth * scale;

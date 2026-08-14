@@ -97,6 +97,13 @@ class CommandProcessor(
         // 3. Persistent SQLite Deduplication & Crash Window Protection Check
         val existingRecord = journal.getRecord(commandId)
         if (existingRecord != null) {
+            if (existingRecord.status == "executing") {
+                val errStr = "Interrupted during process restart"
+                Log.w(TAG, "Command $commandId was interrupted while executing during process restart. Marking failed.")
+                journal.saveRecord(commandId, fencingToken, "failed", errStr)
+                statusPublisher(commandId, "failed", errStr, 3)
+                return
+            }
             if (existingRecord.status == "succeeded" || existingRecord.status == "failed" || existingRecord.status == "expired") {
                 Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
                 statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
@@ -113,10 +120,22 @@ class CommandProcessor(
             return
         }
 
-        // 5. Sequenced execution reporting: Sequence 1 -> ACK
+        // 5. Validate Coordinate Space and Orientation for Gesture Commands
+        if (commandType == "gesture.touch" || commandType == "gesture.swipe") {
+            val space = payload.optString("coordinateSpace", "")
+            if (space != "normalized_display_v1") {
+                val errStr = "Invalid coordinateSpace '$space': required 'normalized_display_v1'"
+                Log.w(TAG, "Rejecting command $commandId: $errStr")
+                journal.saveRecord(commandId, fencingToken, "failed", errStr)
+                statusPublisher(commandId, "failed", errStr, 3)
+                return
+            }
+        }
+
+        // 6. Sequenced execution reporting: Sequence 1 -> ACK
         statusPublisher(commandId, "ack", null, 1)
 
-        // 6. Pre-execution Durable Crash Window Protection: Record 'executing' in SQLite BEFORE physical touch
+        // 7. Pre-execution Durable Crash Window Protection: Record 'executing' in SQLite BEFORE physical touch
         journal.saveRecord(commandId, fencingToken, "executing", null)
         statusPublisher(commandId, "executing", null, 2)
 
@@ -145,13 +164,22 @@ class CommandProcessor(
             }
         }
 
-        // 7. Serial Physical Gesture Execution using CompletableDeferred for async callbacks
+        // 8. Serial Physical Gesture Execution using CompletableDeferred for async callbacks
         when (commandType) {
             "gesture.touch" -> {
                 val normX = payload.optDouble("x", 0.0).toFloat()
                 val normY = payload.optDouble("y", 0.0).toFloat()
 
-                val point = NormalizedCoordinateMapper.map(normX, normY, geometry.widthPx, geometry.heightPx)
+                val point = try {
+                    NormalizedCoordinateMapper.map(normX, normY, geometry.widthPx, geometry.heightPx)
+                } catch (e: IllegalArgumentException) {
+                    val errStr = e.message ?: "Invalid touch coordinates"
+                    Log.e(TAG, errStr)
+                    journal.saveRecord(commandId, fencingToken, "failed", errStr)
+                    statusPublisher(commandId, "failed", errStr, 3)
+                    return
+                }
+
                 Log.d(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
 
                 val deferred = CompletableDeferred<Boolean>()
@@ -171,8 +199,18 @@ class CommandProcessor(
                 val endNormY = payload.optDouble("endY", 0.0).toFloat()
                 val durationMs = payload.optLong("durationMs", 300L)
 
-                val startPt = NormalizedCoordinateMapper.map(startNormX, startNormY, geometry.widthPx, geometry.heightPx)
-                val endPt = NormalizedCoordinateMapper.map(endNormX, endNormY, geometry.widthPx, geometry.heightPx)
+                val (startPt, endPt) = try {
+                    Pair(
+                        NormalizedCoordinateMapper.map(startNormX, startNormY, geometry.widthPx, geometry.heightPx),
+                        NormalizedCoordinateMapper.map(endNormX, endNormY, geometry.widthPx, geometry.heightPx)
+                    )
+                } catch (e: IllegalArgumentException) {
+                    val errStr = e.message ?: "Invalid swipe coordinates"
+                    Log.e(TAG, errStr)
+                    journal.saveRecord(commandId, fencingToken, "failed", errStr)
+                    statusPublisher(commandId, "failed", errStr, 3)
+                    return
+                }
 
                 Log.d(TAG, "Swipe normalized ($startNormX, $startNormY)->($endNormX, $endNormY) -> Physical Px (${startPt.x}, ${startPt.y})->(${endPt.x}, ${endPt.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
 
