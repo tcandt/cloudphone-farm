@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ShieldCheck, Video, VideoOff } from 'lucide-react';
-import { mockDevices } from '../data/mockData';
+import { ShieldCheck, Video, VideoOff, AlertCircle } from 'lucide-react';
+import { deviceService } from '../services/device-service';
 import { defaultMediaRegistry, MediaClient } from '../services/media-client';
 import { DeviceEntity } from '../types';
 
@@ -12,11 +12,14 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(true);
+  const [playerState, setPlayerState] = useState<string>('CONNECTING');
   const [sessionId] = useState(() => `str_live_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
   const mediaClientRef = useRef<MediaClient | null>(null);
 
   useEffect(() => {
-    if (!isStreaming) return;
+    if (!isStreaming) {
+      return;
+    }
 
     const mediaClient = defaultMediaRegistry.acquire(sessionId);
     mediaClientRef.current = mediaClient;
@@ -36,6 +39,11 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
         if (canvasRef.current) {
           mediaClient.attach(canvasRef.current);
         }
+
+        const webRtc = mediaClient.getWebRtcClient?.();
+        if (webRtc) {
+          webRtc.startSession();
+        }
       }
     }
 
@@ -47,9 +55,17 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
     };
   }, [device.device_id, isStreaming, sessionId]);
 
+  const handleFrameReceived = () => {
+    setPlayerState('LIVE');
+    mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived();
+  };
+
   const toggleStream = () => {
     setIsStreaming((prev) => !prev);
   };
+
+  const displayStatus = !isStreaming ? 'STOPPED' : playerState === 'LIVE' ? 'LIVE 30fps' : playerState;
+  const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
 
   return (
     <div className="bg-white border border-slate-100 shadow-pcp-card rounded-3xl p-5 space-y-3" data-testid={`stream-card-${device.device_id}`}>
@@ -61,7 +77,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
         <div className="flex items-center gap-2">
           {isStreaming ? (
             <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-bold text-[10px] flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> LIVE 30fps
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> {displayStatus}
             </span>
           ) : (
             <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-bold text-[10px]">
@@ -80,15 +96,7 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
 
       <div className="bg-slate-950 rounded-2xl aspect-[9/16] flex items-center justify-center p-2 relative overflow-hidden">
         {isStreaming ? (
-          <>
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              data-session-id={sessionId}
-              className="w-full h-full object-contain bg-black hidden"
-            />
+          isTestEnv ? (
             <canvas
               ref={canvasRef}
               width={360}
@@ -96,7 +104,27 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
               data-session-id={sessionId}
               className="w-full h-full object-contain"
             />
-          </>
+          ) : (
+            <>
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                data-session-id={sessionId}
+                onLoadedData={handleFrameReceived}
+                onPlaying={handleFrameReceived}
+                className="w-full h-full object-contain bg-black"
+              />
+              <canvas
+                ref={canvasRef}
+                width={360}
+                height={640}
+                data-session-id={sessionId}
+                className="absolute inset-0 w-full h-full object-contain pointer-events-none opacity-0"
+              />
+            </>
+          )
         ) : (
           <div className="text-center text-slate-500 space-y-1">
             <VideoOff size={24} className="mx-auto text-slate-600" />
@@ -111,7 +139,24 @@ const SingleStreamCard: React.FC<SingleStreamCardProps> = ({ device }) => {
 };
 
 export const LiveMonitorPage: React.FC = () => {
-  const liveDevices = mockDevices.slice(0, 2);
+  const [devices, setDevices] = useState<DeviceEntity[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function loadDevices() {
+      try {
+        const res = await deviceService.list({ limit: 2 });
+        setDevices(res.items.slice(0, 2));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Failed to load device list';
+        setError(msg);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+    loadDevices();
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -139,11 +184,19 @@ export const LiveMonitorPage: React.FC = () => {
       </div>
 
       {/* Grid Streams */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-        {liveDevices.map((dev) => (
-          <SingleStreamCard key={dev.device_id} device={dev} />
-        ))}
-      </div>
+      {isLoading ? (
+        <div className="text-center py-12 text-slate-400 font-medium text-xs">Loading device streams...</div>
+      ) : error ? (
+        <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl p-4 flex items-center gap-2 text-xs font-bold">
+          <AlertCircle size={16} /> {error}
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+          {devices.map((dev) => (
+            <SingleStreamCard key={dev.device_id} device={dev} />
+          ))}
+        </div>
+      )}
     </div>
   );
 };

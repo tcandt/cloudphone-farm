@@ -14,7 +14,7 @@ export interface MediaClient {
 export class ProductionWebRtcMediaClient implements MediaClient {
   public sessionId: string;
   private webRtcClient: WebRtcMediaClient | null = null;
-  private currentElement: HTMLVideoElement | HTMLCanvasElement | null = null;
+  private videoElement: HTMLVideoElement | null = null;
   private profile: StreamProfile = {
     resolution: '720p',
     fps: 30,
@@ -34,9 +34,9 @@ export class ProductionWebRtcMediaClient implements MediaClient {
       this.webRtcClient = new WebRtcMediaClient({
         deviceId,
         onStreamReady: (stream) => {
-          if (this.currentElement && this.currentElement instanceof HTMLVideoElement) {
-            this.currentElement.srcObject = stream;
-            this.currentElement.play().catch(() => {});
+          if (this.videoElement) {
+            this.videoElement.srcObject = stream;
+            this.videoElement.play().catch(() => {});
           }
         },
       });
@@ -58,12 +58,14 @@ export class ProductionWebRtcMediaClient implements MediaClient {
   }
 
   attach(element: HTMLCanvasElement | HTMLVideoElement): void {
-    this.currentElement = element;
-    if (element instanceof HTMLVideoElement && this.webRtcClient) {
-      const stream = this.webRtcClient.getMediaStream();
-      if (stream) {
-        element.srcObject = stream;
-        element.play().catch(() => {});
+    if (element instanceof HTMLVideoElement) {
+      this.videoElement = element;
+      if (this.webRtcClient) {
+        const stream = this.webRtcClient.getMediaStream();
+        if (stream) {
+          element.srcObject = stream;
+          element.play().catch(() => {});
+        }
       }
     }
   }
@@ -77,14 +79,14 @@ export class ProductionWebRtcMediaClient implements MediaClient {
       this.webRtcClient.close();
       this.webRtcClient = null;
     }
-    if (this.currentElement && this.currentElement instanceof HTMLVideoElement) {
-      this.currentElement.srcObject = null;
+    if (this.videoElement) {
+      this.videoElement.srcObject = null;
+      this.videoElement = null;
     }
-    this.currentElement = null;
   }
 
   simulateTouch(): void {
-    // Touch gestures dispatched via Command API
+    // Interactive touches sent via Command Engine / WebSocket
   }
 
   getWebRtcClient(): WebRtcMediaClient | null {

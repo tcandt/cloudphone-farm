@@ -276,6 +276,8 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 playsInline
                 muted
                 onClick={handleVideoClick}
+                onLoadedData={() => mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived()}
+                onPlaying={() => mediaClientRef.current?.getWebRtcClient?.()?.notifyVideoFrameReceived()}
                 className="w-full h-full cursor-crosshair object-contain bg-black"
               />
               <canvas
