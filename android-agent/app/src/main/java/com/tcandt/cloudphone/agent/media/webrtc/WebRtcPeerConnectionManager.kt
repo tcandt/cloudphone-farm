@@ -3,6 +3,8 @@ package com.tcandt.cloudphone.agent.media.webrtc
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
+import org.json.JSONArray
 import org.json.JSONObject
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
@@ -61,19 +63,37 @@ class WebRtcPeerConnectionManager(
         Log.i(TAG, "Initialized Native WebRTC PeerConnectionFactory cleanly")
     }
 
-    fun startSession(sessionId: String, projectionResultData: Intent) {
+    fun startSession(sessionId: String, projectionResultData: Intent, iceServersJson: JSONArray? = null) {
         activeSessionId = sessionId
         isRemoteDescriptionSet = false
         pendingIceCandidates.clear()
 
-        val iceServers = listOf(
-            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
-            PeerConnection.IceServer.builder("turn:stun.l.google.com:19302")
-                .setUsername("pcp_guest")
-                .setPassword("pcp_pass_guest")
-                .createIceServer()
-        )
+        val iceServers = mutableListOf<PeerConnection.IceServer>()
+
+        if (iceServersJson != null && iceServersJson.length() > 0) {
+            for (i in 0 until iceServersJson.length()) {
+                val serverObj = iceServersJson.getJSONObject(i)
+                val urlsArr = serverObj.optJSONArray("urls")
+                val username = serverObj.optString("username", "")
+                val credential = serverObj.optString("credential", "")
+
+                if (urlsArr != null) {
+                    val urlList = mutableListOf<String>()
+                    for (j in 0 until urlsArr.length()) {
+                        urlList.add(urlsArr.getString(j))
+                    }
+                    val builder = PeerConnection.IceServer.builder(urlList)
+                    if (username.isNotEmpty()) builder.setUsername(username)
+                    if (credential.isNotEmpty()) builder.setPassword(credential)
+                    iceServers.add(builder.createIceServer())
+                }
+            }
+        }
+
+        if (iceServers.isEmpty()) {
+            iceServers.add(PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer())
+            iceServers.add(PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer())
+        }
 
         val rtcConfig = PeerConnection.RTCConfiguration(iceServers).apply {
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -87,6 +107,8 @@ class WebRtcPeerConnectionManager(
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
                 Log.i(TAG, "WebRTC IceConnectionState changed: $state (SessionID=$activeSessionId)")
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    ScreenCaptureManager.markConnected(activeSessionId)
+
                     val payload = JSONObject().apply {
                         put("session_id", activeSessionId)
                         put("status", "started")
@@ -131,6 +153,8 @@ class WebRtcPeerConnectionManager(
         // Attach WebRTC ScreenCapturerAndroid to VideoTrack
         attachScreenCapturer(projectionResultData)
 
+        ScreenCaptureManager.markReady(activeSessionId)
+
         // Dispatch media.session.ready to backend/web
         val readyPayload = JSONObject().apply {
             put("session_id", activeSessionId)
@@ -169,6 +193,8 @@ class WebRtcPeerConnectionManager(
             Log.e(TAG, "Cannot handleRemoteOffer: PeerConnection is null")
             return
         }
+
+        ScreenCaptureManager.markNegotiating(activeSessionId)
 
         val remoteSdp = SessionDescription(SessionDescription.Type.OFFER, offerSdpText)
         peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {

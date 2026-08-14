@@ -19,6 +19,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -43,6 +44,7 @@ class AgentWebSocketClient(
     private var generation: Long = 0
     private var heartbeatSequence: Long = 1
     private var heartbeatJob: Job? = null
+    private var pendingIceServersJson: JSONArray? = null
 
     companion object {
         private const val TAG = "AgentWebSocketClient"
@@ -59,7 +61,7 @@ class AgentWebSocketClient(
         }
 
         ScreenCaptureManager.onConsentGrantedHandler = { sessionId, projectionIntent ->
-            webRtcManager?.startSession(sessionId, projectionIntent)
+            webRtcManager?.startSession(sessionId, projectionIntent, pendingIceServersJson)
         }
 
         ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {
@@ -216,6 +218,8 @@ class AgentWebSocketClient(
         val bitrate = payload.optInt("bitrate", 2_500_000)
         val fps = payload.optInt("fps", 30)
 
+        pendingIceServersJson = payload.optJSONArray("ice_servers")
+
         Log.i(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
         ScreenCaptureManager.requestCapture(context, sessionId, width, height, bitrate, fps)
     }
@@ -224,6 +228,7 @@ class AgentWebSocketClient(
         val sessionId = payload.optString("session_id")
         Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
+        pendingIceServersJson = null
         webRtcManager?.closeSession()
         ScreenCaptureManager.stopCapture(context)
     }

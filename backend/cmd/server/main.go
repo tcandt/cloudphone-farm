@@ -96,6 +96,7 @@ func main() {
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo)
+	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
 
@@ -159,6 +160,7 @@ func main() {
 				r.Use(custommw.RequirePermission("device.read"))
 				r.Get("/devices", deviceHandler.List)
 				r.Get("/devices/{id}", deviceHandler.GetByID)
+				r.Get("/devices/{id}/media/ws", browserMediaHandler.ServeHTTP)
 			})
 
 			// Control Lease Management Routes (Require device.control.acquire permission)

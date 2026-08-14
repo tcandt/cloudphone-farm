@@ -27,6 +27,7 @@ const (
 	MessageTypePong                   WSMessageType = "pong"
 	MessageTypeError                  WSMessageType = "error"
 	MessageTypeMediaSessionStart      WSMessageType = "media.session.start"
+	MessageTypeMediaSessionReady      WSMessageType = "media.session.ready"
 	MessageTypeMediaSessionStarted    WSMessageType = "media.session.started"
 	MessageTypeMediaSessionStop       WSMessageType = "media.session.stop"
 	MessageTypeMediaSessionStopped    WSMessageType = "media.session.stopped"

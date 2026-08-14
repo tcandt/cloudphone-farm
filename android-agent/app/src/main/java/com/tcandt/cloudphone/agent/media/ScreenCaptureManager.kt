@@ -13,7 +13,9 @@ import androidx.core.app.NotificationManagerCompat
 enum class ScreenCaptureState {
     IDLE,
     CONSENT_REQUIRED,
-    STARTING,
+    READY,
+    NEGOTIATING,
+    CONNECTED,
     CAPTURING,
     STOPPING,
     FAILED
@@ -27,9 +29,6 @@ object ScreenCaptureManager {
     private var currentState: ScreenCaptureState = ScreenCaptureState.IDLE
     private var activeSessionId: String = ""
     private var sessionRequestGeneration: Long = 0L
-
-    private var projectionResultCode: Int = 0
-    private var projectionResultData: Intent? = null
 
     private var pendingWidth: Int = 720
     private var pendingHeight: Int = 1280
@@ -57,13 +56,12 @@ object ScreenCaptureManager {
         bitrate: Int = 2_500_000,
         fps: Int = 30
     ) {
-        if (currentState == ScreenCaptureState.CAPTURING && activeSessionId == sessionId) {
+        if ((currentState == ScreenCaptureState.CAPTURING || currentState == ScreenCaptureState.CONNECTED) && activeSessionId == sessionId) {
             Log.i(TAG, "Screen capture already active for SessionID=$sessionId")
             sessionListener?.onSessionStarted(sessionId)
             return
         }
 
-        // If in CONSENT_REQUIRED state for same session, retain request generation without duplicate notifications
         if (currentState == ScreenCaptureState.CONSENT_REQUIRED && activeSessionId == sessionId) {
             Log.i(TAG, "Screen capture consent prompt already pending for SessionID=$sessionId")
             return
@@ -91,15 +89,11 @@ object ScreenCaptureManager {
 
         val currentGen = sessionRequestGeneration
 
-        if (projectionResultCode == 0 || projectionResultData == null) {
-            Log.i(TAG, "MediaProjection token missing. Transitioning state IDLE -> CONSENT_REQUIRED (Gen=$currentGen)")
-            currentState = ScreenCaptureState.CONSENT_REQUIRED
+        Log.i(TAG, "Requesting MediaProjection consent. Transitioning state IDLE -> CONSENT_REQUIRED (Gen=$currentGen)")
+        currentState = ScreenCaptureState.CONSENT_REQUIRED
 
-            // Send notification for Android 10+ Background Activity Launch (BAL) compliance
-            postConsentNotification(context, currentGen)
-        } else {
-            startServiceInternal(context, currentGen)
-        }
+        // Send notification for Android 10+ Background Activity Launch (BAL) compliance
+        postConsentNotification(context, currentGen)
     }
 
     private fun postConsentNotification(context: Context, generation: Long) {
@@ -159,13 +153,15 @@ object ScreenCaptureManager {
             return
         }
 
-        Log.i(TAG, "Consent granted for Gen=$generation. Storing single-use MediaProjection token result")
-        projectionResultCode = resultCode
-        projectionResultData = resultData
+        Log.i(TAG, "Consent granted for Gen=$generation. Consuming single-use MediaProjection token immediately")
+        val intentGrant = resultData
+
+        // CONSUME IMMEDIATELY: Never store reusable permission Intent
+        clearToken()
+        currentState = ScreenCaptureState.READY
 
         // Option A Single Owner: Pass MediaProjection Intent directly to WebRTC Manager
-        currentState = ScreenCaptureState.STARTING
-        onConsentGrantedHandler?.invoke(activeSessionId, resultData)
+        onConsentGrantedHandler?.invoke(activeSessionId, intentGrant)
     }
 
     fun onConsentDenied(context: Context, generation: Long) {
@@ -180,22 +176,25 @@ object ScreenCaptureManager {
         currentState = ScreenCaptureState.IDLE
     }
 
-    private fun startServiceInternal(context: Context, generation: Long) {
-        if (generation != sessionRequestGeneration) return
-
-        currentState = ScreenCaptureState.STARTING
-        Log.i(TAG, "Transitioning state -> STARTING (SessionID=$activeSessionId, Gen=$generation)")
-
-        if (projectionResultData != null) {
-            onConsentGrantedHandler?.invoke(activeSessionId, projectionResultData!!)
+    fun markReady(sessionId: String) {
+        if (activeSessionId == sessionId) {
+            currentState = ScreenCaptureState.READY
+            Log.i(TAG, "ScreenCaptureState -> READY (SessionID=$sessionId)")
         }
     }
 
-    fun onEncoderFormatConfirmed() {
-        if (currentState == ScreenCaptureState.STARTING) {
-            currentState = ScreenCaptureState.CAPTURING
-            Log.i(TAG, "Transitioning state -> CAPTURING (AVC Format & KeyFrame output confirmed for SessionID=$activeSessionId)")
-            sessionListener?.onSessionStarted(activeSessionId)
+    fun markNegotiating(sessionId: String) {
+        if (activeSessionId == sessionId) {
+            currentState = ScreenCaptureState.NEGOTIATING
+            Log.i(TAG, "ScreenCaptureState -> NEGOTIATING (SessionID=$sessionId)")
+        }
+    }
+
+    fun markConnected(sessionId: String) {
+        if (activeSessionId == sessionId) {
+            currentState = ScreenCaptureState.CONNECTED
+            Log.i(TAG, "ScreenCaptureState -> CONNECTED (SessionID=$sessionId)")
+            sessionListener?.onSessionStarted(sessionId)
         }
     }
 
@@ -226,27 +225,14 @@ object ScreenCaptureManager {
         currentState = ScreenCaptureState.STOPPING
         Log.i(TAG, "Stopping capture session (SessionID=$activeSessionId, invalidated Gen=$sessionRequestGeneration)")
 
-        val intent = Intent(context, MediaCaptureService::class.java).apply {
-            action = MediaCaptureService.ACTION_STOP_CAPTURE
-        }
-        context.startService(intent)
-        onServiceStoppedFully(activeSessionId, "operator_requested")
-    }
-
-    fun onServiceStoppedFully(sessionId: String, reason: String) {
-        if (currentState == ScreenCaptureState.STOPPING || currentState == ScreenCaptureState.CAPTURING) {
-            Log.i(TAG, "MediaCaptureService fully released all hardware resources for SessionID=$sessionId. Confirming IDLE state.")
-            val sessId = if (sessionId.isNotEmpty()) sessionId else activeSessionId
-            clearToken()
-            currentState = ScreenCaptureState.IDLE
-            sessionListener?.onSessionStopped(sessId, reason)
-        }
+        val sessId = activeSessionId
+        clearToken()
+        currentState = ScreenCaptureState.IDLE
+        sessionListener?.onSessionStopped(sessId, "operator_requested")
     }
 
     private fun clearToken() {
-        projectionResultCode = 0
-        projectionResultData = null
         activeSessionId = ""
-        Log.d(TAG, "Cleared MediaProjection token (consumed per Android 14 targetSdk 34 rules)")
+        Log.d(TAG, "Cleared MediaProjection token context (consumed per Android 14 targetSdk 34 rules)")
     }
 }

@@ -95,7 +95,7 @@ func (c *Connection) ReadLoop(ctx context.Context, statusCallback func(payload C
 				}
 			}
 
-		case MessageTypeMediaSignalAnswer, MessageTypeMediaSignalCandidate, MessageTypeMediaSessionStarted, MessageTypeMediaSessionStopped:
+		case MessageTypeMediaSignalAnswer, MessageTypeMediaSignalCandidate, MessageTypeMediaSessionReady, MessageTypeMediaSessionStarted, MessageTypeMediaSessionStopped:
 			var payloadMap map[string]interface{}
 			if err := json.Unmarshal(env.Payload, &payloadMap); err == nil {
 				if sessionID, ok := payloadMap["session_id"].(string); ok && sessionID != "" {
