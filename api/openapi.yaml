@@ -502,9 +502,9 @@ components:
         created_at:
           type: string
 
-    EnrollmentToken:
+    EnrollmentTokenIssued:
       type: object
-      required: [token_id, organization_id, token_code, created_by, expires_at, used]
+      required: [token_id, organization_id, token_code, created_by, expires_at]
       properties:
         token_id:
           type: string
@@ -516,8 +516,26 @@ components:
           type: string
         expires_at:
           type: string
-        used:
-          type: boolean
+        bound_group_id:
+          type: string
+
+    EnrollmentTokenMetadata:
+      type: object
+      required: [token_id, organization_id, created_by, created_at, expires_at, status]
+      properties:
+        token_id:
+          type: string
+        organization_id:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+        expires_at:
+          type: string
+        status:
+          type: string
+          enum: [active, consumed, revoked, expired]
         bound_group_id:
           type: string
 

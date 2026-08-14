@@ -65,4 +65,14 @@ func TestMigrationSQLFilesValidity(t *testing.T) {
 	if !strings.Contains(upContent, "CONSTRAINT uk_org_device UNIQUE (organization_id, device_id)") {
 		t.Error("Devices table missing composite tenant unique constraint (organization_id, device_id)")
 	}
+
+	// Verify Migration 000003
+	m3SQL, err := os.ReadFile("../../../db/migrations/000003_harden_agent_identity_and_enrollment.up.sql")
+	if err != nil {
+		t.Fatalf("Failed to read 000003_harden_agent_identity_and_enrollment.up.sql: %v", err)
+	}
+	m3Content := string(m3SQL)
+	if !strings.Contains(m3Content, "public_key_fingerprint") || !strings.Contains(m3Content, "consumed_at") {
+		t.Error("Migration 000003 missing required public_key_fingerprint or consumed_at columns")
+	}
 }

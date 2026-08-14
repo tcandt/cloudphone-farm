@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	agentservice "github.com/tcandt/cloudphone-farm/backend/internal/agent"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/config"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
@@ -66,16 +67,22 @@ func main() {
 	// Repositories & Services
 	userRepo := pgrepo.NewUserRepository(pgPool)
 	sessionRepo := redisrepo.NewSessionRepository(rdb)
-	deviceRepo := pgrepo.NewDeviceRepository(pgPool, 30, 90)
+	deviceRepo := pgrepo.NewDeviceRepository(pgPool, cfg.DeviceOnlineThresholdSeconds, cfg.DeviceOfflineThresholdSeconds)
+	enrollRepo := pgrepo.NewEnrollmentRepository(pgPool)
+	presenceRepo := redisrepo.NewPresenceRepository(rdb, 30*time.Second)
 
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	deviceService := devservice.NewDeviceService(deviceRepo)
+	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
+	agentHandler := httptransport.NewAgentHandler(agentService)
+
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
+	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo)
 
 	// Create Chi router
 	r := chi.NewRouter()
@@ -93,7 +100,7 @@ func main() {
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CorsAllowedOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID"},
+		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID", "X-Agent-Fingerprint", "X-Agent-ID"},
 		ExposedHeaders:   []string{"Link", "X-Request-ID"},
 		AllowCredentials: true,
 		MaxAge:           300,
@@ -109,7 +116,16 @@ func main() {
 		r.Post("/auth/login", authHandler.Login)
 		r.Post("/auth/logout", authHandler.Logout)
 
-		// Protected Routes
+		// Public Agent Enrollment Endpoint
+		r.Post("/agents/enroll", agentHandler.EnrollAgent)
+
+		// Agent Machine Authenticated Heartbeat Endpoint
+		r.Group(func(r chi.Router) {
+			r.Use(agentAuthMiddleware.Handler)
+			r.Post("/agents/heartbeat", agentHandler.Heartbeat)
+		})
+
+		// Protected User Routes (Browser Session)
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Handler)
 			r.Use(custommw.TenantMiddleware)
@@ -121,6 +137,14 @@ func main() {
 				r.Use(custommw.RequirePermission("device.read"))
 				r.Get("/devices", deviceHandler.List)
 				r.Get("/devices/{id}", deviceHandler.GetByID)
+			})
+
+			// Enrollment Tokens Management Routes (Require agent.enroll permission)
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("agent.enroll"))
+				r.Post("/enrollment-tokens", agentHandler.CreateToken)
+				r.Get("/enrollment-tokens", agentHandler.ListTokens)
+				r.Delete("/enrollment-tokens/{id}", agentHandler.RevokeToken)
 			})
 
 			r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {

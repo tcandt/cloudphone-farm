@@ -6,14 +6,16 @@ import (
 )
 
 type Config struct {
-	AppEnv              string
-	Port                string
-	PostgresURL         string
-	RedisURL            string
-	SessionCookieSecure bool
-	SessionCookieName   string
-	SessionTTLSeconds   int
-	CorsAllowedOrigins  []string
+	AppEnv                       string
+	Port                         string
+	PostgresURL                  string
+	RedisURL                     string
+	SessionCookieSecure          bool
+	SessionCookieName            string
+	SessionTTLSeconds            int
+	DeviceOnlineThresholdSeconds int
+	DeviceOfflineThresholdSeconds int
+	CorsAllowedOrigins           []string
 }
 
 func LoadConfig() *Config {
@@ -24,15 +26,27 @@ func LoadConfig() *Config {
 	cookieSecureStr := getEnv("SESSION_COOKIE_SECURE", "false")
 	cookieSecure, _ := strconv.ParseBool(cookieSecureStr)
 
+	onlineSec, _ := strconv.Atoi(getEnv("DEVICE_ONLINE_THRESHOLD_SECONDS", "30"))
+	if onlineSec <= 0 {
+		onlineSec = 30
+	}
+
+	offlineSec, _ := strconv.Atoi(getEnv("DEVICE_OFFLINE_THRESHOLD_SECONDS", "90"))
+	if offlineSec <= 0 {
+		offlineSec = 90
+	}
+
 	return &Config{
-		AppEnv:              appEnv,
-		Port:                port,
-		PostgresURL:         postgresURL,
-		RedisURL:            redisURL,
-		SessionCookieSecure: cookieSecure,
-		SessionCookieName:   "__Host-pcp_session",
-		SessionTTLSeconds:   86400 * 7,
-		CorsAllowedOrigins:  []string{"http://localhost:3000", "http://localhost:80"},
+		AppEnv:                       appEnv,
+		Port:                         port,
+		PostgresURL:                  postgresURL,
+		RedisURL:                     redisURL,
+		SessionCookieSecure:          cookieSecure,
+		SessionCookieName:            "__Host-pcp_session",
+		SessionTTLSeconds:            86400 * 7,
+		DeviceOnlineThresholdSeconds: onlineSec,
+		DeviceOfflineThresholdSeconds: offlineSec,
+		CorsAllowedOrigins:           []string{"http://localhost:3000", "http://localhost:80"},
 	}
 }
 

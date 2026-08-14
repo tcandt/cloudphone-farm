@@ -1,13 +1,15 @@
-package crypto
+package crypto_test
 
 import (
 	"testing"
+
+	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
 func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
 	password := "Pcp_Secure_Pass_2026!#"
 
-	hash, err := HashPassword(password)
+	hash, err := crypto.HashPassword(password)
 	if err != nil {
 		t.Fatalf("HashPassword failed: %v", err)
 	}
@@ -17,7 +19,7 @@ func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
 	}
 
 	// Verify valid password
-	match, err := VerifyPassword(password, hash)
+	match, err := crypto.VerifyPassword(password, hash)
 	if err != nil {
 		t.Fatalf("VerifyPassword failed: %v", err)
 	}
@@ -26,7 +28,7 @@ func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
 	}
 
 	// Verify wrong password
-	matchWrong, err := VerifyPassword("WrongPassword123!", hash)
+	matchWrong, err := crypto.VerifyPassword("WrongPassword123!", hash)
 	if err != nil {
 		t.Fatalf("VerifyPassword error on wrong password: %v", err)
 	}
@@ -36,7 +38,7 @@ func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
 
 	// Verify malformed hash handling (must not panic!)
 	malformedHash := "$argon2id$v=19$m=65536,t=3,p=4$invalid_salt$invalid_hash"
-	matchMalformed, err := VerifyPassword(password, malformedHash)
+	matchMalformed, err := crypto.VerifyPassword(password, malformedHash)
 	if err == nil {
 		t.Errorf("Expected error on malformed hash, got nil")
 	}
@@ -46,12 +48,12 @@ func TestArgon2idPasswordHashingAndVerification(t *testing.T) {
 }
 
 func TestOpaqueTokenGenerationAndHashing(t *testing.T) {
-	token1, err := GenerateOpaqueToken()
+	token1, err := crypto.GenerateOpaqueToken()
 	if err != nil {
 		t.Fatalf("GenerateOpaqueToken failed: %v", err)
 	}
 
-	token2, err := GenerateOpaqueToken()
+	token2, err := crypto.GenerateOpaqueToken()
 	if err != nil {
 		t.Fatalf("GenerateOpaqueToken failed: %v", err)
 	}
@@ -60,9 +62,9 @@ func TestOpaqueTokenGenerationAndHashing(t *testing.T) {
 		t.Errorf("GenerateOpaqueToken produced identical tokens")
 	}
 
-	hash1 := HashToken(token1)
-	hash1Again := HashToken(token1)
-	hash2 := HashToken(token2)
+	hash1 := crypto.HashToken(token1)
+	hash1Again := crypto.HashToken(token1)
+	hash2 := crypto.HashToken(token2)
 
 	if hash1 != hash1Again {
 		t.Errorf("HashToken is not deterministic")
@@ -74,5 +76,20 @@ func TestOpaqueTokenGenerationAndHashing(t *testing.T) {
 
 	if len(hash1) != 64 {
 		t.Errorf("Expected SHA-256 hex length 64, got %d", len(hash1))
+	}
+}
+
+func TestEd25519AgentKeyPairAndFingerprint(t *testing.T) {
+	pubB64, privB64, fp, err := crypto.GenerateEd25519KeyPair()
+	if err != nil {
+		t.Fatalf("GenerateEd25519KeyPair failed: %v", err)
+	}
+
+	if pubB64 == "" || privB64 == "" || fp == "" {
+		t.Errorf("Generated keypair returned empty values")
+	}
+
+	if len(fp) != 64 {
+		t.Errorf("Expected SHA-256 fingerprint hex length 64, got %d", len(fp))
 	}
 }

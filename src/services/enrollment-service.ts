@@ -47,7 +47,8 @@ export class HttpEnrollmentService implements IEnrollmentService {
   async createToken(groupId?: string): Promise<EnrollmentToken> {
     const res = await fetch('/api/v1/enrollment-tokens', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ bound_group_id: groupId }),
     });
     if (!res.ok) throw new Error('Failed to create enrollment token');
@@ -55,24 +56,36 @@ export class HttpEnrollmentService implements IEnrollmentService {
   }
 
   async getToken(tokenId: string): Promise<EnrollmentToken | null> {
-    const res = await fetch(`/api/v1/enrollment-tokens/${tokenId}`);
+    const res = await fetch(`/api/v1/enrollment-tokens/${encodeURIComponent(tokenId)}`, {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+    });
     if (res.status === 404) return null;
     if (!res.ok) throw new Error('Failed to fetch enrollment token');
     return res.json();
   }
 
   async revokeToken(tokenId: string): Promise<void> {
-    const res = await fetch(`/api/v1/enrollment-tokens/${tokenId}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('Failed to revoke enrollment token');
+    const res = await fetch(`/api/v1/enrollment-tokens/${encodeURIComponent(tokenId)}`, {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    if (!res.ok && res.status !== 404) throw new Error('Failed to revoke enrollment token');
   }
 
   async listTokens(): Promise<EnrollmentToken[]> {
-    const res = await fetch('/api/v1/enrollment-tokens');
+    const res = await fetch('/api/v1/enrollment-tokens', {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+    });
     if (!res.ok) throw new Error('Failed to list enrollment tokens');
     return res.json();
   }
 }
 
-export const enrollmentService: IEnrollmentService = import.meta.env.DEV
-  ? new MockEnrollmentService()
-  : new HttpEnrollmentService();
+const apiMode = import.meta.env.VITE_API_MODE ?? (import.meta.env.DEV ? 'mock' : 'http');
+
+export const enrollmentService: IEnrollmentService =
+  apiMode === 'mock'
+    ? new MockEnrollmentService()
+    : new HttpEnrollmentService();
