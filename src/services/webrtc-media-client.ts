@@ -35,10 +35,18 @@ export class WebRtcMediaClient {
   private isOfferCreated = false;
   private listeners = new Set<(state: WebRtcState, error?: string, serverSessionId?: string) => void>();
 
+  private metadataResolve?: (m: ServerMediaMetadata) => void;
+  private metadataReject?: (e: Error) => void;
+  private metadataPromise: Promise<ServerMediaMetadata>;
+
   constructor(private options: WebRtcMediaClientOptions) {
     if (options.onStateChange) {
       this.listeners.add(options.onStateChange);
     }
+    this.metadataPromise = new Promise<ServerMediaMetadata>((resolve, reject) => {
+      this.metadataResolve = resolve;
+      this.metadataReject = reject;
+    });
   }
 
   public getState(): WebRtcState {
@@ -51,6 +59,18 @@ export class WebRtcMediaClient {
 
   public getServerMetadata(): ServerMediaMetadata | null {
     return this.serverMetadata;
+  }
+
+  public waitForServerMetadata(timeoutMs = 15000): Promise<ServerMediaMetadata> {
+    if (this.serverMetadata) {
+      return Promise.resolve(this.serverMetadata);
+    }
+
+    const timer = setTimeout(() => {
+      this.metadataReject?.(new Error('Timeout waiting for server media session metadata'));
+    }, timeoutMs);
+
+    return this.metadataPromise.finally(() => clearTimeout(timer));
   }
 
   public getMediaStream(): MediaStream | null {
@@ -94,17 +114,22 @@ export class WebRtcMediaClient {
 
       this.ws.onerror = (err) => {
         console.error('[WebRtcMediaClient] WebSocket signaling error:', err);
-        this.setState('FAILED', 'WebSocket signaling connection error');
+        const errorMsg = 'WebSocket signaling connection error';
+        this.metadataReject?.(new Error(errorMsg));
+        this.setState('FAILED', errorMsg);
       };
 
       this.ws.onclose = (event) => {
         console.warn(`[WebRtcMediaClient] WebSocket closed: ${event.reason} (${event.code})`);
+        const closeMsg = event.reason || 'Signaling connection closed';
+        this.metadataReject?.(new Error(closeMsg));
         if (this.state !== 'FAILED' && this.state !== 'CLOSED') {
-          this.setState('CLOSED', event.reason || 'Signaling connection closed');
+          this.setState('CLOSED', closeMsg);
         }
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'WebSocket initialization failed';
+      this.metadataReject?.(new Error(msg));
       this.setState('FAILED', msg);
     }
   }
@@ -122,6 +147,8 @@ export class WebRtcMediaClient {
           userId: (payload.user_id as string) || '',
           expiresAt: (payload.expires_at as string) || '',
         };
+        this.metadataResolve?.(this.serverMetadata);
+
         const iceServers = (payload.ice_servers as RTCIceServer[]) || [{ urls: 'stun:stun.l.google.com:19302' }];
         console.log(`[WebRtcMediaClient] Session Created: ${this.sessionId}. Metadata loaded. Initializing RTCPeerConnection.`);
 
