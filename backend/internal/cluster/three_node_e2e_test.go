@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -56,7 +57,23 @@ func performAgentHandshake(conn *websocket.Conn, privKey ed25519.PrivateKey) err
 	respEnvBytes, _ := json.Marshal(respEnv)
 
 	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	return conn.WriteMessage(websocket.TextMessage, respEnvBytes)
+	if err := conn.WriteMessage(websocket.TextMessage, respEnvBytes); err != nil {
+		return err
+	}
+
+	// Read connection.ready envelope
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, readyData, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+
+	var readyEnv agentws.WSEnvelope
+	if err := json.Unmarshal(readyData, &readyEnv); err != nil || readyEnv.Type != agentws.MessageTypeConnectionReady {
+		return fmt.Errorf("expected connection.ready envelope, got: %s", string(readyData))
+	}
+
+	return nil
 }
 
 func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
