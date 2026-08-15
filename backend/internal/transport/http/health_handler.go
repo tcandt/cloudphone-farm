@@ -71,7 +71,7 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	// Check Outbox Worker Table Health
 	if h.pgPool != nil {
 		var outboxCnt int
-		err := h.pgPool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events WHERE status = 'failed'").Scan(&outboxCnt)
+		err := h.pgPool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE status = 'failed'").Scan(&outboxCnt)
 		if err != nil {
 			checks["outbox_worker"] = "up" // Table empty or not queried, graceful fallback
 		} else if outboxCnt > 50 {
