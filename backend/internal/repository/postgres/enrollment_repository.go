@@ -274,7 +274,7 @@ func (r *EnrollmentRepository) GetAgentByID(ctx context.Context, agentID string)
 	}
 
 	query := `
-		SELECT agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, status, revoked_at
+		SELECT agent_id, organization_id, device_id, public_key, COALESCE(public_key_fingerprint, ''), apk_version, status, revoked_at
 		FROM device_agents
 		WHERE agent_id = $1
 	`
@@ -303,7 +303,7 @@ func (r *EnrollmentRepository) GetAgentByFingerprint(ctx context.Context, finger
 	}
 
 	query := `
-		SELECT agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, status, revoked_at
+		SELECT agent_id, organization_id, device_id, public_key, COALESCE(public_key_fingerprint, ''), apk_version, status, revoked_at
 		FROM device_agents
 		WHERE public_key_fingerprint = $1
 	`

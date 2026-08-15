@@ -25,6 +25,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
 type LoadTestReport struct {
@@ -159,11 +160,12 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 		}
 
 		// Seed Agent entity in database
+		fp := crypto.ComputePublicKeyFingerprint(pubKey)
 		_, err = pool.Exec(ctx, `
-			INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, apk_version, protocol_version, status)
-			VALUES ($1, $2, $3, $4, '1.0.0', '1.0', 'active')
-			ON CONFLICT (agent_id) DO UPDATE SET public_key = $4;
-		`, agentID, orgID, deviceID, []byte(pubKey))
+			INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status, credential_version)
+			VALUES ($1, $2, $3, $4, $5, '1.0.0', '1.0', 'active', 1)
+			ON CONFLICT (agent_id) DO UPDATE SET public_key = $4, public_key_fingerprint = $5;
+		`, agentID, orgID, deviceID, []byte(pubKey), fp)
 		if err != nil {
 			slog.Error("Failed to seed device agent", "agent_id", agentID, "error", err)
 		}

@@ -23,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
 type E2ESmokeConfig struct {
@@ -263,35 +264,56 @@ func seedE2EData(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceI
 	}
 	defer pool.Close()
 
-	_, _ = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'Dev Org', 'dev-org-01')
 		ON CONFLICT (organization_id) DO NOTHING;
 	`, orgID)
+	if err != nil {
+		slog.Error("Failed to seed organization in e2esmoke", "error", err)
+		os.Exit(1)
+	}
 
-	_, _ = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		INSERT INTO users (user_id, email, password_hash, display_name) VALUES ($1, 'e2e@dev.local', 'hash', 'E2E User')
 		ON CONFLICT (user_id) DO NOTHING;
 	`, userID)
+	if err != nil {
+		slog.Error("Failed to seed user in e2esmoke", "error", err)
+		os.Exit(1)
+	}
 
-	_, _ = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status)
 		VALUES ($1, $2, 'E2E Device', 'SN_E2E_01', 'E2EModel', 'Android 14', 'online')
 		ON CONFLICT (device_id) DO UPDATE SET status = 'online', updated_at = NOW();
 	`, deviceID, orgID)
+	if err != nil {
+		slog.Error("Failed to seed device in e2esmoke", "error", err)
+		os.Exit(1)
+	}
 
 	expiresAt := time.Now().Add(1 * time.Hour)
-	_, _ = pool.Exec(ctx, `
+	_, err = pool.Exec(ctx, `
 		INSERT INTO control_leases (control_lease_id, organization_id, user_id, device_id, expires_at, fencing_token)
 		VALUES ($1, $2, $3, $4, $5, 1)
 		ON CONFLICT (control_lease_id) DO UPDATE SET expires_at = $5;
 	`, leaseID, orgID, userID, deviceID, expiresAt)
+	if err != nil {
+		slog.Error("Failed to seed control lease in e2esmoke", "error", err)
+		os.Exit(1)
+	}
 
 	// Seed Agent cryptographic identity in device_agents table
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, apk_version, protocol_version, status)
-		VALUES ($1, $2, $3, $4, '1.0.0', '1.0', 'active')
-		ON CONFLICT (agent_id) DO UPDATE SET public_key = $4;
-	`, agentID, orgID, deviceID, []byte(pubKey))
+	fp := crypto.ComputePublicKeyFingerprint(pubKey)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status, credential_version)
+		VALUES ($1, $2, $3, $4, $5, '1.0.0', '1.0', 'active', 1)
+		ON CONFLICT (agent_id) DO UPDATE SET public_key = $4, public_key_fingerprint = $5;
+	`, agentID, orgID, deviceID, []byte(pubKey), fp)
+	if err != nil {
+		slog.Error("Failed to seed device_agents in e2esmoke", "error", err)
+		os.Exit(1)
+	}
 
 	// Seed Redis entities (Control Lease & Real Browser Session Token)
 	if cfg.RedisURL != "" {
