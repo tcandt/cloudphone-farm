@@ -82,6 +82,10 @@ func LoadConfig() *Config {
 }
 
 func ValidateProductionConfig(cfg *Config) error {
+	if os.Getenv("E2E_AUTH_BYPASS") == "true" && strings.ToLower(cfg.AppEnv) != "test" {
+		return errors.New("security boot failed: E2E_AUTH_BYPASS=true is strictly forbidden outside of APP_ENV=test")
+	}
+
 	if strings.ToLower(cfg.AppEnv) != "production" {
 		return nil // Non-production environments allow default dev settings
 	}

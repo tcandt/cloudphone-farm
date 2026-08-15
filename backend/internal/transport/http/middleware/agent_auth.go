@@ -11,12 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 )
 
@@ -38,34 +36,12 @@ func NewAgentAuthMiddleware(enrollRepo *pgrepo.EnrollmentRepository, rdb *redis.
 
 func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		allowTestBypass := os.Getenv("APP_ENV") == "test" &&
-			os.Getenv("E2E_AUTH_BYPASS") == "true" &&
-			os.Getenv("APP_ENV") != "production"
-
 		agentID := r.Header.Get("X-Agent-ID")
 		timestampStr := r.Header.Get("X-Agent-Timestamp")
 		nonce := r.Header.Get("X-Agent-Nonce")
 		signatureB64 := r.Header.Get("X-Agent-Signature")
 
 		if agentID == "" || timestampStr == "" || nonce == "" || signatureB64 == "" {
-			if allowTestBypass {
-				if agentID == "" {
-					agentID = "agent_e2e_01"
-				}
-				deviceID := r.URL.Query().Get("device_id")
-				if deviceID == "" {
-					deviceID = "dev_e2e_01"
-				}
-				agent := &domain.DeviceAgent{
-					AgentID:        agentID,
-					OrganizationID: "org_dev_01",
-					DeviceID:       deviceID,
-				}
-				ctx := context.WithValue(r.Context(), AgentContextKey, agent)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{

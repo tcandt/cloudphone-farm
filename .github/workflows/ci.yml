@@ -147,20 +147,24 @@ jobs:
           DB_NAME: phone_farm
         run: |
           go test -race -v ./internal/cluster/... ./internal/repository/postgres/... ./internal/repository/redis/... ./internal/telemetry/... ./internal/transport/http/middleware/... ./internal/transport/ws/...
-          go build -o /tmp/migrate ./cmd/migrate
+          
+          # Apply production database migrations in lexical order with ON_ERROR_STOP=1
+          for f in db/migrations/*.up.sql; do
+            echo "Applying production migration $f"
+            PGPASSWORD=pcp_password psql -h localhost -U pcp -d phone_farm -v ON_ERROR_STOP=1 -f "$f"
+          done
+
           go build -o /tmp/server ./cmd/server
           go build -o /tmp/e2esmoke ./cmd/e2esmoke
           go build -o /tmp/loadharness ./cmd/loadharness
 
-          /tmp/migrate
-
-          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          APP_ENV=test NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_A=$!
 
-          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-b PORT=8082 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          APP_ENV=test NODE_ID=node-b PORT=8082 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_B=$!
 
-          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-c PORT=8083 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          APP_ENV=test NODE_ID=node-c PORT=8083 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_C=$!
 
           sleep 3
@@ -169,12 +173,7 @@ jobs:
           curl -f http://localhost:8082/health/live
           curl -f http://localhost:8083/health/live
 
-          /tmp/e2esmoke -stage=phase1 -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083
-
-          kill $PID_A
-          sleep 1
-
-          /tmp/e2esmoke -stage=phase2 -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083
+          /tmp/e2esmoke -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083 -pid-a=$PID_A
 
           /tmp/loadharness -target-url http://localhost:8083 -concurrency 10 -duration 3s
 

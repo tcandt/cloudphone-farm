@@ -3,6 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,11 +16,13 @@ import (
 	"os"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -41,14 +48,23 @@ type LoadTestReport struct {
 	Status          string  `json:"status"`
 }
 
-func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int) {
+type SyntheticAgentWorker struct {
+	AgentID   string
+	DeviceID  string
+	PubKey    ed25519.PublicKey
+	PrivKey   ed25519.PrivateKey
+	Conn      *websocket.Conn
+	stopChan  chan struct{}
+}
+
+func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbURL, redisURL, sessionToken string, count int) ([]*SyntheticAgentWorker, func()) {
 	if dbURL == "" {
-		return
+		return nil, func() {}
 	}
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
 		slog.Error("Failed to connect pgxpool in loadharness", "error", err)
-		return
+		return nil, func() {}
 	}
 	defer pool.Close()
 
@@ -57,8 +73,8 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 
 	// 1. Seed Organization & User
 	_, err = pool.Exec(ctx, `
-		INSERT INTO organizations (organization_id, name, slug, created_at, updated_at)
-		VALUES ($1, 'Dev Org', 'dev-org-01', NOW(), NOW())
+		INSERT INTO organizations (organization_id, name, slug)
+		VALUES ($1, 'Dev Org', 'dev-org-01')
 		ON CONFLICT (organization_id) DO NOTHING;
 	`, orgID)
 	if err != nil {
@@ -66,23 +82,66 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO users (user_id, email, password_hash, display_name, created_at, updated_at)
-		VALUES ($1, 'synth_user@dev.local', 'hash', 'Synth User', NOW(), NOW())
+		INSERT INTO users (user_id, email, password_hash, display_name)
+		VALUES ($1, 'synth_user@dev.local', 'hash', 'Synth User')
 		ON CONFLICT (user_id) DO NOTHING;
 	`, userID)
 	if err != nil {
 		slog.Error("Failed to seed user", "error", err)
 	}
 
-	// 2. Seed Devices & Control Leases
+	// 2. Seed Real Redis Browser Session
+	if redisURL != "" {
+		rURL := redisURL
+		if !strings.HasPrefix(rURL, "redis://") && !strings.HasPrefix(rURL, "rediss://") {
+			rURL = "redis://" + rURL
+		}
+		if opt, err := redis.ParseURL(rURL); err == nil {
+			rdb := redis.NewClient(opt)
+			tokenHashBytes := sha256.Sum256([]byte(sessionToken))
+			tokenHashHex := hex.EncodeToString(tokenHashBytes[:])
+			sessionKey := fmt.Sprintf("pcp:session:v1:%s", tokenHashHex)
+
+			sessObj := map[string]interface{}{
+				"session_id":      "sess_synth_01",
+				"user_id":         userID,
+				"email":           "synth_user@dev.local",
+				"display_name":    "Synth Operator User",
+				"organization_id": orgID,
+				"membership_id":   "mem_synth_01",
+				"roles":           []string{"admin"},
+				"permissions": map[string]interface{}{
+					"*":                     map[string]interface{}{},
+					"device.read":           map[string]interface{}{},
+					"device.control.input":   map[string]interface{}{},
+					"device.control.acquire": map[string]interface{}{},
+					"device.stream.view":    map[string]interface{}{},
+				},
+			}
+			sessBytes, _ := json.Marshal(sessObj)
+			_ = rdb.Set(ctx, sessionKey, sessBytes, 24*time.Hour).Err()
+			rdb.Close()
+		}
+	}
+
+	var workers []*SyntheticAgentWorker
+
+	// 3. Seed Devices, Control Leases, Device Agents & Connect WS Agents
 	for i := 0; i < count; i++ {
 		deviceID := fmt.Sprintf("dev_synth_%02d", i)
 		serial := fmt.Sprintf("SN_SYNTH_%02d", i)
 		leaseID := fmt.Sprintf("lease_synth_%d", i)
+		agentID := fmt.Sprintf("agent_synth_%02d", i)
+
+		pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			slog.Error("Failed to generate Agent Ed25519 key", "error", err)
+			continue
+		}
 
 		_, err = pool.Exec(ctx, `
-			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'online', '{}'::jsonb, NOW(), NOW())
+			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status)
+			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'online')
 			ON CONFLICT (device_id) DO UPDATE SET status = 'online', updated_at = NOW();
 		`, deviceID, orgID, deviceID, serial)
 		if err != nil {
@@ -91,27 +150,34 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 
 		expiresAt := time.Now().Add(1 * time.Hour)
 		_, err = pool.Exec(ctx, `
-			INSERT INTO control_leases (control_lease_id, organization_id, user_id, device_id, expires_at, fencing_token, acquired_at)
-			VALUES ($1, $2, $3, $4, $5, 1, NOW())
+			INSERT INTO control_leases (control_lease_id, organization_id, user_id, device_id, expires_at, fencing_token)
+			VALUES ($1, $2, $3, $4, $5, 1)
 			ON CONFLICT (control_lease_id) DO UPDATE SET expires_at = $5;
 		`, leaseID, orgID, userID, deviceID, expiresAt)
 		if err != nil {
 			slog.Error("Failed to seed control lease", "lease_id", leaseID, "error", err)
 		}
-	}
 
-	// Active control lease in Redis
-	if redisURL != "" {
-		if !strings.HasPrefix(redisURL, "redis://") && !strings.HasPrefix(redisURL, "rediss://") {
-			redisURL = "redis://" + redisURL
+		// Seed Agent entity in database
+		_, err = pool.Exec(ctx, `
+			INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, apk_version, protocol_version, status)
+			VALUES ($1, $2, $3, $4, '1.0.0', '1.0', 'active')
+			ON CONFLICT (agent_id) DO UPDATE SET public_key = $4;
+		`, agentID, orgID, deviceID, []byte(pubKey))
+		if err != nil {
+			slog.Error("Failed to seed device agent", "agent_id", agentID, "error", err)
 		}
-		if opt, err := redis.ParseURL(redisURL); err == nil {
-			rdb := redis.NewClient(opt)
-			now := time.Now().UTC()
-			exp := now.Add(1 * time.Hour)
-			for i := 0; i < count; i++ {
-				deviceID := fmt.Sprintf("dev_synth_%02d", i)
-				leaseID := fmt.Sprintf("lease_synth_%d", i)
+
+		// Seed Active Redis Lease
+		if redisURL != "" {
+			rURL := redisURL
+			if !strings.HasPrefix(rURL, "redis://") && !strings.HasPrefix(rURL, "rediss://") {
+				rURL = "redis://" + rURL
+			}
+			if opt, err := redis.ParseURL(rURL); err == nil {
+				rdb := redis.NewClient(opt)
+				now := time.Now().UTC()
+				exp := now.Add(1 * time.Hour)
 				leaseObj := map[string]interface{}{
 					"control_lease_id":  leaseID,
 					"device_id":        deviceID,
@@ -126,17 +192,158 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 				data, _ := json.Marshal(leaseObj)
 				leaseKey := fmt.Sprintf("pcp:control:lease:v1:%s:%s", orgID, deviceID)
 				_ = rdb.Set(ctx, leaseKey, data, 1*time.Hour).Err()
+				rdb.Close()
 			}
-			rdb.Close()
+		}
+
+		// Connect Background Synthetic Agent WS
+		wsConn := connectSyntheticAgentWS(ctx, targetNodeURL, deviceID, agentID, privKey)
+		if wsConn != nil {
+			worker := &SyntheticAgentWorker{
+				AgentID:  agentID,
+				DeviceID: deviceID,
+				PubKey:   pubKey,
+				PrivKey:  privKey,
+				Conn:     wsConn,
+				stopChan: make(chan struct{}),
+			}
+			workers = append(workers, worker)
+
+			// Start Agent Loop to auto-ACK incoming commands
+			go func(w *SyntheticAgentWorker) {
+				for {
+					select {
+					case <-w.stopChan:
+						return
+					default:
+						_ = w.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+						_, msg, err := w.Conn.ReadMessage()
+						if err != nil {
+							continue
+						}
+						var env struct {
+							Type    string                 `json:"type"`
+							Payload map[string]interface{} `json:"payload"`
+						}
+						if json.Unmarshal(msg, &env) == nil && (env.Type == "command" || env.Type == "device.command") {
+							cmdID, _ := env.Payload["commandId"].(string)
+							if cmdID != "" {
+								// Send ACK
+								ackPayload := map[string]interface{}{
+									"type": "command.status",
+									"payload": map[string]interface{}{
+										"commandId": cmdID,
+										"status":    "ack",
+										"sequence":  1,
+									},
+								}
+								ackBytes, _ := json.Marshal(ackPayload)
+								_ = w.Conn.WriteMessage(websocket.TextMessage, ackBytes)
+
+								// Send Succeeded
+								succPayload := map[string]interface{}{
+									"type": "command.status",
+									"payload": map[string]interface{}{
+										"commandId": cmdID,
+										"status":    "succeeded",
+										"sequence":  2,
+									},
+								}
+								succBytes, _ := json.Marshal(succPayload)
+								_ = w.Conn.WriteMessage(websocket.TextMessage, succBytes)
+							}
+						}
+					}
+				}
+			}(worker)
 		}
 	}
+
+	cleanup := func() {
+		for _, w := range workers {
+			close(w.stopChan)
+			if w.Conn != nil {
+				_ = w.Conn.Close()
+			}
+		}
+	}
+
+	return workers, cleanup
+}
+
+func connectSyntheticAgentWS(ctx context.Context, nodeURL, deviceID, agentID string, privKey ed25519.PrivateKey) *websocket.Conn {
+	wsURL := strings.Replace(nodeURL, "http://", "ws://", 1) + "/agent/v1/connect?device_id=" + deviceID
+
+	timestampStr := strconv.FormatInt(time.Now().Unix(), 10)
+	nonceBytes := make([]byte, 16)
+	_, _ = rand.Read(nonceBytes)
+	nonce := hex.EncodeToString(nonceBytes)
+
+	emptyBodyHash := sha256.Sum256([]byte(""))
+	bodyHashHex := hex.EncodeToString(emptyBodyHash[:])
+	canonicalMsg := fmt.Sprintf("GET\n/agent/v1/connect\n%s\n%s\n%s", bodyHashHex, timestampStr, nonce)
+	sigBytes := ed25519.Sign(privKey, []byte(canonicalMsg))
+	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
+
+	headers := make(http.Header)
+	headers.Set("X-Agent-ID", agentID)
+	headers.Set("X-Agent-Timestamp", timestampStr)
+	headers.Set("X-Agent-Nonce", nonce)
+	headers.Set("X-Agent-Signature", sigB64)
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 5 * time.Second,
+	}
+
+	conn, _, err := dialer.DialContext(ctx, wsURL, headers)
+	if err != nil {
+		slog.Warn("Failed to connect synthetic agent WS", "device_id", deviceID, "error", err)
+		return nil
+	}
+
+	// Complete WSS Challenge Handshake
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		_ = conn.Close()
+		return nil
+	}
+
+	var challengeEnv struct {
+		Type    string `json:"type"`
+		Payload struct {
+			ChallengeNonce string `json:"challenge_nonce"`
+		} `json:"payload"`
+	}
+	if json.Unmarshal(msg, &challengeEnv) != nil {
+		_ = conn.Close()
+		return nil
+	}
+
+	nonceBytes, _ = base64.StdEncoding.DecodeString(challengeEnv.Payload.ChallengeNonce)
+	sig := ed25519.Sign(privKey, nonceBytes)
+	sigB64 = base64.StdEncoding.EncodeToString(sig)
+
+	respPayload := map[string]interface{}{
+		"type": "agent_challenge_response",
+		"payload": map[string]interface{}{
+			"challenge_signature": sigB64,
+		},
+	}
+	respBytes, _ := json.Marshal(respPayload)
+	_ = conn.WriteMessage(websocket.TextMessage, respBytes)
+
+	// Read connection.ready confirmation
+	_, _, _ = conn.ReadMessage()
+	_ = conn.SetReadDeadline(time.Time{})
+	return conn
 }
 
 func main() {
 	durationFlag := flag.Duration("duration", 5*time.Second, "Load test run duration")
-	concurrencyFlag := flag.Int("concurrency", 50, "Number of concurrent synthetic device workers")
-	rateFlag := flag.Int("rate-per-min", 500, "Target total commands per minute")
-	nodeURLFlag := flag.String("target-url", "http://localhost:8080", "Target Go Backend Server URL")
+	concurrencyFlag := flag.Int("concurrency", 10, "Number of concurrent synthetic device workers")
+	rateFlag := flag.Int("rate-per-min", 300, "Target total commands per minute")
+	nodeURLFlag := flag.String("target-url", "http://localhost:8083", "Target Go Backend Server URL")
 	flag.Parse()
 
 	slog.Info("Starting Phase 1.5 Real Platform Command Load Harness",
@@ -146,45 +353,33 @@ func main() {
 		"target_url", *nodeURLFlag,
 	)
 
-	// Environment Connectivity Validation
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = os.Getenv("POSTGRES_URL")
 	}
 	redisURL := os.Getenv("REDIS_URL")
+	sessionToken := "harness_session_token_synth"
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	var dbPool *pgxpool.Pool
-	var dbAvailable, redisAvailable bool
 	if dbURL != "" {
 		if pool, err := pgxpool.New(ctx, dbURL); err == nil {
 			if pool.Ping(ctx) == nil {
-				dbAvailable = true
 				dbPool = pool
 			}
 		}
 	}
 
-	if redisURL != "" {
-		if !strings.HasPrefix(redisURL, "redis://") && !strings.HasPrefix(redisURL, "rediss://") {
-			redisURL = "redis://" + redisURL
-		}
-		if opt, err := redis.ParseURL(redisURL); err == nil {
-			rdb := redis.NewClient(opt)
-			if rdb.Ping(ctx).Err() == nil {
-				redisAvailable = true
-			}
-			rdb.Close()
-		}
+	if dbPool == nil {
+		slog.Error("FATAL: Database connection unavailable for loadharness")
+		os.Exit(1)
 	}
 
-	slog.Info("Platform connectivity state", "postgres_live", dbAvailable, "redis_live", redisAvailable)
-
-	if dbAvailable {
-		seedSyntheticDevices(ctx, dbURL, redisURL, *concurrencyFlag)
-	}
+	// Seed synthetic devices & launch connected Agent WS clients
+	_, cleanupAgents := seedSyntheticDevicesAndStartAgents(ctx, *nodeURLFlag, dbURL, redisURL, sessionToken, *concurrencyFlag)
+	defer cleanupAgents()
 
 	var submitted atomic.Uint64
 	var dispatched atomic.Uint64
@@ -244,8 +439,8 @@ func main() {
 				reqURL := fmt.Sprintf("%s/api/v1/commands", *nodeURLFlag)
 				req, err := http.NewRequestWithContext(context.Background(), "POST", reqURL, bytes.NewReader(bodyBytes))
 				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-Dev-User-ID", "user_dev_01")
-				req.Header.Set("X-Dev-Org-ID", "org_dev_01")
+				req.Header.Set("Cookie", fmt.Sprintf("__Host-pcp_session=%s", sessionToken))
+				req.Header.Set("Origin", "http://localhost:3000")
 
 				var ok bool
 				if err == nil {
@@ -259,13 +454,13 @@ func main() {
 									CommandID string `json:"commandId"`
 								} `json:"data"`
 							}
-							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" && dbPool != nil {
+							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" {
 								cmdID := resBody.Data.CommandID
 								trackerWg.Add(1)
 								go func(cID string) {
 									defer trackerWg.Done()
 									// Poll DB status post-202 for authoritative ACK / Succeeded
-									tCtx, tCancel := context.WithTimeout(context.Background(), 4*time.Second)
+									tCtx, tCancel := context.WithTimeout(context.Background(), 5*time.Second)
 									defer tCancel()
 
 									tTicker := time.NewTicker(50 * time.Millisecond)
@@ -275,6 +470,9 @@ func main() {
 									for {
 										select {
 										case <-tCtx.Done():
+											if !gotSucc {
+												timeouts.Add(1)
+											}
 											return
 										case <-tTicker.C:
 											var status string
@@ -368,7 +566,7 @@ func main() {
 	runtime.ReadMemStats(&m)
 
 	statusStr := "PASSED"
-	if errorRate > 5.0 || totalDispatched == 0 || totalAcked == 0 || totalSucceeded == 0 {
+	if totalDispatched == 0 || totalAcked < totalDispatched || totalSucceeded < totalDispatched || totalFailed > 0 || totalTimeouts > 0 {
 		statusStr = "FAILED"
 	}
 

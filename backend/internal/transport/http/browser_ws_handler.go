@@ -42,6 +42,11 @@ func NewBrowserWSHandler(browserHub *agentws.BrowserHub, deviceService *devservi
 					return true
 				}
 			}
+			if os.Getenv("APP_ENV") != "production" {
+				if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") || strings.HasPrefix(origin, "https://localhost") {
+					return true
+				}
+			}
 			return false
 		},
 	}

@@ -58,20 +58,10 @@ func (h *AgentWSHandler) SetClusterComponents(nodeID string, agentConnRepo *redi
 }
 
 func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
-	// Read authenticated Agent from context (Signed HTTP Upgrade)
 	agentObj := r.Context().Value(custommw.AgentContextKey)
 	var agent *domain.DeviceAgent
-
 	if agentObj != nil {
 		agent, _ = agentObj.(*domain.DeviceAgent)
-	}
-
-	// Fallback to Header lookup for test suite if signed headers context absent
-	if agent == nil {
-		agentID := r.Header.Get("X-Agent-ID")
-		if agentID != "" {
-			agent, _ = h.enrollRepo.GetAgentByID(r.Context(), agentID)
-		}
 	}
 
 	if agent == nil {
