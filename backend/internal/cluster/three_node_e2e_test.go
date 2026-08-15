@@ -15,10 +15,42 @@ import (
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
+	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
+	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 	wstransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/ws"
 )
+
+func performAgentHandshake(conn *websocket.Conn) error {
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msgData, err := conn.ReadMessage()
+	if err != nil {
+		return err
+	}
+
+	var env agentws.WSEnvelope
+	if err := json.Unmarshal(msgData, &env); err != nil {
+		return err
+	}
+
+	var chalPayload agentws.ServerChallengePayload
+	_ = json.Unmarshal(env.Payload, &chalPayload)
+
+	respPayload := agentws.AgentChallengeResponsePayload{
+		ChallengeSignature: "dummy_signature_for_test",
+	}
+	respBytes, _ := json.Marshal(respPayload)
+	respEnv := agentws.WSEnvelope{
+		Type:      agentws.MessageTypeAgentChallengeResponse,
+		MessageID: "resp_01",
+		Payload:   respBytes,
+	}
+	respEnvBytes, _ := json.Marshal(respEnv)
+
+	_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+	return conn.WriteMessage(websocket.TextMessage, respEnvBytes)
+}
 
 func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	mr, err := miniredis.Run()
@@ -40,7 +72,14 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	userID := "user_operator_01"
 	deviceID := "dev_samsung_s24"
 	agentID := "agent_node_01"
-	token := "token_secret_123"
+
+	agentObj := &domain.DeviceAgent{
+		AgentID:        agentID,
+		OrganizationID: orgID,
+		DeviceID:       deviceID,
+		Status:         "active",
+		PublicKey:      nil,
+	}
 
 	// Node A: Agent WebSocket Hub & Cluster Router
 	busA := cluster.NewMessageBus("node-a", rdb)
@@ -56,11 +95,8 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	agentWSHandlerA.SetClusterComponents("node-a", agentRepo, routerA)
 
 	serverA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set("X-Agent-ID", agentID)
-		r.Header.Set("X-Agent-Token", token)
-		r.Header.Set("X-Organization-ID", orgID)
-		r.Header.Set("X-Device-ID", deviceID)
-		agentWSHandlerA.Connect(w, r)
+		reqWithCtx := r.WithContext(context.WithValue(r.Context(), custommw.AgentContextKey, agentObj))
+		agentWSHandlerA.Connect(w, reqWithCtx)
 	}))
 	defer serverA.Close()
 
@@ -97,13 +133,17 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 		t.Fatalf("failed to start routerC: %v", err)
 	}
 
-	// 1. Connect synthetic Agent WS -> Node A
+	// 1. Connect synthetic Agent WS -> Node A & Perform Challenge Handshake
 	wsURLA := "ws" + strings.TrimPrefix(serverA.URL, "http")
 	agentWSConnA, _, err := websocket.DefaultDialer.Dial(wsURLA, nil)
 	if err != nil {
 		t.Fatalf("failed to connect Agent WS to Node A: %v", err)
 	}
 	defer agentWSConnA.Close()
+
+	if err := performAgentHandshake(agentWSConnA); err != nil {
+		t.Fatalf("failed agent challenge handshake on Node A: %v", err)
+	}
 
 	time.Sleep(200 * time.Millisecond)
 	owner, err := agentRepo.GetOwner(ctx, orgID, deviceID)
@@ -183,11 +223,8 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	agentWSHandlerC.SetClusterComponents("node-c", agentRepo, routerC)
 
 	serverAgentC := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set("X-Agent-ID", agentID)
-		r.Header.Set("X-Agent-Token", token)
-		r.Header.Set("X-Organization-ID", orgID)
-		r.Header.Set("X-Device-ID", deviceID)
-		agentWSHandlerC.Connect(w, r)
+		reqWithCtx := r.WithContext(context.WithValue(r.Context(), custommw.AgentContextKey, agentObj))
+		agentWSHandlerC.Connect(w, reqWithCtx)
 	}))
 	defer serverAgentC.Close()
 
@@ -197,6 +234,10 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 		t.Fatalf("failed to reconnect Agent WS to Node C: %v", err)
 	}
 	defer agentWSConnC.Close()
+
+	if err := performAgentHandshake(agentWSConnC); err != nil {
+		t.Fatalf("failed agent challenge handshake on Node C: %v", err)
+	}
 
 	time.Sleep(200 * time.Millisecond)
 	newOwner, err := agentRepo.GetOwner(ctx, orgID, deviceID)
