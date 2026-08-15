@@ -167,8 +167,8 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 		// Insert or update device
 		_, err = pool.Exec(ctx, `
 			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'active', '{}'::jsonb, NOW(), NOW())
-			ON CONFLICT (device_id) DO UPDATE SET status = 'active', updated_at = NOW()
+			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'online', '{}'::jsonb, NOW(), NOW())
+			ON CONFLICT (device_id) DO UPDATE SET status = 'online', updated_at = NOW()
 		`, deviceID, orgID, deviceID, serial)
 		if err != nil {
 			slog.Error("Failed to seed device", "device_id", deviceID, "error", err)
