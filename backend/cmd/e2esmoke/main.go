@@ -533,16 +533,14 @@ func postCommand(nodeURL, sessionToken, deviceID, leaseID, idempotencyKey string
 	}
 
 	var resBody struct {
-		Data struct {
-			CommandID string `json:"commandId"`
-		} `json:"data"`
+		CommandID string `json:"command_id"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&resBody)
-	if resBody.Data.CommandID == "" {
-		slog.Error("POST /commands response missing commandId")
+	if resBody.CommandID == "" {
+		slog.Error("POST /commands response missing command_id")
 		os.Exit(1)
 	}
-	return resBody.Data.CommandID
+	return resBody.CommandID
 }
 
 func verifyBrowserEvents(ch chan map[string]interface{}, commandID string, timeout time.Duration) {
