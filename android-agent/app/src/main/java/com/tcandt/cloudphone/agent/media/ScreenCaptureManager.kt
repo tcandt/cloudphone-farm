@@ -1,4 +1,4 @@
-package com.tcandt/cloudphone/agent/media
+package com.tcandt.cloudphone.agent.media
 
 import android.app.Notification
 import android.app.NotificationChannel
