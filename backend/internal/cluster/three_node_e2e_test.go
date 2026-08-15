@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/go-chi/chi/v5"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
@@ -123,7 +124,8 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 
 	browserWSHandlerB := httptransport.NewBrowserWSHandler(browserHubB, nil, []string{"*"})
 
-	serverB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	rB := chi.NewRouter()
+	rB.Get("/devices/{id}/events/ws", func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Origin", "http://localhost:3000")
 		ctxWithPrincipal := auth.WithPrincipal(r.Context(), &auth.Principal{
 			UserID:         userID,
@@ -131,7 +133,8 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 		})
 		reqWithCtx := r.WithContext(ctxWithPrincipal)
 		browserWSHandlerB.ServeHTTP(w, reqWithCtx)
-	}))
+	})
+	serverB := httptest.NewServer(rB)
 	defer serverB.Close()
 
 	// Node C: Cluster Router C
@@ -166,7 +169,7 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	}
 
 	// 2. Connect Browser WS -> Node B
-	wsURLB := "ws" + strings.TrimPrefix(serverB.URL, "http")
+	wsURLB := "ws" + strings.TrimPrefix(serverB.URL, "http") + "/devices/" + deviceID + "/events/ws"
 	browserWSConnB, _, err := websocket.DefaultDialer.Dial(wsURLB, nil)
 	if err != nil {
 		t.Fatalf("failed to connect Browser WS to Node B: %v", err)
