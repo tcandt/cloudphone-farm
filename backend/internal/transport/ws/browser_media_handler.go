@@ -161,9 +161,11 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		ownerNodeID = ownerRec.NodeID
 		snap = agentws.ConnectionSnapshot{
-			AgentID:      ownerRec.AgentID,
-			ConnectionID: ownerRec.ConnectionID,
-			Generation:   ownerRec.Generation,
+			AgentID:        ownerRec.AgentID,
+			ConnectionID:   ownerRec.ConnectionID,
+			Generation:     ownerRec.Generation,
+			OrganizationID: orgID,
+			DeviceID:       deviceID,
 		}
 	} else {
 		agentConn, ok := h.hub.GetConnection(orgID, deviceID)
@@ -174,9 +176,11 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		ownerNodeID = h.nodeID
 		snap = agentws.ConnectionSnapshot{
-			AgentID:      agentConn.AgentID,
-			ConnectionID: agentConn.ConnectionID,
-			Generation:   agentConn.Generation,
+			AgentID:        agentConn.AgentID,
+			ConnectionID:   agentConn.ConnectionID,
+			Generation:     agentConn.Generation,
+			OrganizationID: orgID,
+			DeviceID:       deviceID,
 		}
 	}
 

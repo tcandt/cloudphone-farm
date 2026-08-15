@@ -140,7 +140,7 @@ func main() {
 		}
 	}
 
-	wsHub.SetDistributedMediaRelayer(wstransport.NewClusterMediaRelayer(mediaSessionRepo, clusterRouter))
+	wsHub.SetDistributedMediaRelayer(wstransport.NewClusterMediaRelayer(mediaSessionRepo, agentConnRepo, clusterRouter))
 
 	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub, browserHub)
 	outboxDispatcher.SetClusterComponents(agentConnRepo, clusterRouter)
@@ -167,18 +167,17 @@ func main() {
 
 	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, deviceService, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
-	commandHandler := httptransport.NewCommandHandler(cmdService)
+	rateLimiter := custommw.NewRateLimiter(rdb, cfg.AppEnv)
+	commandHandler := httptransport.NewCommandHandler(cmdService, rateLimiter)
 
 	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
 	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
-	rateLimiter := custommw.NewRateLimiter(rdb, cfg.AppEnv)
 
 	// Create Chi router
 	r := chi.NewRouter()
 
 	// Global Middlewares
 	r.Use(middleware.RequestID)
-	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(custommw.SecurityHeadersMiddleware)

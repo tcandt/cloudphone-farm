@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	"github.com/tcandt/cloudphone-farm/backend/internal/telemetry"
 )
 
 type RateLimitScope string
@@ -165,6 +166,7 @@ func (rl *RateLimiter) LimitMiddleware(scope RateLimitScope, capacity int, fillR
 
 			allowed, err := rl.CheckLimit(r.Context(), scope, identifier, capacity, fillRate)
 			if err != nil || !allowed {
+				telemetry.GetMetrics().IncrRateLimitRejections(string(scope))
 				if err != nil {
 					slog.Error("Rate limit check failed", "scope", scope, "identifier", identifier, "error", err)
 				} else {

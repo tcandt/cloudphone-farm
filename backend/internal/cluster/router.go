@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
+	"github.com/tcandt/cloudphone-farm/backend/internal/telemetry"
 )
 
 var (
@@ -61,6 +62,7 @@ func (cr *ClusterRouter) Start(ctx context.Context) error {
 }
 
 func (cr *ClusterRouter) handleIncomingEnvelope(env *RoutedEnvelope) {
+	telemetry.GetMetrics().IncrClusterRoutedMessages(env.Type, "success")
 	switch env.Type {
 	case "command.route.request":
 		cr.handleCommandRouteRequest(env)
@@ -232,6 +234,10 @@ func (cr *ClusterRouter) DispatchCommandRoute(
 }
 
 func (cr *ClusterRouter) SendMediaSignalToAgent(ctx context.Context, sessionID, targetNodeID string, snap agentws.ConnectionSnapshot, payload []byte) error {
+	if sessionID == "" || snap.OrganizationID == "" || snap.DeviceID == "" || snap.AgentID == "" || snap.ConnectionID == "" || snap.Generation == 0 {
+		return fmt.Errorf("invalid cluster media envelope: snapshot attributes must not be empty (session_id=%s, org_id=%s, device_id=%s, agent_id=%s)", sessionID, snap.OrganizationID, snap.DeviceID, snap.AgentID)
+	}
+
 	if targetNodeID == cr.nodeID {
 		return cr.wsHub.DispatchToConnectionSnapshot(snap.OrganizationID, snap.DeviceID, snap, payload)
 	}

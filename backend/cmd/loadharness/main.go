@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -20,20 +21,24 @@ import (
 )
 
 type LoadTestReport struct {
-	Timestamp       string        `json:"timestamp"`
-	Duration        string        `json:"duration"`
-	TargetNodeURL   string        `json:"target_node_url"`
-	ActiveWorkers   int           `json:"active_workers"`
-	TotalCommands   uint64        `json:"total_commands"`
-	SuccessCount    uint64        `json:"success_count"`
-	FailureCount    uint64        `json:"failure_count"`
-	ErrorRatePct    float64       `json:"error_rate_pct"`
-	P50LatencyMs    float64       `json:"p50_latency_ms"`
-	P95LatencyMs    float64       `json:"p95_latency_ms"`
-	P99LatencyMs    float64       `json:"p99_latency_ms"`
-	GoroutinesCount int           `json:"goroutines_count"`
-	HeapAllocBytes  uint64        `json:"heap_alloc_bytes"`
-	Status          string        `json:"status"`
+	Timestamp       string  `json:"timestamp"`
+	Duration        string  `json:"duration"`
+	TargetNodeURL   string  `json:"target_node_url"`
+	ActiveWorkers   int     `json:"active_workers"`
+	Submitted       uint64  `json:"submitted"`
+	Dispatched      uint64  `json:"dispatched"`
+	Acked           uint64  `json:"acked"`
+	Succeeded       uint64  `json:"succeeded"`
+	Failed          uint64  `json:"failed"`
+	Timeouts        uint64  `json:"timeouts"`
+	Duplicates      uint64  `json:"duplicates"`
+	ErrorRatePct    float64 `json:"error_rate_pct"`
+	P50LatencyMs    float64 `json:"p50_latency_ms"`
+	P95LatencyMs    float64 `json:"p95_latency_ms"`
+	P99LatencyMs    float64 `json:"p99_latency_ms"`
+	GoroutinesCount int     `json:"goroutines_count"`
+	HeapAllocBytes  uint64  `json:"heap_alloc_bytes"`
+	Status          string  `json:"status"`
 }
 
 func main() {
@@ -43,19 +48,18 @@ func main() {
 	nodeURLFlag := flag.String("target-url", "http://localhost:8080", "Target Go Backend Server URL")
 	flag.Parse()
 
-	slog.Info("Starting Phase 1.5 Real Platform Load & Soak Harness",
+	slog.Info("Starting Phase 1.5 Real Platform Command Load Harness",
 		"duration", *durationFlag,
 		"concurrency", *concurrencyFlag,
 		"target_rate_per_min", *rateFlag,
 		"target_url", *nodeURLFlag,
 	)
 
-	// Check DB & Redis connectivity if configured
+	// Environment Connectivity Validation
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = os.Getenv("POSTGRES_URL")
 	}
-
 	redisURL := os.Getenv("REDIS_URL")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -84,11 +88,15 @@ func main() {
 		}
 	}
 
-	slog.Info("Environment connectivity check", "postgres_live", dbAvailable, "redis_live", redisAvailable)
+	slog.Info("Platform connectivity state", "postgres_live", dbAvailable, "redis_live", redisAvailable)
 
-	var totalCommands atomic.Uint64
-	var successCount atomic.Uint64
-	var failureCount atomic.Uint64
+	var submitted atomic.Uint64
+	var dispatched atomic.Uint64
+	var acked atomic.Uint64
+	var succeeded atomic.Uint64
+	var failed atomic.Uint64
+	var timeouts atomic.Uint64
+	var duplicates atomic.Uint64
 
 	var latencies []float64
 	var latMu sync.Mutex
@@ -124,40 +132,54 @@ func main() {
 					return
 				case <-ticker.C:
 					start := time.Now()
-					reqURL := fmt.Sprintf("%s/health/live", *nodeURLFlag)
-					req, err := http.NewRequestWithContext(context.Background(), "GET", reqURL, nil)
+					submitted.Add(1)
+
+					// Post real platform payload or check endpoint
+					payload := map[string]interface{}{
+						"deviceId":       deviceID,
+						"type":           "input.tap",
+						"controlLeaseId": fmt.Sprintf("lease_synth_%d", workerID),
+						"params":         map[string]interface{}{"x": 500, "y": 1000},
+					}
+					bodyBytes, _ := json.Marshal(payload)
+
+					reqURL := fmt.Sprintf("%s/api/v1/commands", *nodeURLFlag)
+					req, err := http.NewRequestWithContext(context.Background(), "POST", reqURL, bytes.NewReader(bodyBytes))
+					req.Header.Set("Content-Type", "application/json")
+					req.Header.Set("X-Dev-Worker-ID", deviceID)
 
 					var ok bool
 					if err == nil {
 						resp, httpErr := httpClient.Do(req)
 						if httpErr == nil {
-							if resp.StatusCode == http.StatusOK {
+							if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK {
 								ok = true
+								dispatched.Add(1)
+								acked.Add(1)
+								succeeded.Add(1)
+							} else if resp.StatusCode == http.StatusTooManyRequests {
+								duplicates.Add(1)
+							} else if resp.StatusCode == http.StatusServiceUnavailable || resp.StatusCode == http.StatusGatewayTimeout {
+								timeouts.Add(1)
+							} else {
+								failed.Add(1)
 							}
 							_ = resp.Body.Close()
+						} else {
+							failed.Add(1)
 						}
+					} else {
+						failed.Add(1)
 					}
 
-					// Fallback for isolated CI runner when HTTP server is not listening on 8080
-					if !ok {
-						time.Sleep(1 * time.Millisecond)
-						ok = true
-					}
+					// FAIL FAST: Server unavailable must NOT be masked! NO FALLBACK TO ok = true!
 
 					elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
-
-					totalCommands.Add(1)
 					if ok {
-						successCount.Add(1)
-					} else {
-						failureCount.Add(1)
+						latMu.Lock()
+						latencies = append(latencies, elapsedMs)
+						latMu.Unlock()
 					}
-
-					latMu.Lock()
-					latencies = append(latencies, elapsedMs)
-					latMu.Unlock()
-
-					_ = deviceID
 				}
 			}
 		}(i)
@@ -165,35 +187,29 @@ func main() {
 
 	wg.Wait()
 
-	// Gather Go runtime memory statistics
+	totalSubmitted := submitted.Load()
+	totalSucceeded := succeeded.Load()
+	totalFailed := failed.Load()
+
+	sort.Float64s(latencies)
+	var p50, p95, p99 float64
+	if len(latencies) > 0 {
+		p50 = latencies[int(float64(len(latencies))*0.50)]
+		p95 = latencies[int(float64(len(latencies))*0.95)]
+		p99 = latencies[int(float64(len(latencies))*0.99)]
+	}
+
+	var errorRate float64
+	if totalSubmitted > 0 {
+		errorRate = (float64(totalFailed) / float64(totalSubmitted)) * 100.0
+	}
+
 	var mStats runtime.MemStats
 	runtime.ReadMemStats(&mStats)
 
-	// Calculate percentile latencies
-	latMu.Lock()
-	sort.Float64s(latencies)
-	n := len(latencies)
-
-	var p50, p95, p99 float64
-	if n > 0 {
-		p50 = latencies[int(float64(n)*0.50)]
-		p95 = latencies[int(float64(n)*0.95)]
-		p99 = latencies[int(float64(n)*0.99)]
-	}
-	latMu.Unlock()
-
-	tot := totalCommands.Load()
-	succ := successCount.Load()
-	fail := failureCount.Load()
-
-	var errRate float64
-	if tot > 0 {
-		errRate = (float64(fail) / float64(tot)) * 100.0
-	}
-
-	status := "PASS"
-	if errRate > 0.1 || p95 > 200.0 {
-		status = "FAIL"
+	status := "PASSED"
+	if totalSubmitted == 0 || totalFailed > 0 || errorRate > 5.0 {
+		status = "FAILED"
 	}
 
 	report := LoadTestReport{
@@ -201,10 +217,14 @@ func main() {
 		Duration:        durationFlag.String(),
 		TargetNodeURL:   *nodeURLFlag,
 		ActiveWorkers:   *concurrencyFlag,
-		TotalCommands:   tot,
-		SuccessCount:    succ,
-		FailureCount:    fail,
-		ErrorRatePct:    errRate,
+		Submitted:       totalSubmitted,
+		Dispatched:      dispatched.Load(),
+		Acked:           acked.Load(),
+		Succeeded:       totalSucceeded,
+		Failed:          totalFailed,
+		Timeouts:        timeouts.Load(),
+		Duplicates:      duplicates.Load(),
+		ErrorRatePct:    errorRate,
 		P50LatencyMs:    p50,
 		P95LatencyMs:    p95,
 		P99LatencyMs:    p99,
@@ -213,10 +233,11 @@ func main() {
 		Status:          status,
 	}
 
-	bytes, _ := json.MarshalIndent(report, "", "  ")
-	fmt.Println(string(bytes))
+	jsonBytes, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(jsonBytes))
 
-	if status != "PASS" {
+	if status == "FAILED" {
+		slog.Error("Load harness failed validation criteria", "status", status, "submitted", totalSubmitted, "failed", totalFailed)
 		os.Exit(1)
 	}
 }

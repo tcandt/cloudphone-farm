@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/tcandt/cloudphone-farm/backend/internal/telemetry"
 )
 
 var (
@@ -88,6 +90,7 @@ func (h *Hub) Register(conn *Connection) {
 	}
 
 	h.connections[key] = conn
+	telemetry.GetMetrics().IncrAgentConnections("connected")
 	slog.Info("Registered device agent WebSocket connection in hub", "device_key", key, "connection_id", conn.ConnectionID, "generation", conn.Generation)
 }
 
@@ -98,6 +101,7 @@ func (h *Hub) Unregister(conn *Connection) {
 	key := DeviceKey(conn.OrganizationID, conn.DeviceID)
 	if existing, exists := h.connections[key]; exists && existing == conn {
 		delete(h.connections, key)
+		telemetry.GetMetrics().IncrAgentConnections("disconnected")
 		slog.Info("Unregistered device agent WebSocket connection from hub", "device_key", key, "connection_id", conn.ConnectionID, "generation", conn.Generation)
 	}
 }

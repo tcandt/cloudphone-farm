@@ -3,19 +3,26 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	cmdservice "github.com/tcandt/cloudphone-farm/backend/internal/command"
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
+	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
 )
 
 type CommandHandler struct {
-	cmdService *cmdservice.CommandService
+	cmdService  *cmdservice.CommandService
+	rateLimiter *custommw.RateLimiter
 }
 
-func NewCommandHandler(cmdService *cmdservice.CommandService) *CommandHandler {
-	return &CommandHandler{cmdService: cmdService}
+func NewCommandHandler(cmdService *cmdservice.CommandService, rateLimiter *custommw.RateLimiter) *CommandHandler {
+	return &CommandHandler{
+		cmdService:  cmdService,
+		rateLimiter: rateLimiter,
+	}
 }
 
 func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +41,17 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 	if req.DeviceID == "" || req.Type == "" || req.ControlLeaseID == "" {
 		writeJSONError(w, http.StatusBadRequest, "MISSING_REQUIRED_FIELDS", "deviceId, type, and controlLeaseId are required")
 		return
+	}
+
+	// Authoritative Per-Device Command Rate Limit: org_id:user_id:device_id
+	if h.rateLimiter != nil {
+		identifier := fmt.Sprintf("%s:%s:%s", principal.OrganizationID, principal.UserID, req.DeviceID)
+		allowed, err := h.rateLimiter.CheckLimit(r.Context(), custommw.ScopeCommand, identifier, 50, 10)
+		if err != nil || !allowed {
+			slog.Warn("Per-device command rate limit exceeded", "identifier", identifier, "error", err)
+			writeJSONError(w, http.StatusTooManyRequests, "RATE_LIMIT_EXCEEDED", "Command rate limit exceeded for device. Please slow down.")
+			return
+		}
 	}
 
 	cmd, err := h.cmdService.DispatchCommand(r.Context(), principal.OrganizationID, principal.UserID, &req)
@@ -59,6 +77,6 @@ func (h *CommandHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted) // 202 Accepted
+	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(cmd)
 }

@@ -84,7 +84,7 @@ local ttl_ms = tonumber(ARGV[3])
 local current_gen_str = redis.call('GET', gen_key)
 local current_gen = current_gen_str and tonumber(current_gen_str) or 0
 
-if expected_gen < current_gen then
+if expected_gen ~= current_gen then
     return 0
 end
 

@@ -13,6 +13,7 @@ import (
 	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
+	"github.com/tcandt/cloudphone-farm/backend/internal/telemetry"
 )
 
 type OutboxDispatcher struct {
@@ -199,7 +200,7 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 	}
 
 	if err != nil {
-		if latestCmd, getErr := d.cmdRepo.GetCommandByID(ctx, msg.CommandID); getErr == nil && latestCmd != nil && (latestCmd.Status == "executing" || latestCmd.Status == "succeeded" || latestCmd.Status == "completed") {
+		if latestCmd, getErr := d.cmdRepo.GetCommandByID(ctx, msg.CommandID); getErr == nil && latestCmd != nil && (latestCmd.Status == "ack" || latestCmd.Status == "executing" || latestCmd.Status == "succeeded") {
 			slog.Info("Route receipt returned error/timeout but agent already fast-ACKed command. Preserving status.", "command_id", msg.CommandID, "status", latestCmd.Status)
 			_ = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "dispatched", "")
 			_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
@@ -233,6 +234,8 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 		slog.Error("Failed to update outbox dispatched status", "error", err, "outbox_id", msg.OutboxID)
 		return
 	}
+
+	telemetry.GetMetrics().IncrCommandsDispatched(cmdRec.CommandType, "success")
 
 	// 5. Broadcast DISPATCHED event across cluster
 	if d.router != nil {
