@@ -67,7 +67,7 @@ object ScreenCaptureManager {
     private fun showConsentNotification(context: Context, generation: Long) {
         createNotificationChannel(context)
 
-        val intent = Intent(context, MediaConsentActivity::class.java).apply {
+        val intent = Intent(context, ConsentPromptActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             putExtra("generation", generation)
             putExtra("session_id", activeSessionId)

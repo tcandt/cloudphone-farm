@@ -259,15 +259,15 @@ class AgentWebSocketClient(
         pendingIceServersJson = payload.optJSONArray("ice_servers")
 
         Log.i(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
-        ScreenCaptureManager.requestCapture(context, sessionId, width, height, bitrate, fps)
+        ScreenCaptureManager.requestConsent(context, sessionId)
     }
 
     private fun handleMediaSessionStop(payload: JSONObject) {
         val sessionId = payload.optString("session_id")
         Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
-        if (sessionId.isNotEmpty() && ScreenCaptureManager.getActiveSessionId().isNotEmpty() && sessionId != ScreenCaptureManager.getActiveSessionId()) {
-            Log.w(TAG, "Ignoring stale media.session.stop request ($sessionId vs active ${ScreenCaptureManager.getActiveSessionId()})")
+        if (sessionId.isNotEmpty() && ScreenCaptureManager.activeSessionId.isNotEmpty() && sessionId != ScreenCaptureManager.activeSessionId) {
+            Log.w(TAG, "Ignoring stale media.session.stop request ($sessionId vs active ${ScreenCaptureManager.activeSessionId})")
             return
         }
 

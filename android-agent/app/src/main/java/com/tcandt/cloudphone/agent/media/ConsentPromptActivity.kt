@@ -28,13 +28,13 @@ class ConsentPromptActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestGeneration = intent.getLongExtra("extra_generation", 0L)
+        requestGeneration = intent.getLongExtra("generation", 0L)
 
         // Verify request generation is still valid
-        if (requestGeneration != ScreenCaptureManager.getRequestGeneration() ||
-            ScreenCaptureManager.getState() != ScreenCaptureState.CONSENT_REQUIRED
+        if (requestGeneration != ScreenCaptureManager.sessionRequestGeneration ||
+            ScreenCaptureManager.currentState != ScreenCaptureState.CONSENT_REQUIRED
         ) {
-            Log.w(TAG, "ConsentPromptActivity launched for stale/canceled generation ($requestGeneration vs current ${ScreenCaptureManager.getRequestGeneration()}). Dismissing.")
+            Log.w(TAG, "ConsentPromptActivity launched for stale/canceled generation ($requestGeneration vs current ${ScreenCaptureManager.sessionRequestGeneration}). Dismissing.")
             finish()
             return
         }
