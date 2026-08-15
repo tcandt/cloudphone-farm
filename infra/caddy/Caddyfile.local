@@ -2,16 +2,14 @@
 	admin off
 }
 
-:8080 {
+http://:8080 {
 	header {
 		X-PCP-Edge "caddy"
 		X-Content-Type-Options "nosniff"
 	}
 
 	# Proxy WebSocket agent connections to backend cluster
-	@agent_ws {
-		path /agent/v1/connect*
-	}
+	@agent_ws path /agent/v1/connect*
 	handle @agent_ws {
 		reverse_proxy 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083 {
 			lb_policy round_robin
@@ -19,9 +17,7 @@
 	}
 
 	# Proxy Browser WebSocket media stream
-	@browser_media {
-		path /api/v1/devices/*/media/ws*
-	}
+	@browser_media path /api/v1/devices/*/media/ws*
 	handle @browser_media {
 		reverse_proxy 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083 {
 			lb_policy round_robin
@@ -29,9 +25,7 @@
 	}
 
 	# Proxy REST API & health checks to backend cluster
-	@api {
-		path /api/* /health/*
-	}
+	@api path /api/* /health/*
 	handle @api {
 		reverse_proxy 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083 {
 			lb_policy round_robin
@@ -39,7 +33,7 @@
 	}
 }
 
-:8443 {
+https://:8443 {
 	tls internal
 
 	header {
