@@ -52,10 +52,94 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	}
 	defer pool.Close()
 
+	// 1. Ensure Core Tables Exist
+	schemaSQL := `
+		CREATE TABLE IF NOT EXISTS organizations (
+			organization_id VARCHAR(64) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			slug VARCHAR(128) NOT NULL UNIQUE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS users (
+			user_id VARCHAR(64) PRIMARY KEY,
+			email VARCHAR(255) NOT NULL UNIQUE,
+			password_hash VARCHAR(255) NOT NULL,
+			display_name VARCHAR(255) NOT NULL,
+			avatar_url TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS devices (
+			device_id VARCHAR(64) NOT NULL,
+			organization_id VARCHAR(64) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
+			group_id VARCHAR(64),
+			name VARCHAR(255) NOT NULL,
+			serial_number VARCHAR(128) NOT NULL,
+			model VARCHAR(128) NOT NULL,
+			platform_version VARCHAR(32) NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'provisioning',
+			capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (device_id),
+			CONSTRAINT uk_org_device UNIQUE (organization_id, device_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS control_leases (
+			control_lease_id VARCHAR(64) PRIMARY KEY,
+			organization_id VARCHAR(64) NOT NULL,
+			device_id VARCHAR(64) NOT NULL,
+			user_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
+			fencing_token BIGINT NOT NULL DEFAULT 1,
+			acquired_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMPTZ NOT NULL,
+			revoked_at TIMESTAMPTZ,
+			CONSTRAINT fk_lease_device FOREIGN KEY (organization_id, device_id) REFERENCES devices(organization_id, device_id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE IF NOT EXISTS commands (
+			command_id VARCHAR(64) PRIMARY KEY,
+			organization_id VARCHAR(64) NOT NULL,
+			user_id VARCHAR(64) NOT NULL,
+			device_id VARCHAR(64) NOT NULL,
+			type VARCHAR(64) NOT NULL,
+			control_lease_id VARCHAR(64) NOT NULL,
+			idempotency_key VARCHAR(128) NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'prepared',
+			attempt_number INT NOT NULL DEFAULT 1,
+			params JSONB NOT NULL DEFAULT '{}'::jsonb,
+			result JSONB,
+			error_message TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			expires_at TIMESTAMPTZ NOT NULL,
+			CONSTRAINT uk_org_device_idempotency UNIQUE (organization_id, device_id, idempotency_key)
+		);
+
+		CREATE TABLE IF NOT EXISTS outbox_commands (
+			sequence_id BIGSERIAL PRIMARY KEY,
+			command_id VARCHAR(64) NOT NULL UNIQUE REFERENCES commands(command_id) ON DELETE CASCADE,
+			organization_id VARCHAR(64) NOT NULL,
+			device_id VARCHAR(64) NOT NULL,
+			payload JSONB NOT NULL,
+			status VARCHAR(32) NOT NULL DEFAULT 'pending',
+			attempts INT NOT NULL DEFAULT 0,
+			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			processed_at TIMESTAMPTZ
+		);
+	`
+	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
+		slog.Error("Failed to initialize loadharness DB tables", "error", err)
+	}
+
 	orgID := "org_dev_01"
 	userID := "user_dev_01"
 
-	// 1. Seed Organization & User
+	// 2. Seed Organization & User
 	_, err = pool.Exec(ctx, `
 		INSERT INTO organizations (organization_id, name, slug, created_at, updated_at)
 		VALUES ($1, 'Dev Org', 'dev-org-01', NOW(), NOW())
@@ -74,7 +158,7 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 		slog.Error("Failed to seed user", "error", err)
 	}
 
-	// 2. Seed Devices & Control Leases
+	// 3. Seed Devices & Control Leases
 	for i := 0; i < count; i++ {
 		deviceID := fmt.Sprintf("dev_synth_%02d", i)
 		serial := fmt.Sprintf("SN_SYNTH_%02d", i)
