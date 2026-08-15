@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -100,7 +102,8 @@ func main() {
 		if version > 0 {
 			var recordedChecksum string
 			err := pool.QueryRow(ctx, "SELECT checksum FROM pcp_schema_migrations WHERE version = $1", version).Scan(&recordedChecksum)
-			if err == nil {
+			switch {
+			case err == nil:
 				if recordedChecksum == checksumHex {
 					slog.Info("Migration already applied, skipping", "version", version, "file", file, "checksum", checksumHex[:8])
 					continue
@@ -112,25 +115,45 @@ func main() {
 					"computed_checksum", checksumHex,
 				)
 				os.Exit(1)
+
+			case errors.Is(err, pgx.ErrNoRows):
+				// Migration version N has not been applied yet; proceed to execute
+
+			default:
+				slog.Error("FATAL: Cannot verify migration authority from database", "version", version, "file", file, "error", err)
+				os.Exit(1)
 			}
 		}
 
-		slog.Info("Executing migration", "file", file, "version", version, "checksum", checksumHex[:8])
+		slog.Info("Executing migration inside atomic transaction", "file", file, "version", version, "checksum", checksumHex[:8])
 
-		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
-			slog.Error("Failed to execute migration", "file", file, "error", err)
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			slog.Error("Failed to begin transaction for migration", "file", file, "error", err)
+			os.Exit(1)
+		}
+
+		if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
+			_ = tx.Rollback(ctx)
+			slog.Error("Failed to execute migration SQL inside transaction", "file", file, "error", err)
 			os.Exit(1)
 		}
 
 		if version > 0 {
-			_, err = pool.Exec(ctx, `
+			_, err = tx.Exec(ctx, `
 				INSERT INTO pcp_schema_migrations (version, name, checksum)
 				VALUES ($1, $2, $3)
 			`, version, file, checksumHex)
 			if err != nil {
-				slog.Error("Failed to record migration in pcp_schema_migrations", "file", file, "error", err)
+				_ = tx.Rollback(ctx)
+				slog.Error("Failed to record migration in pcp_schema_migrations inside transaction", "file", file, "error", err)
 				os.Exit(1)
 			}
+		}
+
+		if err := tx.Commit(ctx); err != nil {
+			slog.Error("Failed to commit migration transaction", "file", file, "error", err)
+			os.Exit(1)
 		}
 	}
 
