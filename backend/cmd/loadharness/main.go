@@ -52,7 +52,7 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	}
 	defer pool.Close()
 
-	// 1. Ensure Core Tables Exist
+	// 1. Ensure Core Tables Exist matching 000001_create_core_tables.up.sql
 	schemaSQL := `
 		CREATE TABLE IF NOT EXISTS organizations (
 			organization_id VARCHAR(64) PRIMARY KEY,
@@ -103,31 +103,33 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 		CREATE TABLE IF NOT EXISTS commands (
 			command_id VARCHAR(64) PRIMARY KEY,
 			organization_id VARCHAR(64) NOT NULL,
-			user_id VARCHAR(64) NOT NULL,
 			device_id VARCHAR(64) NOT NULL,
-			type VARCHAR(64) NOT NULL,
-			control_lease_id VARCHAR(64) NOT NULL,
+			actor_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
+			command_type VARCHAR(64) NOT NULL,
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			status VARCHAR(32) NOT NULL DEFAULT 'pending',
 			idempotency_key VARCHAR(128) NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'prepared',
-			attempt_number INT NOT NULL DEFAULT 1,
-			params JSONB NOT NULL DEFAULT '{}'::jsonb,
-			result JSONB,
-			error_message TEXT,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			expires_at TIMESTAMPTZ NOT NULL,
-			CONSTRAINT uk_org_device_idempotency UNIQUE (organization_id, device_id, idempotency_key)
+			CONSTRAINT fk_command_device FOREIGN KEY (organization_id, device_id) REFERENCES devices(organization_id, device_id) ON DELETE CASCADE,
+			CONSTRAINT uk_org_actor_idempotency UNIQUE (organization_id, actor_id, idempotency_key)
 		);
 
-		CREATE TABLE IF NOT EXISTS outbox_commands (
-			sequence_id BIGSERIAL PRIMARY KEY,
-			command_id VARCHAR(64) NOT NULL UNIQUE REFERENCES commands(command_id) ON DELETE CASCADE,
+		CREATE TABLE IF NOT EXISTS command_events (
+			event_id BIGSERIAL PRIMARY KEY,
+			command_id VARCHAR(64) NOT NULL REFERENCES commands(command_id) ON DELETE CASCADE,
+			status VARCHAR(32) NOT NULL,
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS command_outbox (
+			outbox_id BIGSERIAL PRIMARY KEY,
+			command_id VARCHAR(64) NOT NULL REFERENCES commands(command_id) ON DELETE CASCADE,
 			organization_id VARCHAR(64) NOT NULL,
 			device_id VARCHAR(64) NOT NULL,
-			payload JSONB NOT NULL,
+			event_type VARCHAR(64) NOT NULL,
+			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
 			status VARCHAR(32) NOT NULL DEFAULT 'pending',
-			attempts INT NOT NULL DEFAULT 0,
-			next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			processed_at TIMESTAMPTZ
 		);
