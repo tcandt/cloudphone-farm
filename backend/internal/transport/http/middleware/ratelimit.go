@@ -7,16 +7,20 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 )
 
 type RateLimitScope string
 
 const (
 	ScopeLogin      RateLimitScope = "login"
+	ScopeEnrollment RateLimitScope = "enrollment"
 	ScopeRestAPI    RateLimitScope = "rest_api"
 	ScopeCommand    RateLimitScope = "command"
 	ScopeWSUpgrade  RateLimitScope = "ws_upgrade"
@@ -70,16 +74,22 @@ else
 end
 `
 
-// ExtractClientIP extracts the real client IP, inspecting RemoteAddr or trusted X-Real-IP
+// ExtractClientIP extracts client IP securely.
+// Only trusts X-Real-IP if the remote address is within TRUSTED_PROXY_CIDR environment setting.
 func ExtractClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
 
-	// Only trust X-Real-IP if configured or present
-	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		return realIP
+	trustedCIDR := os.Getenv("TRUSTED_PROXY_CIDR")
+	if trustedCIDR != "" {
+		_, cidrNet, err := net.ParseCIDR(trustedCIDR)
+		if err == nil && cidrNet.Contains(net.ParseIP(host)) {
+			if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+				return realIP
+			}
+		}
 	}
 
 	return host
@@ -90,12 +100,12 @@ func (rl *RateLimiter) CheckLimit(ctx context.Context, scope RateLimitScope, ide
 		if rl.isProd {
 			return false, fmt.Errorf("redis rate limiter unavailable in production mode")
 		}
-		return true, nil // Fallback open in non-prod if no redis
+		return true, nil
 	}
 
 	key := fmt.Sprintf("pcp:v1:ratelimit:%s:%s", scope, identifier)
 	nowSec := time.Now().Unix()
-	ttlSec := 3600 // 1 hour TTL
+	ttlSec := 3600
 
 	res, err := rl.rdb.Eval(ctx, tokenBucketScript, []string{key}, capacity, fillRate, nowSec, 1, ttlSec).Int64()
 	if err != nil {
@@ -115,19 +125,39 @@ func (rl *RateLimiter) LimitMiddleware(scope RateLimitScope, capacity int, fillR
 			ip := ExtractClientIP(r)
 			var identifier string
 
+			// Extract authoritative principal from request context
+			var orgID, userID string
+			if principal, _ := auth.GetPrincipal(r.Context()); principal != nil {
+				orgID = principal.OrganizationID
+				userID = principal.UserID
+			}
+
+			deviceID := chi.URLParam(r, "id")
+
 			switch scope {
-			case ScopeLogin, ScopeWSUpgrade:
+			case ScopeLogin, ScopeEnrollment:
 				identifier = ip
+			case ScopeWSUpgrade:
+				if deviceID != "" {
+					identifier = fmt.Sprintf("%s:%s", deviceID, ip)
+				} else {
+					identifier = ip
+				}
 			case ScopeRestAPI:
-				orgID := r.Header.Get("X-Organization-ID")
 				if orgID == "" {
 					orgID = "anon"
 				}
 				identifier = fmt.Sprintf("%s:%s", orgID, ip)
 			case ScopeCommand:
-				orgID := r.Header.Get("X-Organization-ID")
-				userID := r.Header.Get("X-User-ID")
-				deviceID := r.Header.Get("X-Device-ID")
+				if orgID == "" {
+					orgID = "anon"
+				}
+				if userID == "" {
+					userID = "anon"
+				}
+				if deviceID == "" {
+					deviceID = "unknown"
+				}
 				identifier = fmt.Sprintf("%s:%s:%s", orgID, userID, deviceID)
 			default:
 				identifier = ip

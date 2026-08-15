@@ -31,32 +31,29 @@ import (
 )
 
 func main() {
-	// Initialize structured logger (log/slog)
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	}))
-	slog.SetDefault(logger)
+	})))
 
+	slog.Info("Starting Phone Control Platform Backend Server")
+
+	// Load configuration
 	cfg := config.LoadConfig()
-	slog.Info("Starting Phone Control Platform Go Backend", "node_id", cfg.NodeID, "env", cfg.AppEnv, "port", cfg.Port)
 
-	// Validate Production Configuration Fail-Fast Policy
+	// Execute Production Fail-Fast Validation
 	if err := config.ValidateProductionConfig(cfg); err != nil {
-		slog.Error("FATAL: Production security validation failed", "error", err)
+		slog.Error("FATAL: Production configuration security validation failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Context for graceful shutdown
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Initialize PostgreSQL pool
+	// Initialize PostgreSQL Connection Pool
 	var pgPool *pgxpool.Pool
-	pgCtx, pgCancel := context.WithTimeout(ctx, 3*time.Second)
-	pool, err := pgxpool.New(pgCtx, cfg.PostgresURL)
-	pgCancel()
+	pool, err := pgxpool.New(ctx, cfg.PostgresURL)
 	if err != nil {
-		slog.Warn("Failed to initialize PostgreSQL pool connection", "error", err)
+		slog.Warn("Failed to create PostgreSQL connection pool", "error", err)
 		if cfg.AppEnv == "production" {
 			slog.Error("FATAL: PostgreSQL unavailable in production mode")
 			os.Exit(1)
@@ -82,11 +79,29 @@ func main() {
 		slog.Info("Redis client initialized")
 	}
 
+	// Production Fail-Fast Health Checks (Pings)
+	if cfg.AppEnv == "production" {
+		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer pingCancel()
+
+		if pgPool == nil || pgPool.Ping(pingCtx) != nil {
+			slog.Error("FATAL: PostgreSQL ping failed in production mode")
+			os.Exit(1)
+		}
+		if rdb == nil || rdb.Ping(pingCtx).Err() != nil {
+			slog.Error("FATAL: Redis ping failed in production mode")
+			os.Exit(1)
+		}
+	}
+
 	// Cluster Components (Node Registry, Message Bus, Cluster Router)
 	nodeRegistry := cluster.NewNodeRegistry(cfg.NodeID, rdb, 20*time.Second)
 	if rdb != nil {
 		if err := nodeRegistry.Start(ctx); err != nil {
-			slog.Warn("Failed to start cluster node registry", "error", err)
+			slog.Error("Failed to start cluster node registry", "error", err)
+			if cfg.AppEnv == "production" {
+				os.Exit(1)
+			}
 		}
 		defer nodeRegistry.Shutdown(context.Background())
 	}
@@ -118,9 +133,14 @@ func main() {
 	clusterRouter := cluster.NewClusterRouter(cfg.NodeID, messageBus, agentConnRepo, mediaSessionRepo, wsHub, browserHub)
 	if rdb != nil {
 		if err := clusterRouter.Start(ctx); err != nil {
-			slog.Warn("Failed to start cluster router", "error", err)
+			slog.Error("Failed to start cluster router", "error", err)
+			if cfg.AppEnv == "production" {
+				os.Exit(1)
+			}
 		}
 	}
+
+	wsHub.SetDistributedMediaRelayer(wstransport.NewClusterMediaRelayer(mediaSessionRepo, clusterRouter))
 
 	outboxDispatcher := command.NewOutboxDispatcher(outboxRepo, cmdRepo, wsHub, browserHub)
 	outboxDispatcher.SetClusterComponents(agentConnRepo, clusterRouter)
@@ -143,6 +163,8 @@ func main() {
 	agentWSHandler.SetClusterComponents(cfg.NodeID, agentConnRepo, clusterRouter)
 
 	browserMediaHandler := wstransport.NewBrowserMediaHandler(wsHub, deviceService, cfg.CorsAllowedOrigins, viewerRepo)
+	browserMediaHandler.SetClusterComponents(cfg.NodeID, agentConnRepo, mediaSessionRepo, clusterRouter)
+
 	browserWSHandler := httptransport.NewBrowserWSHandler(browserHub, deviceService, cfg.CorsAllowedOrigins)
 	leaseHandler := httptransport.NewLeaseHandler(leaseService)
 	commandHandler := httptransport.NewCommandHandler(cmdService)
@@ -154,7 +176,7 @@ func main() {
 	// Create Chi router
 	r := chi.NewRouter()
 
-	// Global Middlewares (No HTTP Timeout on Root Router for Persistent WebSockets)
+	// Global Middlewares
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
@@ -179,13 +201,13 @@ func main() {
 	// Internal Prometheus Telemetry Exporter
 	r.Get("/metrics", telemetry.PrometheusHandler().ServeHTTP)
 
-	// Persistent Agent WebSocket Endpoint (Separate from /api/v1 - Protected by Signed HTTP Upgrade)
+	// Persistent Agent WebSocket Endpoint
 	r.With(
 		rateLimiter.LimitMiddleware(custommw.ScopeWSUpgrade, 20, 5),
 		agentAuthMiddleware.Handler,
 	).Get("/agent/v1/connect", agentWSHandler.Connect)
 
-	// API Gateway routes (HTTP Request Timeout 30s scoped here)
+	// API Gateway routes
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Use(rateLimiter.LimitMiddleware(custommw.ScopeRestAPI, 100, 20))
@@ -194,8 +216,8 @@ func main() {
 		r.With(rateLimiter.LimitMiddleware(custommw.ScopeLogin, 10, 2)).Post("/auth/login", authHandler.Login)
 		r.Post("/auth/logout", authHandler.Logout)
 
-		// Public Agent Enrollment Endpoint
-		r.Post("/agents/enroll", agentHandler.EnrollAgent)
+		// Public Agent Enrollment Endpoint (Rate Limited by Enrollment Bucket)
+		r.With(rateLimiter.LimitMiddleware(custommw.ScopeEnrollment, 10, 2)).Post("/agents/enroll", agentHandler.EnrollAgent)
 
 		// Agent Machine Authenticated Heartbeat Endpoint
 		r.Group(func(r chi.Router) {
@@ -210,21 +232,21 @@ func main() {
 
 			r.Get("/auth/session", authHandler.Session)
 
-			// Device Registry Routes (Require device.read permission)
+			// Device Registry Routes
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.read"))
 				r.Get("/devices", deviceHandler.List)
 				r.Get("/devices/{id}", deviceHandler.GetByID)
 			})
 
-			// Device Stream & Event WebSocket Routes (Require device.stream.view permission)
+			// Device Stream & Event WebSocket Routes
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.stream.view"))
-				r.Get("/devices/{id}/media/ws", browserMediaHandler.ServeHTTP)
-				r.Get("/devices/{id}/events/ws", browserWSHandler.ServeHTTP)
+				r.With(rateLimiter.LimitMiddleware(custommw.ScopeWSUpgrade, 20, 5)).Get("/devices/{id}/media/ws", browserMediaHandler.ServeHTTP)
+				r.With(rateLimiter.LimitMiddleware(custommw.ScopeWSUpgrade, 20, 5)).Get("/devices/{id}/events/ws", browserWSHandler.ServeHTTP)
 			})
 
-			// Control Lease Management Routes (Require device.control.acquire permission)
+			// Control Lease Management Routes
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.control.acquire"))
 				r.Post("/devices/{id}/control-leases", leaseHandler.AcquireLease)
@@ -232,13 +254,13 @@ func main() {
 				r.Delete("/devices/{id}/control-leases/{leaseId}", leaseHandler.ReleaseLease)
 			})
 
-			// Command Dispatch Endpoint (Require device.control.input permission)
+			// Command Dispatch Endpoint
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.control.input"))
 				r.With(rateLimiter.LimitMiddleware(custommw.ScopeCommand, 50, 10)).Post("/commands", commandHandler.Dispatch)
 			})
 
-			// Enrollment Tokens Management Routes (Require agent.enroll permission)
+			// Enrollment Tokens Management Routes
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("agent.enroll"))
 				r.Post("/enrollment-tokens", agentHandler.CreateToken)

@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
+	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
 
@@ -95,14 +96,20 @@ func TestMultiNodeClusterRoutingAndFailover(t *testing.T) {
 	browserHubB.Subscribe(subB)
 	defer browserHubB.Unsubscribe(subB)
 
-	// 4. Register Agent on Node A (Global Gen 1)
+	// 4. Register Agent Connection on Node A (Global Gen 1)
 	gen1, err := agentRepoA.NextGeneration(ctx, "org_test", "dev_sm_g930f_01")
-	if err != nil {
-		t.Fatalf("failed to get gen1: %v", err)
+	if err != nil || gen1 != 1 {
+		t.Fatalf("expected gen1 == 1, got %d (err: %v)", gen1, err)
 	}
-	if gen1 != 1 {
-		t.Fatalf("expected gen1 == 1, got %d", gen1)
+
+	agentA := &domain.DeviceAgent{
+		AgentID:        "agent_01",
+		DeviceID:       "dev_sm_g930f_01",
+		OrganizationID: "org_test",
 	}
+	connA := agentws.NewConnection(hubA, nil, agentA, gen1)
+	connA.ConnectionID = "conn_a_01"
+	hubA.Register(connA)
 
 	ownerA := redispkg.AgentOwnerRecord{
 		NodeID:       "node-a",
@@ -126,8 +133,20 @@ func TestMultiNodeClusterRoutingAndFailover(t *testing.T) {
 		Generation:   resolvedOwner.Generation,
 	}
 
-	// Test cross-node route request from Node C to Node A
-	_ = routerC.DispatchCommandRoute(ctx, "org_test", "dev_sm_g930f_01", snap1, "node-a", []byte(`{"action":"home"}`))
+	// Dispatch Command Route from Node C to Node A (Must return receipt success)
+	if err := routerC.DispatchCommandRoute(ctx, "org_test", "dev_sm_g930f_01", snap1, "node-a", []byte(`{"action":"home"}`)); err != nil {
+		t.Fatalf("DispatchCommandRoute from Node C to Node A failed: %v", err)
+	}
+
+	// Verify Agent on Node A received dispatched message
+	select {
+	case msg := <-connA.Send:
+		if len(msg) == 0 {
+			t.Fatalf("Agent on Node A received empty payload")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Timed out waiting for Agent on Node A to receive command")
+	}
 
 	// 6. Node A broadcasts status event -> Node B receives and forwards to browser subscriber B
 	routerA.BroadcastBrowserStatusEvent("org_test", "dev_sm_g930f_01", "cmd_100", "executing", 2, "")
@@ -155,6 +174,12 @@ func TestMultiNodeClusterRoutingAndFailover(t *testing.T) {
 	}
 	if err := agentRepoC.RegisterOwner(ctx, "org_test", "dev_sm_g930f_01", ownerC, 30*time.Second); err != nil {
 		t.Fatalf("failed to register owner C: %v", err)
+	}
+
+	// Stale owner A delayed RegisterOwner with lower gen1 MUST be rejected by Lua script
+	err = agentRepoA.RegisterOwner(ctx, "org_test", "dev_sm_g930f_01", ownerA, 30*time.Second)
+	if err == nil {
+		t.Fatalf("expected delayed gen1 RegisterOwner to fail CAS check against gen2, got nil")
 	}
 
 	// Stale owner A renewal must fail CAS check

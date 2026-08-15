@@ -20,17 +20,22 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
+	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
 	devservice "github.com/tcandt/cloudphone-farm/backend/internal/device"
 	redispkg "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
 
 type BrowserMediaHandler struct {
-	hub           *agentws.Hub
-	deviceService *devservice.DeviceService
-	viewerRepo    *redispkg.ViewerRepository
-	coturnSecret  string
-	coturnHost    string
-	upgrader      websocket.Upgrader
+	hub              *agentws.Hub
+	deviceService    *devservice.DeviceService
+	viewerRepo       *redispkg.ViewerRepository
+	agentConnRepo    *redispkg.AgentConnectionRepository
+	mediaSessionRepo *redispkg.MediaSessionRepository
+	router           *cluster.ClusterRouter
+	nodeID           string
+	coturnSecret     string
+	coturnHost       string
+	upgrader         websocket.Upgrader
 }
 
 func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceService, allowedOrigins []string, viewerRepo *redispkg.ViewerRepository) *BrowserMediaHandler {
@@ -82,6 +87,18 @@ func NewBrowserMediaHandler(hub *agentws.Hub, deviceService *devservice.DeviceSe
 	}
 }
 
+func (h *BrowserMediaHandler) SetClusterComponents(
+	nodeID string,
+	agentConnRepo *redispkg.AgentConnectionRepository,
+	mediaSessionRepo *redispkg.MediaSessionRepository,
+	router *cluster.ClusterRouter,
+) {
+	h.nodeID = nodeID
+	h.agentConnRepo = agentConnRepo
+	h.mediaSessionRepo = mediaSessionRepo
+	h.router = router
+}
+
 type ICEServer struct {
 	URLs       []string `json:"urls"`
 	Username   string   `json:"username,omitempty"`
@@ -131,12 +148,36 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}()
 	}
 
-	// 4. Verify Active Agent Connection Before Registering Session
-	agentConn, ok := h.hub.GetConnection(orgID, deviceID)
-	if !ok || agentConn == nil {
-		slog.Warn("Device agent is not connected for browser media stream", "device_id", deviceID, "org_id", orgID)
-		http.Error(w, "Device Agent Not Connected", http.StatusServiceUnavailable)
-		return
+	// 4. Verify Active Agent Connection Owner (Distributed Directory or Local Hub)
+	var ownerNodeID string
+	var snap agentws.ConnectionSnapshot
+
+	if h.agentConnRepo != nil {
+		ownerRec, err := h.agentConnRepo.GetOwner(ctx, orgID, deviceID)
+		if err != nil || ownerRec == nil {
+			slog.Warn("Device agent owner directory lookup failed or not connected", "device_id", deviceID, "org_id", orgID, "error", err)
+			http.Error(w, "Device Agent Not Connected", http.StatusServiceUnavailable)
+			return
+		}
+		ownerNodeID = ownerRec.NodeID
+		snap = agentws.ConnectionSnapshot{
+			AgentID:      ownerRec.AgentID,
+			ConnectionID: ownerRec.ConnectionID,
+			Generation:   ownerRec.Generation,
+		}
+	} else {
+		agentConn, ok := h.hub.GetConnection(orgID, deviceID)
+		if !ok || agentConn == nil {
+			slog.Warn("Device agent is not connected for browser media stream", "device_id", deviceID, "org_id", orgID)
+			http.Error(w, "Device Agent Not Connected", http.StatusServiceUnavailable)
+			return
+		}
+		ownerNodeID = h.nodeID
+		snap = agentws.ConnectionSnapshot{
+			AgentID:      agentConn.AgentID,
+			ConnectionID: agentConn.ConnectionID,
+			Generation:   agentConn.Generation,
+		}
 	}
 
 	conn, err := h.upgrader.Upgrade(w, r, nil)
@@ -148,6 +189,10 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	browserChan := make(chan []byte, 128)
 	expiresAt := time.Now().Add(15 * time.Minute)
+
+	// Register local browser session channel for session-scoped media routing
+	agentws.DefaultMediaBrowserRegistry().Register(sessionID, browserChan)
+	defer agentws.DefaultMediaBrowserRegistry().Unregister(sessionID)
 
 	// 5. Real Coturn REST HMAC-SHA1 Ephemeral Credential Generation
 	unixExpiry := time.Now().Add(10 * time.Minute).Unix()
@@ -169,24 +214,44 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		},
 	}
 
-	// 6. Register authenticated MediaSession record with Agent Connection Fencing Snapshot
+	// 6. Register authenticated MediaSession record in local Hub and distributed Redis repository
 	mediaSession := &agentws.MediaSession{
 		SessionID:      sessionID,
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
 		UserID:         principal.UserID,
-		AgentID:        agentConn.AgentID,
-		ConnectionID:   agentConn.ConnectionID,
-		Generation:     agentConn.Generation,
+		AgentID:        snap.AgentID,
+		ConnectionID:   snap.ConnectionID,
+		Generation:     snap.Generation,
 		ExpiresAt:      expiresAt,
 		Subscriber:     browserChan,
 	}
 	h.hub.RegisterMediaSession(mediaSession)
 	defer h.hub.UnregisterMediaSession(sessionID)
 
-	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID, "agent_id", agentConn.AgentID)
+	if h.mediaSessionRepo != nil {
+		distSession := &redispkg.DistributedMediaSession{
+			SessionID:      sessionID,
+			BrowserNodeID:  h.nodeID,
+			AgentNodeID:    ownerNodeID,
+			AgentID:        snap.AgentID,
+			ConnectionID:   snap.ConnectionID,
+			Generation:     snap.Generation,
+			OrganizationID: orgID,
+			DeviceID:       deviceID,
+			UserID:         principal.UserID,
+			CreatedAt:      time.Now().UTC(),
+			ExpiresAt:      expiresAt.UTC(),
+		}
+		_ = h.mediaSessionRepo.RegisterMediaSession(ctx, distSession, 15*time.Minute)
+		defer func() {
+			_ = h.mediaSessionRepo.UnregisterMediaSession(context.Background(), sessionID)
+		}()
+	}
 
-	// 7. Send media.session.created server-owned frame to Browser first so Browser has session_id and Coturn REST ICE config
+	slog.Info("Browser WebRTC Media Signaling session created", "session_id", sessionID, "device_id", deviceID, "org_id", orgID, "user_id", principal.UserID, "agent_node_id", ownerNodeID)
+
+	// 7. Send media.session.created server-owned frame to Browser first
 	createdPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"device_id":   deviceID,
@@ -199,7 +264,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	createdBytes, _ := json.Marshal(createdEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, createdBytes)
 
-	// 8. Dispatch media.session.start to Device Agent via Fenced Session Dispatch
+	// 8. Dispatch media.session.start to Device Agent Node via ClusterRouter or local Hub
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
 		"width":       720,
@@ -211,9 +276,16 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	startEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStart, "msg_start_01", startPayload)
 	startBytes, _ := json.Marshal(startEnv)
 
-	if err := h.hub.DispatchToMediaSession(sessionID, startBytes); err != nil {
-		slog.Warn("Device agent not connected or failed to receive media.session.start", "device_id", deviceID, "error", err)
-		errPayload := map[string]interface{}{"session_id": sessionID, "status": "failed", "error_message": err.Error()}
+	var dispatchErr error
+	if h.router != nil {
+		dispatchErr = h.router.SendMediaSignalToAgent(ctx, sessionID, ownerNodeID, snap, startBytes)
+	} else {
+		dispatchErr = h.hub.DispatchToMediaSession(sessionID, startBytes)
+	}
+
+	if dispatchErr != nil {
+		slog.Warn("Device agent not connected or failed to receive media.session.start", "device_id", deviceID, "error", dispatchErr)
+		errPayload := map[string]interface{}{"session_id": sessionID, "status": "failed", "error_message": dispatchErr.Error()}
 		errEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeError, "err_01", errPayload)
 		errBytes, _ := json.Marshal(errEnv)
 		_ = conn.WriteMessage(websocket.TextMessage, errBytes)
@@ -224,7 +296,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	ctxCancel, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Expiry Timer: Immediate stop & close when TTL expires (Uses DispatchStopToMediaSession to bypass expiry rejection for cleanup)
+	// Expiry Timer: Immediate stop & close when TTL expires
 	expiryTimer := time.NewTimer(time.Until(expiresAt))
 	defer expiryTimer.Stop()
 
@@ -237,7 +309,12 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			stopPayload := map[string]interface{}{"session_id": sessionID, "reason": "session_ttl_expired"}
 			stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_ttl_stop", stopPayload)
 			stopBytes, _ := json.Marshal(stopEnv)
-			_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
+
+			if h.router != nil {
+				_ = h.router.SendMediaSignalToAgent(context.Background(), sessionID, ownerNodeID, snap, stopBytes)
+			} else {
+				_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
+			}
 
 			_ = conn.SetReadDeadline(time.Now())
 			_ = conn.Close()
@@ -245,7 +322,7 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 	}()
 
-	// Goroutine 1: Relay messages from Browser -> Device Agent via Fenced Media Session Dispatch
+	// Goroutine 1: Relay messages from Browser -> Device Agent Node
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -288,22 +365,22 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 			switch env.Type {
 			case agentws.MessageTypeMediaSignalOffer, agentws.MessageTypeMediaSignalCandidate:
-				if err := h.hub.DispatchToMediaSession(sessionID, message); err != nil {
-					slog.Warn("Failed to dispatch fenced browser media signal to device agent", "type", env.Type, "error", err)
+				if h.router != nil {
+					_ = h.router.SendMediaSignalToAgent(ctx, sessionID, ownerNodeID, snap, message)
 				} else {
-					slog.Info("Dispatched fenced browser media signal to device agent", "type", env.Type, "session_id", sessionID)
+					_ = h.hub.DispatchToMediaSession(sessionID, message)
 				}
 			case agentws.MessageTypeMediaSessionStop:
-				if err := h.hub.DispatchStopToMediaSession(sessionID, message); err != nil {
-					slog.Warn("Failed to dispatch fenced browser media stop to device agent", "type", env.Type, "error", err)
+				if h.router != nil {
+					_ = h.router.SendMediaSignalToAgent(ctx, sessionID, ownerNodeID, snap, message)
 				} else {
-					slog.Info("Dispatched fenced browser media stop to device agent", "type", env.Type, "session_id", sessionID)
+					_ = h.hub.DispatchStopToMediaSession(sessionID, message)
 				}
 			}
 		}
 	}()
 
-	// Goroutine 2: Relay messages from Device Agent (browserChan) -> Browser
+	// Goroutine 2: Relay messages from Device Agent Node (browserChan) -> Browser
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -339,6 +416,12 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	stopPayload := map[string]interface{}{"session_id": sessionID}
 	stopEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStop, "msg_stop_01", stopPayload)
 	stopBytes, _ := json.Marshal(stopEnv)
-	_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
+
+	if h.router != nil {
+		_ = h.router.SendMediaSignalToAgent(context.Background(), sessionID, ownerNodeID, snap, stopBytes)
+	} else {
+		_ = h.hub.DispatchStopToMediaSession(sessionID, stopBytes)
+	}
+
 	slog.Info("Browser Media Session closed cleanly", "session_id", sessionID)
 }

@@ -173,9 +173,7 @@ func (cr *ClusterRouter) handleMediaSignalToAgent(env *RoutedEnvelope) {
 }
 
 func (cr *ClusterRouter) handleMediaSignalToBrowser(env *RoutedEnvelope) {
-	if cr.browserHub != nil {
-		cr.browserHub.BroadcastRawMediaSignal(env.OrganizationID, env.DeviceID, env.Payload)
-	}
+	agentws.DefaultMediaBrowserRegistry().SendToSession(env.MessageID, env.Payload)
 }
 
 // DispatchCommandRoute sends command payload to owner node (or dispatches locally if owner is local) and waits for route receipt.
@@ -231,6 +229,44 @@ func (cr *ClusterRouter) DispatchCommandRoute(
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+}
+
+func (cr *ClusterRouter) SendMediaSignalToAgent(ctx context.Context, sessionID, targetNodeID string, snap agentws.ConnectionSnapshot, payload []byte) error {
+	if targetNodeID == cr.nodeID {
+		return cr.wsHub.DispatchToConnectionSnapshot(snap.OrganizationID, snap.DeviceID, snap, payload)
+	}
+
+	env := &RoutedEnvelope{
+		MessageID:      sessionID,
+		SourceNodeID:   cr.nodeID,
+		TargetNodeID:   targetNodeID,
+		OrganizationID: snap.OrganizationID,
+		DeviceID:       snap.DeviceID,
+		AgentID:        snap.AgentID,
+		ConnectionID:   snap.ConnectionID,
+		Generation:     snap.Generation,
+		Type:           "media.signal.to_agent",
+		Payload:        payload,
+	}
+
+	return cr.bus.PublishToNode(ctx, targetNodeID, env)
+}
+
+func (cr *ClusterRouter) SendMediaSignalToBrowser(ctx context.Context, sessionID, targetBrowserNodeID string, payload []byte) error {
+	if targetBrowserNodeID == cr.nodeID {
+		agentws.DefaultMediaBrowserRegistry().SendToSession(sessionID, payload)
+		return nil
+	}
+
+	env := &RoutedEnvelope{
+		MessageID:    sessionID,
+		SourceNodeID: cr.nodeID,
+		TargetNodeID: targetBrowserNodeID,
+		Type:         "media.signal.to_browser",
+		Payload:      payload,
+	}
+
+	return cr.bus.PublishToNode(ctx, targetBrowserNodeID, env)
 }
 
 // BroadcastBrowserStatusEvent publishes command status event across cluster nodes to reach all browser subscribers.

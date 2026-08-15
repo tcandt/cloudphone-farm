@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -167,7 +168,11 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 			for {
 				select {
 				case <-ticker.C:
-					_ = h.agentConnRepo.RenewOwner(renewCtx, agent.OrganizationID, agent.DeviceID, ownerRec, 30*time.Second)
+					if err := h.agentConnRepo.RenewOwner(renewCtx, agent.OrganizationID, agent.DeviceID, ownerRec, 30*time.Second); err != nil {
+						slog.Warn("Stale connection evicted: owner lease renewal failed", "error", err, "device_id", agent.DeviceID, "conn_id", agentConn.ConnectionID)
+						go agentConn.Close()
+						return
+					}
 				case <-renewCtx.Done():
 					return
 				}
@@ -175,7 +180,7 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		defer func() {
-			_ = h.agentConnRepo.UnregisterOwner(context.Background(), agent.OrganizationID, agent.DeviceID, agentConn.ConnectionID)
+			_ = h.agentConnRepo.UnregisterOwner(context.Background(), agent.OrganizationID, agent.DeviceID, agentConn.ConnectionID, generation)
 		}()
 	}
 
@@ -203,6 +208,15 @@ func (h *AgentWSHandler) Connect(w http.ResponseWriter, r *http.Request) {
 	statusCallback := func(statusPayload agentws.CommandStatusPayload) error {
 		longLivedCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		if h.agentConnRepo != nil {
+			owner, err := h.agentConnRepo.GetOwner(longLivedCtx, agent.OrganizationID, agent.DeviceID)
+			if err != nil || owner == nil || owner.ConnectionID != agentConn.ConnectionID || owner.Generation != agentConn.Generation {
+				slog.Warn("Stale connection status ACK rejected: global owner authority mismatch", "device_id", agent.DeviceID, "conn_id", agentConn.ConnectionID)
+				go agentConn.Close()
+				return errors.New("stale connection authority mismatch")
+			}
+		}
 
 		err := h.cmdRepo.UpdateCommandStatusFromAgentWithGeneration(
 			longLivedCtx,

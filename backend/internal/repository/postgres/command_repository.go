@@ -234,8 +234,12 @@ func (r *CommandRepository) UpdateDeliveryAttemptStatus(ctx context.Context, com
 	var res pgconn.CommandTag
 	var err error
 	if status == "failed" {
-		query := `UPDATE command_delivery_attempts SET status = $1, failed_at = CURRENT_TIMESTAMP, failure_reason = $2 WHERE command_id = $3 AND attempt_no = $4`
+		query := `UPDATE command_delivery_attempts SET status = $1, failed_at = CURRENT_TIMESTAMP, failure_reason = $2 WHERE command_id = $3 AND attempt_no = $4 AND status NOT IN ('dispatched', 'executing', 'succeeded')`
 		res, err = r.pool.Exec(ctx, query, status, failureReason, commandID, attemptNo)
+		if err == nil && res.RowsAffected() == 0 {
+			// Delivery attempt was already dispatched/executing/succeeded, preserve ACKed status
+			return nil
+		}
 	} else {
 		query := `UPDATE command_delivery_attempts SET status = $1 WHERE command_id = $2 AND attempt_no = $3`
 		res, err = r.pool.Exec(ctx, query, status, commandID, attemptNo)

@@ -199,6 +199,13 @@ func (d *OutboxDispatcher) dispatchSingleMessage(ctx context.Context, msg pgrepo
 	}
 
 	if err != nil {
+		if latestCmd, getErr := d.cmdRepo.GetCommandByID(ctx, msg.CommandID); getErr == nil && latestCmd != nil && (latestCmd.Status == "executing" || latestCmd.Status == "succeeded" || latestCmd.Status == "completed") {
+			slog.Info("Route receipt returned error/timeout but agent already fast-ACKed command. Preserving status.", "command_id", msg.CommandID, "status", latestCmd.Status)
+			_ = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "dispatched", "")
+			_ = d.outboxRepo.UpdateOutboxDispatched(ctx, msg.OutboxID)
+			return
+		}
+
 		_ = d.cmdRepo.UpdateDeliveryAttemptStatus(ctx, msg.CommandID, attemptNo, "failed", err.Error())
 		if attemptNo >= d.maxAttempts {
 			slog.Error("Outbox message permanently failed max retry limit", "outbox_id", msg.OutboxID, "device_id", msg.DeviceID, "attempts", attemptNo)

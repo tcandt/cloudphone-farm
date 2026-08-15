@@ -73,7 +73,33 @@ func (r *AgentConnectionRepository) GetGeneration(ctx context.Context, orgID, de
 	return val, nil
 }
 
-// RegisterOwner stores or overwrites the agent owner record for a device session with TTL.
+// RegisterOwner uses a Lua script to atomically claim owner status ONLY IF proposed generation matches current global generation and >= existing owner generation.
+const registerOwnerScript = `
+local owner_key = KEYS[1]
+local gen_key = KEYS[2]
+local expected_gen = tonumber(ARGV[1])
+local new_payload = ARGV[2]
+local ttl_ms = tonumber(ARGV[3])
+
+local current_gen_str = redis.call('GET', gen_key)
+local current_gen = current_gen_str and tonumber(current_gen_str) or 0
+
+if expected_gen < current_gen then
+    return 0
+end
+
+local existing_owner = redis.call('GET', owner_key)
+if existing_owner then
+    local data = cjson.decode(existing_owner)
+    if data and data.generation and tonumber(data.generation) > expected_gen then
+        return 0
+    end
+end
+
+redis.call('SET', owner_key, new_payload, 'PX', ttl_ms)
+return 1
+`
+
 func (r *AgentConnectionRepository) RegisterOwner(ctx context.Context, orgID, deviceID string, rec AgentOwnerRecord, ttl time.Duration) error {
 	if r.rdb == nil {
 		return ErrRedisDown
@@ -85,15 +111,23 @@ func (r *AgentConnectionRepository) RegisterOwner(ctx context.Context, orgID, de
 		return fmt.Errorf("failed to serialize agent owner record: %w", err)
 	}
 
-	key := ownerKey(orgID, deviceID)
-	if err := r.rdb.Set(ctx, key, payload, ttl).Err(); err != nil {
-		return fmt.Errorf("%w: %v", ErrRedisDown, err)
+	oKey := ownerKey(orgID, deviceID)
+	gKey := generationKey(orgID, deviceID)
+	ttlMs := ttl.Milliseconds()
+
+	res, err := r.rdb.Eval(ctx, registerOwnerScript, []string{oKey, gKey}, rec.Generation, string(payload), ttlMs).Int64()
+	if err != nil {
+		return fmt.Errorf("%w: atomic register owner script error: %v", ErrRedisDown, err)
+	}
+
+	if res == 0 {
+		return ErrCASMismatch
 	}
 
 	return nil
 }
 
-// RenewOwner uses a CAS Lua script to renew TTL ONLY IF the current owner record matches connection_id and generation.
+// RenewOwner uses a CAS Lua script to renew TTL ONLY IF the current owner record matches connection_id AND generation.
 const renewOwnerScript = `
 local key = KEYS[1]
 local expected_conn_id = ARGV[1]
@@ -141,10 +175,11 @@ func (r *AgentConnectionRepository) RenewOwner(ctx context.Context, orgID, devic
 	return nil
 }
 
-// UnregisterOwner uses a CAS Lua script to delete the owner record ONLY IF the current record matches connection_id.
+// UnregisterOwner uses a CAS Lua script to delete the owner record ONLY IF the current record matches connection_id AND generation.
 const unregisterOwnerScript = `
 local key = KEYS[1]
 local expected_conn_id = ARGV[1]
+local expected_gen = tonumber(ARGV[2])
 
 local current = redis.call('GET', key)
 if not current then
@@ -152,7 +187,7 @@ if not current then
 end
 
 local data = cjson.decode(current)
-if data.connection_id == expected_conn_id then
+if data.connection_id == expected_conn_id and tonumber(data.generation) == expected_gen then
     redis.call('DEL', key)
     return 1
 else
@@ -160,13 +195,13 @@ else
 end
 `
 
-func (r *AgentConnectionRepository) UnregisterOwner(ctx context.Context, orgID, deviceID string, connID string) error {
+func (r *AgentConnectionRepository) UnregisterOwner(ctx context.Context, orgID, deviceID string, connID string, generation int64) error {
 	if r.rdb == nil {
 		return ErrRedisDown
 	}
 
 	key := ownerKey(orgID, deviceID)
-	res, err := r.rdb.Eval(ctx, unregisterOwnerScript, []string{key}, connID).Int64()
+	res, err := r.rdb.Eval(ctx, unregisterOwnerScript, []string{key}, connID, generation).Int64()
 	if err != nil {
 		return fmt.Errorf("%w: CAS unregister script error: %v", ErrRedisDown, err)
 	}
