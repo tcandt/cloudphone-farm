@@ -147,16 +147,20 @@ jobs:
           DB_NAME: phone_farm
         run: |
           go test -race -v ./internal/cluster/... ./internal/repository/postgres/... ./internal/repository/redis/... ./internal/telemetry/... ./internal/transport/http/middleware/... ./internal/transport/ws/...
+          go build -o /tmp/migrate ./cmd/migrate
           go build -o /tmp/server ./cmd/server
+          go build -o /tmp/e2esmoke ./cmd/e2esmoke
           go build -o /tmp/loadharness ./cmd/loadharness
 
-          NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          /tmp/migrate
+
+          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_A=$!
 
-          NODE_ID=node-b PORT=8082 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-b PORT=8082 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_B=$!
 
-          NODE_ID=node-c PORT=8083 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          APP_ENV=test E2E_AUTH_BYPASS=true NODE_ID=node-c PORT=8083 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_C=$!
 
           sleep 3
@@ -165,9 +169,16 @@ jobs:
           curl -f http://localhost:8082/health/live
           curl -f http://localhost:8083/health/live
 
-          /tmp/loadharness -target-url http://localhost:8081 -concurrency 50 -duration 3s
+          /tmp/e2esmoke -stage=phase1 -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083
 
-          kill $PID_A $PID_B $PID_C
+          kill $PID_A
+          sleep 1
+
+          /tmp/e2esmoke -stage=phase2 -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083
+
+          /tmp/loadharness -target-url http://localhost:8083 -concurrency 10 -duration 3s
+
+          kill $PID_B $PID_C
 
   android-build:
     name: Build Android Agent APK

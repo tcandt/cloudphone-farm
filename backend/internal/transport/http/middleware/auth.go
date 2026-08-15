@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
@@ -29,6 +30,11 @@ func NewAuthMiddleware(authService *auth.AuthService, cookieName string, appEnv 
 
 func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		allowTestBypass := (m.appEnv == "test" || os.Getenv("APP_ENV") == "test") &&
+			os.Getenv("E2E_AUTH_BYPASS") == "true" &&
+			m.appEnv != "production" &&
+			os.Getenv("APP_ENV") != "production"
+
 		cookie, err := r.Cookie(m.cookieName)
 		if err != nil || cookie.Value == "" {
 			// Fallback check dev cookie name if main cookie missing
@@ -40,7 +46,7 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		if cookie == nil || cookie.Value == "" {
-			if m.appEnv != "production" {
+			if allowTestBypass {
 				devUserID := r.Header.Get("X-Dev-User-ID")
 				if devUserID == "" {
 					devUserID = "user_dev_01"
@@ -72,7 +78,7 @@ func (m *AuthMiddleware) Handler(next http.Handler) http.Handler {
 
 		principal, err := m.authService.GetSessionByToken(r.Context(), cookie.Value)
 		if err != nil {
-			if m.appEnv != "production" {
+			if allowTestBypass {
 				devUserID := r.Header.Get("X-Dev-User-ID")
 				if devUserID == "" {
 					devUserID = "user_dev_01"

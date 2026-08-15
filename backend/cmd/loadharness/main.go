@@ -52,100 +52,10 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	}
 	defer pool.Close()
 
-	// 1. Ensure Core Tables Exist matching 000001_create_core_tables.up.sql
-	schemaSQL := `
-		CREATE TABLE IF NOT EXISTS organizations (
-			organization_id VARCHAR(64) PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
-			slug VARCHAR(128) NOT NULL UNIQUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS users (
-			user_id VARCHAR(64) PRIMARY KEY,
-			email VARCHAR(255) NOT NULL UNIQUE,
-			password_hash VARCHAR(255) NOT NULL,
-			display_name VARCHAR(255) NOT NULL,
-			avatar_url TEXT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS devices (
-			device_id VARCHAR(64) NOT NULL,
-			organization_id VARCHAR(64) NOT NULL REFERENCES organizations(organization_id) ON DELETE CASCADE,
-			group_id VARCHAR(64),
-			name VARCHAR(255) NOT NULL,
-			serial_number VARCHAR(128) NOT NULL,
-			model VARCHAR(128) NOT NULL,
-			platform_version VARCHAR(32) NOT NULL,
-			status VARCHAR(32) NOT NULL DEFAULT 'provisioning',
-			capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			PRIMARY KEY (device_id),
-			CONSTRAINT uk_org_device UNIQUE (organization_id, device_id)
-		);
-
-		CREATE TABLE IF NOT EXISTS control_leases (
-			control_lease_id VARCHAR(64) PRIMARY KEY,
-			organization_id VARCHAR(64) NOT NULL,
-			device_id VARCHAR(64) NOT NULL,
-			user_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
-			fencing_token BIGINT NOT NULL DEFAULT 1,
-			acquired_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			expires_at TIMESTAMPTZ NOT NULL,
-			revoked_at TIMESTAMPTZ,
-			CONSTRAINT fk_lease_device FOREIGN KEY (organization_id, device_id) REFERENCES devices(organization_id, device_id) ON DELETE CASCADE
-		);
-
-		CREATE TABLE IF NOT EXISTS commands (
-			command_id VARCHAR(64) PRIMARY KEY,
-			organization_id VARCHAR(64) NOT NULL,
-			device_id VARCHAR(64) NOT NULL,
-			actor_id VARCHAR(64) NOT NULL REFERENCES users(user_id),
-			command_type VARCHAR(64) NOT NULL,
-			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-			status VARCHAR(32) NOT NULL DEFAULT 'pending',
-			idempotency_key VARCHAR(128) NOT NULL,
-			expires_at TIMESTAMPTZ,
-			executed_at TIMESTAMPTZ,
-			error_message TEXT,
-			last_status_sequence BIGINT NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			CONSTRAINT fk_command_device FOREIGN KEY (organization_id, device_id) REFERENCES devices(organization_id, device_id) ON DELETE CASCADE,
-			CONSTRAINT uk_org_actor_idempotency UNIQUE (organization_id, actor_id, idempotency_key)
-		);
-
-		CREATE TABLE IF NOT EXISTS command_events (
-			event_id BIGSERIAL PRIMARY KEY,
-			command_id VARCHAR(64) NOT NULL REFERENCES commands(command_id) ON DELETE CASCADE,
-			status VARCHAR(32) NOT NULL,
-			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-
-		CREATE TABLE IF NOT EXISTS command_outbox (
-			outbox_id BIGSERIAL PRIMARY KEY,
-			command_id VARCHAR(64) NOT NULL REFERENCES commands(command_id) ON DELETE CASCADE,
-			organization_id VARCHAR(64) NOT NULL,
-			device_id VARCHAR(64) NOT NULL,
-			event_type VARCHAR(64) NOT NULL,
-			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-			status VARCHAR(32) NOT NULL DEFAULT 'pending',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-			processed_at TIMESTAMPTZ
-		);
-	`
-	if _, err := pool.Exec(ctx, schemaSQL); err != nil {
-		slog.Error("Failed to initialize loadharness DB tables", "error", err)
-	}
-
 	orgID := "org_dev_01"
 	userID := "user_dev_01"
 
-	// 2. Seed Organization & User
+	// 1. Seed Organization & User
 	_, err = pool.Exec(ctx, `
 		INSERT INTO organizations (organization_id, name, slug, created_at, updated_at)
 		VALUES ($1, 'Dev Org', 'dev-org-01', NOW(), NOW())
@@ -164,28 +74,26 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 		slog.Error("Failed to seed user", "error", err)
 	}
 
-	// 3. Seed Devices & Control Leases
+	// 2. Seed Devices & Control Leases
 	for i := 0; i < count; i++ {
 		deviceID := fmt.Sprintf("dev_synth_%02d", i)
 		serial := fmt.Sprintf("SN_SYNTH_%02d", i)
 		leaseID := fmt.Sprintf("lease_synth_%d", i)
 
-		// Insert or update device
 		_, err = pool.Exec(ctx, `
 			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'online', '{}'::jsonb, NOW(), NOW())
-			ON CONFLICT (device_id) DO UPDATE SET status = 'online', updated_at = NOW()
+			ON CONFLICT (device_id) DO UPDATE SET status = 'online', updated_at = NOW();
 		`, deviceID, orgID, deviceID, serial)
 		if err != nil {
 			slog.Error("Failed to seed device", "device_id", deviceID, "error", err)
 		}
 
-		// Insert active control lease into control_leases table
 		expiresAt := time.Now().Add(1 * time.Hour)
 		_, err = pool.Exec(ctx, `
 			INSERT INTO control_leases (control_lease_id, organization_id, user_id, device_id, expires_at, fencing_token, acquired_at)
 			VALUES ($1, $2, $3, $4, $5, 1, NOW())
-			ON CONFLICT (control_lease_id) DO UPDATE SET expires_at = $5
+			ON CONFLICT (control_lease_id) DO UPDATE SET expires_at = $5;
 		`, leaseID, orgID, userID, deviceID, expiresAt)
 		if err != nil {
 			slog.Error("Failed to seed control lease", "lease_id", leaseID, "error", err)
@@ -248,12 +156,13 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	var dbPool *pgxpool.Pool
 	var dbAvailable, redisAvailable bool
 	if dbURL != "" {
 		if pool, err := pgxpool.New(ctx, dbURL); err == nil {
 			if pool.Ping(ctx) == nil {
 				dbAvailable = true
-				pool.Close()
+				dbPool = pool
 			}
 		}
 	}
@@ -298,6 +207,7 @@ func main() {
 		Timeout: 5 * time.Second,
 	}
 
+	var trackerWg sync.WaitGroup
 	var wg sync.WaitGroup
 	intervalPerWorker := time.Duration(float64(time.Minute) / (float64(*rateFlag) / float64(*concurrencyFlag)))
 	if intervalPerWorker <= 0 {
@@ -334,7 +244,8 @@ func main() {
 				reqURL := fmt.Sprintf("%s/api/v1/commands", *nodeURLFlag)
 				req, err := http.NewRequestWithContext(context.Background(), "POST", reqURL, bytes.NewReader(bodyBytes))
 				req.Header.Set("Content-Type", "application/json")
-				req.Header.Set("X-Dev-Worker-ID", deviceID)
+				req.Header.Set("X-Dev-User-ID", "user_dev_01")
+				req.Header.Set("X-Dev-Org-ID", "org_dev_01")
 
 				var ok bool
 				if err == nil {
@@ -343,21 +254,45 @@ func main() {
 						if resp.StatusCode == http.StatusAccepted {
 							ok = true
 							dispatched.Add(1)
-							// Parse response for authoritative status verification
 							var resBody struct {
 								Data struct {
 									CommandID string `json:"commandId"`
-									Status    string `json:"status"`
 								} `json:"data"`
 							}
-							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" {
-								// Count ACKED/SUCCEEDED only from authoritative delivery state
-								if resBody.Data.Status == "ack" || resBody.Data.Status == "executing" || resBody.Data.Status == "succeeded" {
-									acked.Add(1)
-								}
-								if resBody.Data.Status == "succeeded" {
-									succeeded.Add(1)
-								}
+							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" && dbPool != nil {
+								cmdID := resBody.Data.CommandID
+								trackerWg.Add(1)
+								go func(cID string) {
+									defer trackerWg.Done()
+									// Poll DB status post-202 for authoritative ACK / Succeeded
+									tCtx, tCancel := context.WithTimeout(context.Background(), 4*time.Second)
+									defer tCancel()
+
+									tTicker := time.NewTicker(50 * time.Millisecond)
+									defer tTicker.Stop()
+
+									var gotAck, gotSucc bool
+									for {
+										select {
+										case <-tCtx.Done():
+											return
+										case <-tTicker.C:
+											var status string
+											err := dbPool.QueryRow(tCtx, "SELECT status FROM commands WHERE command_id = $1", cID).Scan(&status)
+											if err == nil {
+												if !gotAck && (status == "ack" || status == "executing" || status == "succeeded") {
+													acked.Add(1)
+													gotAck = true
+												}
+												if !gotSucc && status == "succeeded" {
+													succeeded.Add(1)
+													gotSucc = true
+													return
+												}
+											}
+										}
+									}
+								}(cmdID)
 							}
 						} else if resp.StatusCode == http.StatusTooManyRequests {
 							duplicates.Add(1)
@@ -400,6 +335,10 @@ func main() {
 	}
 
 	wg.Wait()
+	trackerWg.Wait()
+	if dbPool != nil {
+		dbPool.Close()
+	}
 
 	// Calculate Report Metrics
 	totalSubmitted := submitted.Load()
@@ -429,7 +368,7 @@ func main() {
 	runtime.ReadMemStats(&m)
 
 	statusStr := "PASSED"
-	if errorRate > 5.0 || totalDispatched == 0 {
+	if errorRate > 5.0 || totalDispatched == 0 || totalAcked == 0 || totalSucceeded == 0 {
 		statusStr = "FAILED"
 	}
 
