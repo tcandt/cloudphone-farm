@@ -24,12 +24,24 @@ export interface PeerTelemetry {
   fps?: number;
   resolution?: string;
   bytesReceived?: number;
+  packetsReceived?: number;
   packetsLost?: number;
+  framesReceived?: number;
+  framesDecoded?: number;
+  framesDropped?: number;
   jitter?: number;
   roundTripTime?: number;
   candidateType?: 'direct' | 'relay' | 'unknown';
   localCandidateType?: string;
   remoteCandidateType?: string;
+  selectedCandidatePairId?: string;
+  localCandidateId?: string;
+  remoteCandidateId?: string;
+  codecId?: string;
+  codecMimeType?: string;
+  codecPayloadType?: number;
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 export interface WebRtcMediaClientOptions {
@@ -472,14 +484,26 @@ export class WebRtcMediaClient {
         let fps: number | undefined;
         let resolution: string | undefined;
         let bytesReceived: number | undefined;
+        let packetsReceived: number | undefined;
         let packetsLost: number | undefined;
+        let framesReceived: number | undefined;
+        let framesDecoded: number | undefined;
+        let framesDropped: number | undefined;
+        let frameW: number | undefined;
+        let frameH: number | undefined;
+        let activeCodecId: string | undefined;
+        let activeCodecMimeType: string | undefined;
+        let activeCodecPayloadType: number | undefined;
         let jitter: number | undefined;
         let roundTripTime: number | undefined;
         let candType: 'direct' | 'relay' | 'unknown' = 'unknown';
         let localCandType: string | undefined;
         let remoteCandType: string | undefined;
+        let localCandId: string | undefined;
+        let remoteCandId: string | undefined;
 
         const candidateMap = new Map<string, Record<string, unknown>>();
+        const codecMap = new Map<string, Record<string, unknown>>();
         let selectedPairId = '';
         let selectedPairReport: Record<string, unknown> | null = null;
 
@@ -490,27 +514,43 @@ export class WebRtcMediaClient {
           if (report.type === 'local-candidate' || report.type === 'remote-candidate') {
             candidateMap.set(report.id as string, report as Record<string, unknown>);
           }
+          if (report.type === 'codec') {
+            codecMap.set(report.id as string, report as Record<string, unknown>);
+          }
           if (report.type === 'inbound-rtp' && report.kind === 'video') {
             const r = report as Record<string, unknown>;
             if (typeof r.framesPerSecond === 'number' && r.framesPerSecond > 0) {
               fps = r.framesPerSecond;
             }
             if (typeof r.frameWidth === 'number' && typeof r.frameHeight === 'number' && r.frameWidth > 0 && r.frameHeight > 0) {
+              frameW = r.frameWidth as number;
+              frameH = r.frameHeight as number;
               resolution = `${r.frameWidth}x${r.frameHeight}`;
             }
-            if (typeof r.bytesReceived === 'number') bytesReceived = r.bytesReceived;
-            if (typeof r.packetsLost === 'number') packetsLost = r.packetsLost;
-            if (typeof r.jitter === 'number') jitter = Math.round(r.jitter * 1000);
+            if (typeof r.bytesReceived === 'number') bytesReceived = r.bytesReceived as number;
+            if (typeof r.packetsReceived === 'number') packetsReceived = r.packetsReceived as number;
+            if (typeof r.packetsLost === 'number') packetsLost = r.packetsLost as number;
+            if (typeof r.framesReceived === 'number') framesReceived = r.framesReceived as number;
+            if (typeof r.framesDecoded === 'number') framesDecoded = r.framesDecoded as number;
+            if (typeof r.framesDropped === 'number') framesDropped = r.framesDropped as number;
+            if (typeof r.codecId === 'string') activeCodecId = r.codecId as string;
+            if (typeof r.jitter === 'number') jitter = Math.round((r.jitter as number) * 1000);
 
             // Non-rVFC Fallback: Check framesDecoded progression from baseline 0
             if (typeof r.framesDecoded === 'number') {
               if (r.framesDecoded > this.lastFramesDecoded) {
-                this.lastFramesDecoded = r.framesDecoded;
+                this.lastFramesDecoded = r.framesDecoded as number;
                 this.notifyVideoFrameReceived();
               }
             }
           }
         });
+
+        if (activeCodecId && codecMap.has(activeCodecId)) {
+          const c = codecMap.get(activeCodecId)!;
+          if (typeof c.mimeType === 'string') activeCodecMimeType = c.mimeType as string;
+          if (typeof c.payloadType === 'number') activeCodecPayloadType = c.payloadType as number;
+        }
 
         stats.forEach((report) => {
           if (report.type === 'candidate-pair') {
@@ -528,8 +568,10 @@ export class WebRtcMediaClient {
           if (typeof pair.currentRoundTripTime === 'number') {
             roundTripTime = Math.round((pair.currentRoundTripTime as number) * 1000);
           }
-          const remoteCand = candidateMap.get(pair.remoteCandidateId as string);
-          const localCand = candidateMap.get(pair.localCandidateId as string);
+          localCandId = pair.localCandidateId as string;
+          remoteCandId = pair.remoteCandidateId as string;
+          const remoteCand = candidateMap.get(remoteCandId);
+          const localCand = candidateMap.get(localCandId);
 
           if (localCand && typeof localCand.candidateType === 'string') {
             localCandType = localCand.candidateType as string;
@@ -544,12 +586,24 @@ export class WebRtcMediaClient {
           fps,
           resolution,
           bytesReceived,
+          packetsReceived,
           packetsLost,
+          framesReceived,
+          framesDecoded,
+          framesDropped,
           jitter,
           roundTripTime,
           candidateType: candType,
           localCandidateType: localCandType,
           remoteCandidateType: remoteCandType,
+          selectedCandidatePairId: selectedPairId || (selectedPairReport ? (selectedPairReport.id as string) : undefined),
+          localCandidateId: localCandId,
+          remoteCandidateId: remoteCandId,
+          codecId: activeCodecId,
+          codecMimeType: activeCodecMimeType,
+          codecPayloadType: activeCodecPayloadType,
+          frameWidth: frameW,
+          frameHeight: frameH,
         };
 
         this.latestTelemetry = telemetry;

@@ -155,15 +155,25 @@ object ScreenCaptureManager {
             return
         }
 
-        Log.i(TAG, "Consent granted for Gen=$generation. Consuming single-use MediaProjection token immediately for SessionID=$activeSessionId")
+        Log.i(TAG, "Consent granted for Gen=$generation. Starting mediaProjection FGS then passing token to WebRTC for SessionID=$activeSessionId")
         val intentGrant = resultData
         val currentSessionId = activeSessionId
+
+        // TargetSdk 34 Rule: Start mediaProjection Foreground Service BEFORE consuming projection token
+        val fgsIntent = Intent(context, MediaCaptureService::class.java).apply {
+            action = MediaCaptureService.ACTION_START_CAPTURE
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(fgsIntent)
+        } else {
+            context.startService(fgsIntent)
+        }
 
         // CONSUME PERMISSION GRANT IMMEDIATELY: Never store reusable permission Intent (preserves activeSessionId!)
         clearPermissionGrantOnly()
         currentState = ScreenCaptureState.READY
 
-        // Option A Single Owner: Pass MediaProjection Intent directly to WebRTC Manager
+        // Single Owner: Pass MediaProjection Intent directly to WebRTC ScreenCapturerAndroid
         onConsentGrantedHandler?.invoke(currentSessionId, intentGrant)
     }
 
@@ -233,6 +243,11 @@ object ScreenCaptureManager {
 
         currentState = ScreenCaptureState.STOPPING
         Log.i(TAG, "Stopping capture session (SessionID=$activeSessionId, invalidated Gen=$sessionRequestGeneration)")
+
+        val stopIntent = Intent(context, MediaCaptureService::class.java).apply {
+            action = MediaCaptureService.ACTION_STOP_CAPTURE
+        }
+        context.stopService(stopIntent)
 
         val sessId = activeSessionId
         clearAllSessionState()

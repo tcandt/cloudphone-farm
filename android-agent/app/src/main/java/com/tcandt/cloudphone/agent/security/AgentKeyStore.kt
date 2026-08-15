@@ -149,6 +149,33 @@ class AgentKeyStore(context: Context) {
         return prefs.getString(KEY_FINGERPRINT, "") ?: ""
     }
 
+    fun getKeySecurityLevel(): String {
+        return try {
+            val factory = javax.crypto.SecretKeyFactory.getInstance(getSecretKey().algorithm, "AndroidKeyStore")
+            val keyInfo = factory.getKeySpec(getSecretKey(), android.security.keystore.KeyInfo::class.java) as android.security.keystore.KeyInfo
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                when (keyInfo.securityLevel) {
+                    KeyProperties.SECURITY_LEVEL_STRONGBOX -> "STRONGBOX"
+                    KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> "TRUSTED_ENVIRONMENT"
+                    KeyProperties.SECURITY_LEVEL_SOFTWARE -> "SOFTWARE"
+                    else -> if (keyInfo.isInsideSecureHardware) "TRUSTED_ENVIRONMENT" else "SOFTWARE"
+                }
+            } else {
+                if (keyInfo.isInsideSecureHardware) "TRUSTED_ENVIRONMENT" else "SOFTWARE"
+            }
+        } catch (e: Exception) {
+            "UNKNOWN"
+        }
+    }
+
+    fun getKeyProtectionMetadata(): org.json.JSONObject {
+        return org.json.JSONObject().apply {
+            put("algorithm", "AES-256-GCM")
+            put("provider", "AndroidKeyStore")
+            put("security_level", getKeySecurityLevel())
+        }
+    }
+
     fun signMessage(canonicalMessage: String): String {
         return try {
             val encryptedSeedB64 = prefs.getString(KEY_ENCRYPTED_SEED_B64, null) ?: return ""

@@ -206,6 +206,7 @@ class AgentWebSocketClient(
     private fun handleConnectionReady(payload: JSONObject) {
         connectionId = payload.optString("connection_id")
         generation = payload.optLong("generation", 0L)
+        reconnectAttempt = 0
         Log.i(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
 
         startSignedHttpHeartbeat()
@@ -280,15 +281,10 @@ class AgentWebSocketClient(
         val serverUrl = configStore.getServerUrl().trimEnd('/')
         val heartbeatUrl = "$serverUrl/api/v1/agents/heartbeat"
 
-        val bodyJson = JSONObject().apply {
+        val bodyJson = com.tcandt.cloudphone.agent.telemetry.HardwareTelemetryCollector.collectMetrics(context).apply {
             put("connection_id", connectionId)
             put("generation", generation)
             put("sequence", heartbeatSequence++)
-            put("battery", 85)
-            put("network", "wifi")
-            put("cpu_usage", 15.0)
-            put("ram_usage", 42.0)
-            put("temperature_c", 34.5)
         }
 
         val bodyBytes = bodyJson.toString().toByteArray(Charsets.UTF_8)
@@ -346,13 +342,36 @@ class AgentWebSocketClient(
         Log.i(TAG, "Sent command.status envelope to server (status=$status, seq=$sequence)")
     }
 
+    private var isReconnecting = false
+    private var reconnectJob: Job? = null
+    private var reconnectAttempt = 0
+
     private fun scheduleReconnect() {
-        Log.i(TAG, "Scheduling WSS reconnect in 3 seconds...")
-        Thread.sleep(3000)
-        connect()
+        synchronized(this) {
+            if (isReconnecting) return
+            isReconnecting = true
+        }
+
+        reconnectJob?.cancel()
+        reconnectJob = CoroutineScope(Dispatchers.IO).launch {
+            val baseDelay = minOf(1000L * (1 shl minOf(reconnectAttempt, 5)), 30000L)
+            val jitter = (0..1000).random().toLong()
+            val delayMs = baseDelay + jitter
+
+            Log.i(TAG, "Scheduling WSS supervised reconnect (attempt #${reconnectAttempt + 1}) in ${delayMs}ms...")
+            delay(delayMs)
+
+            reconnectAttempt++
+            synchronized(this@AgentWebSocketClient) {
+                isReconnecting = false
+            }
+            connect()
+        }
     }
 
     fun disconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
         stopHeartbeat()
         webRtcManager?.closeSession()
         webSocket?.close(1000, "App Service Stopped")
