@@ -273,6 +273,7 @@ func (r *CommandRepository) UpdateCommandStatusFromAgentWithGeneration(ctx conte
 		WHERE command_id = $1
 		ORDER BY attempt_no DESC
 		LIMIT 1
+		FOR UPDATE
 	`
 	var attemptNo int
 	var latestAgentID, latestConnID, attemptStatus string
@@ -295,14 +296,10 @@ func (r *CommandRepository) UpdateCommandStatusFromAgentWithGeneration(ctx conte
 		promoteSQL := `
 			UPDATE command_delivery_attempts
 			SET status = 'dispatched', dispatched_at = CURRENT_TIMESTAMP
-			WHERE command_id = $1 AND attempt_no = $2 AND status = 'prepared'
+			WHERE command_id = $1 AND attempt_no = $2 AND status IN ('prepared', 'dispatched')
 		`
-		tag, err := tx.Exec(ctx, promoteSQL, commandID, attemptNo)
-		if err != nil {
+		if _, err := tx.Exec(ctx, promoteSQL, commandID, attemptNo); err != nil {
 			return fmt.Errorf("failed to promote prepared attempt to dispatched: %w", err)
-		}
-		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("failed to promote prepared attempt to dispatched for command %s attempt %d", commandID, attemptNo)
 		}
 	}
 

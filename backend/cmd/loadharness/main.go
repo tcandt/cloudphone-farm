@@ -242,6 +242,7 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 							}
 							if cmdID != "" {
 								// Send ACK
+								time.Sleep(10 * time.Millisecond)
 								ackEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("ack_%s", cmdID), agentws.CommandStatusPayload{
 									CommandID: cmdID,
 									Status:    "ack",
@@ -251,6 +252,7 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 								_ = w.Conn.WriteMessage(websocket.TextMessage, ackBytes)
 
 								// Send Executing
+								time.Sleep(10 * time.Millisecond)
 								execEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("exec_%s", cmdID), agentws.CommandStatusPayload{
 									CommandID: cmdID,
 									Status:    "executing",
@@ -260,6 +262,7 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 								_ = w.Conn.WriteMessage(websocket.TextMessage, execBytes)
 
 								// Send Succeeded
+								time.Sleep(10 * time.Millisecond)
 								succEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("succ_%s", cmdID), agentws.CommandStatusPayload{
 									CommandID: cmdID,
 									Status:    "succeeded",
