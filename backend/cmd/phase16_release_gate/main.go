@@ -215,7 +215,10 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 	}
 
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         "127.0.0.1",
+		},
 	}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: tr}
 
@@ -265,7 +268,10 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 
 	// 3. WSS Agent Connection Proxy Check via Caddy (:8443)
 	wsDialer := websocket.Dialer{
-		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         "127.0.0.1",
+		},
 		HandshakeTimeout: 3 * time.Second,
 	}
 	wssURL := "wss://127.0.0.1:8443/agent/v1/connect"
