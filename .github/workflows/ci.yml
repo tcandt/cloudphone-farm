@@ -139,13 +139,18 @@ jobs:
         env:
           DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
           REDIS_URL: localhost:6379
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_USER: pcp
+          DB_PASSWORD: pcp_password
+          DB_NAME: phone_farm
         run: |
-          go test -race -v ./internal/cluster/... ./internal/repository/redis/... ./internal/telemetry/... ./internal/transport/http/middleware/...
+          go test -race -v ./internal/cluster/... ./internal/repository/postgres/... ./internal/repository/redis/... ./internal/telemetry/... ./internal/transport/http/middleware/...
           go build -o /tmp/server ./cmd/server
           go build -o /tmp/loadharness ./cmd/loadharness
-          NODE_ID=node-a PORT=8081 DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="localhost:6379" /tmp/server &
+          NODE_ID=node-a PORT=8081 DB_HOST=localhost DB_PORT=5432 DB_USER=pcp DB_PASSWORD=pcp_password DB_NAME=phone_farm DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="localhost:6379" /tmp/server &
           SERVER_PID=$!
-          sleep 2
+          sleep 3
           /tmp/loadharness -target-url http://localhost:8081 -concurrency 50 -duration 3s
           kill $SERVER_PID
 
