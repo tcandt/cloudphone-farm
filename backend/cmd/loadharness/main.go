@@ -227,6 +227,11 @@ func main() {
 							duplicates.Add(1)
 						} else {
 							failed.Add(1)
+							if workerID == 0 {
+								buf := new(bytes.Buffer)
+								_, _ = buf.ReadFrom(resp.Body)
+								slog.Error("Loadharness request rejected", "status_code", resp.StatusCode, "body", buf.String())
+							}
 						}
 						_ = resp.Body.Close()
 					} else {
