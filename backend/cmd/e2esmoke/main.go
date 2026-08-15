@@ -177,6 +177,7 @@ func runPhase1(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	headerB := make(http.Header)
 	headerB.Set("X-Dev-User-ID", userID)
 	headerB.Set("X-Dev-Org-ID", orgID)
+	headerB.Set("Origin", "http://localhost:8082")
 	browserConn, _, err := websocket.DefaultDialer.DialContext(ctx, wsNodeB, headerB)
 	if err != nil {
 		slog.Error("Failed to connect Browser WS to Node B", "url", wsNodeB, "error", err)
@@ -287,6 +288,7 @@ func runPhase2(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	headerB := make(http.Header)
 	headerB.Set("X-Dev-User-ID", userID)
 	headerB.Set("X-Dev-Org-ID", orgID)
+	headerB.Set("Origin", "http://localhost:8082")
 	browserConnB, _, err := websocket.DefaultDialer.DialContext(ctx, wsNodeB, headerB)
 	if err != nil {
 		slog.Error("Failed to connect Browser WS to Node B in Phase 2", "url", wsNodeB, "error", err)
