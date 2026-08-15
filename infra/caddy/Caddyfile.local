@@ -2,7 +2,7 @@
 	admin off
 }
 
-http://localhost:8080 {
+:8080 {
 	# Proxy WebSocket agent connections to backend cluster
 	@agent_ws {
 		path /agent/v1/connect*
