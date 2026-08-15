@@ -138,6 +138,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
+          POSTGRES_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
           REDIS_URL: redis://localhost:6379
           DB_HOST: localhost
           DB_PORT: 5432
@@ -149,13 +150,13 @@ jobs:
           go build -o /tmp/server ./cmd/server
           go build -o /tmp/loadharness ./cmd/loadharness
 
-          NODE_ID=node-a PORT=8081 DB_HOST=localhost DB_PORT=5432 DB_USER=pcp DB_PASSWORD=pcp_password DB_NAME=phone_farm DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_A=$!
 
-          NODE_ID=node-b PORT=8082 DB_HOST=localhost DB_PORT=5432 DB_USER=pcp DB_PASSWORD=pcp_password DB_NAME=phone_farm DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          NODE_ID=node-b PORT=8082 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_B=$!
 
-          NODE_ID=node-c PORT=8083 DB_HOST=localhost DB_PORT=5432 DB_USER=pcp DB_PASSWORD=pcp_password DB_NAME=phone_farm DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
+          NODE_ID=node-c PORT=8083 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_C=$!
 
           sleep 3

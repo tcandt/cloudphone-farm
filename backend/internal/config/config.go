@@ -33,7 +33,13 @@ func LoadConfig() *Config {
 
 	appEnv := getEnv("APP_ENV", "development")
 	port := getEnv("PORT", "8080")
-	postgresURL := getEnv("POSTGRES_URL", "postgres://pcp_user:pcp_secure_password_2026@localhost:5432/phone_control_platform?sslmode=disable")
+	postgresURL := os.Getenv("POSTGRES_URL")
+	if postgresURL == "" {
+		postgresURL = os.Getenv("DATABASE_URL")
+	}
+	if postgresURL == "" {
+		postgresURL = "postgres://pcp_user:pcp_secure_password_2026@localhost:5432/phone_control_platform?sslmode=disable"
+	}
 	redisURL := getEnv("REDIS_URL", "redis://localhost:6379/0")
 	coturnSecret := getEnv("COTURN_SHARED_SECRET", "pcp_coturn_secret_key")
 	cookieSecureStr := getEnv("SESSION_COOKIE_SECURE", "false")
