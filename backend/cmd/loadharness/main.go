@@ -299,10 +299,15 @@ func main() {
 
 				payload := map[string]interface{}{
 					"deviceId":       deviceID,
-					"type":           "input.tap",
+					"type":           "gesture.touch",
 					"controlLeaseId": fmt.Sprintf("lease_synth_%d", workerID),
 					"idempotencyKey": fmt.Sprintf("idem_synth_%d_%d", workerID, time.Now().UnixNano()),
-					"params":         map[string]interface{}{"x": 500, "y": 1000},
+					"payload": map[string]interface{}{
+						"coordinateSpace": "normalized_display_v1",
+						"orientation":     "portrait",
+						"x":               0.5,
+						"y":               0.5,
+					},
 				}
 				bodyBytes, _ := json.Marshal(payload)
 
