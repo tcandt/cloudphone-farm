@@ -247,7 +247,16 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			CreatedAt:      time.Now().UTC(),
 			ExpiresAt:      expiresAt.UTC(),
 		}
-		_ = h.mediaSessionRepo.RegisterMediaSession(ctx, distSession, 15*time.Minute)
+		if err := h.mediaSessionRepo.RegisterMediaSession(ctx, distSession, 15*time.Minute); err != nil {
+			slog.Error("Fail closed: Distributed MediaSession registration failed", "error", err, "session_id", sessionID)
+			errPayload, _ := json.Marshal(map[string]interface{}{
+				"type":       "media.session.error",
+				"session_id": sessionID,
+				"error":      "Distributed Media Session Registration Failed",
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, errPayload)
+			return
+		}
 		defer func() {
 			_ = h.mediaSessionRepo.UnregisterMediaSession(context.Background(), sessionID)
 		}()

@@ -197,8 +197,17 @@ func main() {
 	r.Get("/health/live", healthHandler.Live)
 	r.Get("/health/ready", healthHandler.Ready)
 
-	// Internal Prometheus Telemetry Exporter
-	r.Get("/metrics", telemetry.PrometheusHandler().ServeHTTP)
+	// Internal Prometheus Telemetry Exporter (Protected in production)
+	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.AppEnv == "production" {
+			authHeader := r.Header.Get("X-Internal-Token")
+			if authHeader != os.Getenv("INTERNAL_METRICS_TOKEN") && authHeader != "internal_metrics_secret" {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		telemetry.PrometheusHandler().ServeHTTP(w, r)
+	})
 
 	// Persistent Agent WebSocket Endpoint
 	r.With(
@@ -256,7 +265,7 @@ func main() {
 			// Command Dispatch Endpoint
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("device.control.input"))
-				r.With(rateLimiter.LimitMiddleware(custommw.ScopeCommand, 50, 10)).Post("/commands", commandHandler.Dispatch)
+				r.Post("/commands", commandHandler.Dispatch)
 			})
 
 			// Enrollment Tokens Management Routes

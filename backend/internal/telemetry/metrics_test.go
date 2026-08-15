@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestMetricsActualIncrements(t *testing.T) {
+func TestMetricsActualIncrementsAndDurationSummary(t *testing.T) {
 	m := GetMetrics()
 	m.IncrCommandsDispatched("control", "success")
 	m.IncrCommandsDispatched("control", "success")
@@ -15,6 +15,8 @@ func TestMetricsActualIncrements(t *testing.T) {
 	m.IncrAgentConnections("connected")
 	m.IncrRateLimitRejections("login")
 	m.IncrClusterRoutedMessages("command.route.request", "success")
+	m.RecordHTTPRequest("/api/v1/commands", "POST", "2xx", 0.015)
+	m.RecordCommandLatency("dispatch", 0.005)
 
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	rr := httptest.NewRecorder()
@@ -42,5 +44,13 @@ func TestMetricsActualIncrements(t *testing.T) {
 
 	if !strings.Contains(body, `cluster_routed_messages_total{type="command.route.request",result="success"} 1`) {
 		t.Errorf("Expected cluster_routed_messages_total count 1, got:\n%s", body)
+	}
+
+	if !strings.Contains(body, `http_request_duration_seconds_count{route="/api/v1/commands",method="POST",status_class="2xx"} 1`) {
+		t.Errorf("Expected http_request_duration_seconds_count, got:\n%s", body)
+	}
+
+	if !strings.Contains(body, `command_latency_seconds_count{phase="dispatch"} 1`) {
+		t.Errorf("Expected command_latency_seconds_count, got:\n%s", body)
 	}
 }
