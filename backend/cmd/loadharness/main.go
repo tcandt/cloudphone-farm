@@ -193,11 +193,25 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 		}
 		if opt, err := redis.ParseURL(redisURL); err == nil {
 			rdb := redis.NewClient(opt)
+			now := time.Now().UTC()
+			exp := now.Add(1 * time.Hour)
 			for i := 0; i < count; i++ {
 				deviceID := fmt.Sprintf("dev_synth_%02d", i)
 				leaseID := fmt.Sprintf("lease_synth_%d", i)
-				leaseKey := fmt.Sprintf("pcp:v1:lease:device:%s", deviceID)
-				_ = rdb.Set(ctx, leaseKey, fmt.Sprintf("%s:%s:%s", orgID, userID, leaseID), 1*time.Hour).Err()
+				leaseObj := map[string]interface{}{
+					"control_lease_id":  leaseID,
+					"device_id":        deviceID,
+					"organization_id":  orgID,
+					"user_id":          userID,
+					"user_display_name": "Synth User",
+					"fencing_token":    1,
+					"acquired_at":      now.Format(time.RFC3339),
+					"expires_at":       exp.Format(time.RFC3339),
+					"ttl_seconds":      3600,
+				}
+				data, _ := json.Marshal(leaseObj)
+				leaseKey := fmt.Sprintf("pcp:control:lease:v1:%s:%s", orgID, deviceID)
+				_ = rdb.Set(ctx, leaseKey, data, 1*time.Hour).Err()
 			}
 			rdb.Close()
 		}
