@@ -429,8 +429,7 @@ func performAgentChallengeHandshake(conn *websocket.Conn, privKey ed25519.Privat
 		os.Exit(1)
 	}
 
-	nonceBytes, _ := base64.StdEncoding.DecodeString(challengeEnv.Payload.ChallengeNonce)
-	sig := ed25519.Sign(privKey, nonceBytes)
+	sig := ed25519.Sign(privKey, []byte(challengeEnv.Payload.ChallengeNonce))
 	sigB64 := base64.StdEncoding.EncodeToString(sig)
 
 	respPayload := map[string]interface{}{

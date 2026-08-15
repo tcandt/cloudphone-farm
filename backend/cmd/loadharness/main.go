@@ -322,8 +322,7 @@ func connectSyntheticAgentWS(ctx context.Context, nodeURL, deviceID, agentID str
 		return nil
 	}
 
-	nonceBytes, _ = base64.StdEncoding.DecodeString(challengeEnv.Payload.ChallengeNonce)
-	sig := ed25519.Sign(privKey, nonceBytes)
+	sig := ed25519.Sign(privKey, []byte(challengeEnv.Payload.ChallengeNonce))
 	sigB64 = base64.StdEncoding.EncodeToString(sig)
 
 	respPayload := map[string]interface{}{
