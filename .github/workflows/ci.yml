@@ -61,6 +61,14 @@ jobs:
       - name: Execute Vitest Integration Tests
         run: npm run test
 
+      - name: Setup Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Execute Evidence Collector Unit Tests
+        run: python scripts/phase17-physical-gate/test_false_pass_prevention.py
+
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps chromium
 

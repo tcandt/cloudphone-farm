@@ -50,6 +50,7 @@ type AgentEnrollmentPayload struct {
 	DeviceAndroidVersion string
 	DeviceDisplayName    string
 	CapabilitiesJSON     []byte
+	KeyProtectionJSON    []byte
 	CorrelationID        string
 }
 
@@ -194,17 +195,18 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 	// 2. Register / Upsert Device
 	deviceID := fmt.Sprintf("dev_%s", payload.DeviceSerialNumber[:min(12, len(payload.DeviceSerialNumber))])
 	deviceSQL := `
-		INSERT INTO devices (device_id, organization_id, group_id, name, serial_number, model, platform_version, status, capabilities)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'online', $8)
+		INSERT INTO devices (device_id, organization_id, group_id, name, serial_number, model, platform_version, status, capabilities, key_protection)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'online', $8, COALESCE($9::jsonb, '{}'::jsonb))
 		ON CONFLICT (organization_id, device_id) DO UPDATE SET
 			name = EXCLUDED.name,
 			model = EXCLUDED.model,
 			platform_version = EXCLUDED.platform_version,
 			status = 'online',
 			capabilities = EXCLUDED.capabilities,
+			key_protection = COALESCE(EXCLUDED.key_protection, devices.key_protection),
 			updated_at = CURRENT_TIMESTAMP
 	`
-	_, err = tx.Exec(ctx, deviceSQL, deviceID, orgID, boundGroupID, payload.DeviceDisplayName, payload.DeviceSerialNumber, payload.DeviceModel, payload.DeviceAndroidVersion, payload.CapabilitiesJSON)
+	_, err = tx.Exec(ctx, deviceSQL, deviceID, orgID, boundGroupID, payload.DeviceDisplayName, payload.DeviceSerialNumber, payload.DeviceModel, payload.DeviceAndroidVersion, payload.CapabilitiesJSON, payload.KeyProtectionJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert device record: %w", err)
 	}
@@ -212,17 +214,18 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 	// 3. Register / Upsert Device Agent (ON CONFLICT target fix: agent_id)
 	agentID := fmt.Sprintf("agt_%s", payload.PublicKeyFingerprint[:min(12, len(payload.PublicKeyFingerprint))])
 	agentSQL := `
-		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')
+		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status, key_protection)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', COALESCE($8::jsonb, '{}'::jsonb))
 		ON CONFLICT (agent_id) DO UPDATE SET
 			public_key = EXCLUDED.public_key,
 			public_key_fingerprint = EXCLUDED.public_key_fingerprint,
 			apk_version = EXCLUDED.apk_version,
 			protocol_version = EXCLUDED.protocol_version,
 			status = 'active',
+			key_protection = COALESCE(EXCLUDED.key_protection, device_agents.key_protection),
 			last_authenticated_at = CURRENT_TIMESTAMP
 	`
-	_, err = tx.Exec(ctx, agentSQL, agentID, orgID, deviceID, payload.PublicKeyBytes, payload.PublicKeyFingerprint, payload.ApkVersion, payload.ProtocolVersion)
+	_, err = tx.Exec(ctx, agentSQL, agentID, orgID, deviceID, payload.PublicKeyBytes, payload.PublicKeyFingerprint, payload.ApkVersion, payload.ProtocolVersion, payload.KeyProtectionJSON)
 	if err != nil {
 		return nil, fmt.Errorf("failed to upsert device_agents record: %w", err)
 	}
@@ -350,7 +353,7 @@ func (r *EnrollmentRepository) RevokeAgentCredential(ctx context.Context, orgID,
 }
 
 // RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table
-func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp float64, battery int, network string) error {
+func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp *float64, battery *int, network *string) error {
 	if r.pool == nil {
 		return nil
 	}

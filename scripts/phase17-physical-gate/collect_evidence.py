@@ -12,7 +12,7 @@ def run_cmd(cmd, check=True):
         if check and res.returncode != 0:
             return None
         return res.stdout.strip()
-    except Exception as e:
+    except Exception:
         return None
 
 def get_git_sha():
@@ -37,36 +37,57 @@ def collect_adb_device_metadata():
             api_level = run_cmd(f"adb -s {serial} shell getprop ro.build.version.sdk", check=False) or "Unknown"
             wm_size = run_cmd(f"adb -s {serial} shell wm size", check=False) or "Unknown"
             
+            # Zero-manufactured evidence: Do NOT hardcode key_protection values.
+            # Read from actual device/agent telemetry if present; otherwise None.
+            key_prot = None
+            dump_sec = run_cmd(f"adb -s {serial} shell getprop sys.pcp.key_security_level", check=False)
+            if dump_sec in ["SOFTWARE", "TRUSTED_ENVIRONMENT", "STRONGBOX"]:
+                key_prot = {
+                    "algorithm": "AES-256-GCM",
+                    "provider": "AndroidKeyStore",
+                    "security_level": dump_sec
+                }
+
             devices.append({
                 "serial": serial,
                 "model": model,
                 "android_version": android_ver,
                 "api_level": api_level,
                 "display_geometry": wm_size,
-                "key_protection": {
-                    "algorithm": "AES-256-GCM",
-                    "provider": "AndroidKeyStore",
-                    "security_level": "TRUSTED_ENVIRONMENT" # Will be read from actual APK metadata on physical device
-                }
+                "key_protection": key_prot
             })
     return devices
 
 def evaluate_gate_a(devices, evidence_dir):
-    """Gate A: Physical Fleet Lifecycle - Requires >= 3 physical devices with verified Tink/KeyStore security"""
+    """Gate A: Physical Fleet Lifecycle - Requires >= 3 physical devices with verified Tink/KeyStore security and lifecycle proof"""
     if not devices:
         return "NOT_RUN"
     if len(devices) < 3:
-        return "FAIL" # Strictly require 3 physical devices for fleet gate
+        return "FAIL"
     
-    # Check keystore protection metadata
-    for dev in devices:
-        sec_level = dev.get("key_protection", {}).get("security_level", "UNKNOWN")
-        if sec_level not in ["TRUSTED_ENVIRONMENT", "STRONGBOX", "SOFTWARE"]:
-            return "FAIL"
-    return "PASS"
+    fleet_info_path = os.path.join(evidence_dir, "fleet_lifecycle_evidence.json")
+    if not os.path.exists(fleet_info_path):
+        return "FAIL"
+    
+    try:
+        with open(fleet_info_path, "r", encoding="utf-8") as f:
+            ev = json.load(f)
+        
+        if (ev.get("enrollment_verified") is True and
+            ev.get("key_protection_verified") is True and
+            ev.get("reboot_reconnect_verified") is True and
+            ev.get("no_auto_projection_verified") is True and
+            ev.get("wifi_reconnect_verified") is True and
+            ev.get("generation_increment_verified") is True and
+            ev.get("heartbeat_cadence_verified") is True and
+            ev.get("presence_ttl_verified") is True):
+            return "PASS"
+        return "FAIL"
+    except Exception:
+        return "FAIL"
 
 def evaluate_gate_b(devices, evidence_dir):
-    """Gate B: Physical Control - Requires physical command journal with tap/swipe/HOME/BACK/RECENTS succeeded + screen evidence"""
+    """Gate B: Physical Control - Requires per-command lifecycle (accepted, dispatched, ack_at, executing_at, succeeded_at, browser event, screenshot/video hash)"""
     if not devices:
         return "NOT_RUN"
     
@@ -82,7 +103,13 @@ def evaluate_gate_b(devices, evidence_dir):
         seen_actions = set()
         
         for cmd in journal.get("commands", []):
-            if cmd.get("status") == "succeeded" and cmd.get("ack_at") and cmd.get("executing_at") and cmd.get("succeeded_at"):
+            if (cmd.get("accepted") is True and
+                cmd.get("dispatched") is True and
+                cmd.get("ack_at", 0) > 0 and
+                cmd.get("executing_at", 0) > 0 and
+                cmd.get("succeeded_at", 0) > 0 and
+                cmd.get("browser_event_logged") is True and
+                (cmd.get("screenshot_hash") or cmd.get("video_hash"))):
                 seen_actions.add(cmd.get("action"))
         
         if required_actions.issubset(seen_actions):
@@ -92,7 +119,7 @@ def evaluate_gate_b(devices, evidence_dir):
         return "FAIL"
 
 def evaluate_gate_c(devices, evidence_dir):
-    """Gate C: Real H.264 Screen Capture - Requires codecMimeType == video/H264, framesDecoded > 0, bytesReceived > 0"""
+    """Gate C: Real H.264 Screen Capture - Requires >= 2 time samples with codecMimeType == video/H264, framesDecoded(t2) > framesDecoded(t1), bytesReceived(t2) > bytesReceived(t1), first_frame_rendered == true"""
     if not devices:
         return "NOT_RUN"
     
@@ -104,43 +131,63 @@ def evaluate_gate_c(devices, evidence_dir):
         with open(stats_path, "r", encoding="utf-8") as f:
             stats = json.load(f)
         
-        mime = stats.get("codecMimeType", "")
-        frames_decoded = stats.get("framesDecoded", 0)
-        bytes_received = stats.get("bytesReceived", 0)
+        samples = stats.get("samples", [])
+        if not samples:
+            samples = [stats]
         
-        if (mime == "video/H264" or "H264" in mime.upper()) and frames_decoded > 0 and bytes_received > 0:
+        if len(samples) < 2:
+            return "FAIL"
+        
+        first = samples[0]
+        last = samples[-1]
+        
+        mime = last.get("codecMimeType", "")
+        frames_first = first.get("framesDecoded", 0)
+        frames_last = last.get("framesDecoded", 0)
+        bytes_first = first.get("bytesReceived", 0)
+        bytes_last = last.get("bytesReceived", 0)
+        rendered = last.get("first_frame_rendered") is True
+        
+        if ((mime == "video/H264" or "H264" in mime.upper()) and
+            frames_last > 0 and
+            frames_last > frames_first and
+            bytes_last > bytes_first and
+            rendered):
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_d(devices, evidence_dir):
-    """Gate D: Coturn TURN Relay Verification - Requires selected candidateType == relay with increasing bytes/frames"""
+    """Gate D: Coturn TURN Relay Verification - Requires separate verified Direct P2P sample and Forced TURN sample with progressing bytes/frames"""
     if not devices:
         return "NOT_RUN"
     
-    stats_path = os.path.join(evidence_dir, "webrtc_stats.json")
-    if not os.path.exists(stats_path):
+    direct_path = os.path.join(evidence_dir, "webrtc_stats.json")
+    turn_path = os.path.join(evidence_dir, "webrtc_turn_stats.json")
+    if not os.path.exists(direct_path) or not os.path.exists(turn_path):
         return "FAIL"
     
     try:
-        with open(stats_path, "r", encoding="utf-8") as f:
-            stats = json.load(f)
+        with open(direct_path, "r", encoding="utf-8") as f:
+            direct_stats = json.load(f)
+        with open(turn_path, "r", encoding="utf-8") as f:
+            turn_stats = json.load(f)
         
-        cand_type = stats.get("candidateType", "")
-        local_cand_type = stats.get("localCandidateType", "")
-        remote_cand_type = stats.get("remoteCandidateType", "")
-        bytes_received = stats.get("bytesReceived", 0)
-        frames_decoded = stats.get("framesDecoded", 0)
+        direct_cand = direct_stats.get("candidateType", "") or direct_stats.get("localCandidateType", "")
+        turn_cand = turn_stats.get("candidateType", "") or turn_stats.get("localCandidateType", "") or turn_stats.get("remoteCandidateType", "")
         
-        if (cand_type == "relay" or local_cand_type == "relay" or remote_cand_type == "relay") and bytes_received > 0 and frames_decoded > 0:
+        direct_pass = (direct_cand in ["direct", "host", "srflx"] and direct_stats.get("bytesReceived", 0) > 0)
+        turn_pass = (turn_cand == "relay" and turn_stats.get("bytesReceived", 0) > 0 and turn_stats.get("framesDecoded", 0) > 0)
+        
+        if direct_pass and turn_pass:
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_e(devices, evidence_dir):
-    """Gate E: Security & Consent - Requires MediaProjection consent evidence, FLAG_SECURE black-stream proof"""
+    """Gate E: Security & Consent - Requires raw security evidence containing consent prompt logs, FLAG_SECURE black-stream proof, and stale agent fencing"""
     if not devices:
         return "NOT_RUN"
     
@@ -152,14 +199,18 @@ def evaluate_gate_e(devices, evidence_dir):
         with open(sec_path, "r", encoding="utf-8") as f:
             sec = json.load(f)
         
-        if sec.get("consent_prompt_granted") and sec.get("flag_secure_respected") and sec.get("stale_agent_fenced"):
+        if (sec.get("consent_prompt_granted") is True and
+            sec.get("flag_secure_respected") is True and
+            sec.get("stale_agent_fenced") is True and
+            sec.get("consent_log_timestamp") and
+            sec.get("flag_secure_black_frame_hash")):
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_f(devices, evidence_dir):
-    """Gate F: Scale & Isolation - Requires >= 3 physical devices streaming concurrently with zero cross-device leakage"""
+    """Gate F: Scale & Isolation - Requires raw scale evidence verifying >= 3 physical devices streaming concurrently without cross-device leakage"""
     if not devices or len(devices) < 3:
         return "NOT_RUN" if not devices else "FAIL"
     
@@ -171,16 +222,33 @@ def evaluate_gate_f(devices, evidence_dir):
         with open(scale_path, "r", encoding="utf-8") as f:
             scale = json.load(f)
         
-        if scale.get("concurrent_device_count", 0) >= 3 and scale.get("viewer_limit_enforced") and not scale.get("cross_device_leakage"):
+        if (scale.get("concurrent_device_count", 0) >= 3 and
+            scale.get("viewer_limit_enforced") is True and
+            scale.get("cross_device_leakage") is False and
+            len(scale.get("active_session_ids", [])) >= 3):
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_g(devices, evidence_dir):
-    """Gate G: Automated Evidence Package - Requires manifest, raw logs, device metadata, and WebRTC getStats JSON"""
+    """Gate G: Automated Evidence Package - PASS ONLY if complete required artifact set exists and non-empty"""
     if not devices:
         return "NOT_RUN"
+    
+    required_files = [
+        "manifest.json",
+        "webrtc_stats.json",
+        "webrtc_turn_stats.json",
+        "command_journal.json",
+        "fleet_lifecycle_evidence.json",
+        "security_evidence.json",
+        "scale_evidence.json"
+    ]
+    for fn in required_files:
+        fp = os.path.join(evidence_dir, fn)
+        if not os.path.exists(fp) or os.path.getsize(fp) == 0:
+            return "FAIL"
     return "PASS"
 
 def collect_evidence_package(run_id=None):
@@ -192,9 +260,7 @@ def collect_evidence_package(run_id=None):
     
     sha = get_git_sha()
     devices = collect_adb_device_metadata()
-    has_hardware = len(devices) > 0
     
-    # Save raw logcat if hardware present
     for dev in devices:
         serial = dev["serial"]
         logcat = run_cmd(f"adb -s {serial} logcat -d -t 500", check=False)
@@ -222,7 +288,7 @@ def collect_evidence_package(run_id=None):
         overall_status = "PARTIAL"
 
     manifest = {
-        "schema_version": "phase17-evidence-v1",
+        "schema_version": "phase17-evidence-v2",
         "git_sha": sha,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
@@ -250,21 +316,14 @@ def collect_evidence_package(run_id=None):
         f.write(f"# Phase 1.7 Acceptance Report — Run {run_id}\n\n")
         f.write(f"- **Git SHA**: `{sha}`\n")
         f.write(f"- **Timestamp**: `{manifest['timestamp']}`\n")
-        f.write(f"- **Physical Device Count**: `{len(devices)}`\n")
-        f.write(f"- **Overall Hardware Gate Status**: `{overall_status}`\n\n")
-        f.write("## Connected Physical Devices\n")
-        if devices:
-            for d in devices:
-                f.write(f"- **Serial**: `{d['serial']}` | Model: `{d['model']}` | Android {d['android_version']} (API {d['api_level']}) | Geometry: `{d['display_geometry']}`\n")
-        else:
-            f.write("_No physical Android hardware attached during this automated check. Result marked as `NOT_RUN` per Zero Manufactured Evidence rule._\n\n")
-        f.write("## Gate Results\n")
-        for g_id, g_status in manifest["gates"].items():
-            f.write(f"- **{g_id}**: `{g_status}`\n")
+        f.write(f"- **Overall Status**: **{overall_status}**\n")
+        f.write(f"- **Attached Physical Devices**: `{len(devices)}`\n\n")
+        f.write("## Gate Summary\n\n")
+        for gate_name, status in manifest["gates"].items():
+            f.write(f"- `{gate_name}`: **{status}**\n")
 
-    print(f"Evidence package generated at: {out_dir}")
-    print(f"Overall Status: {overall_status} (Attached devices: {len(devices)})")
     return manifest
 
 if __name__ == "__main__":
-    collect_evidence_package()
+    manifest = collect_evidence_package()
+    print(json.dumps(manifest, indent=2))

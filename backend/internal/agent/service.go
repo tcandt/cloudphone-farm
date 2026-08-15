@@ -55,27 +55,35 @@ type TokenIssuedDTO struct {
 	BoundGroupID   *string `json:"bound_group_id,omitempty"`
 }
 
+type KeyProtectionDTO struct {
+	Algorithm     string `json:"algorithm"`
+	Provider      string `json:"provider"`
+	SecurityLevel string `json:"security_level"`
+}
+
 type EnrollRequestDTO struct {
-	TokenCode            string      `json:"token_code"`
-	PublicKeyBytes       []byte      `json:"public_key_bytes"`
-	ApkVersion           string      `json:"apk_version"`
-	ProtocolVersion      string      `json:"protocol_version"`
-	DeviceSerialNumber   string      `json:"device_serial_number"`
-	DeviceModel          string      `json:"device_model"`
-	DeviceAndroidVersion string      `json:"device_android_version"`
-	DeviceDisplayName    string      `json:"device_display_name"`
-	Capabilities         interface{} `json:"capabilities"`
+	TokenCode            string            `json:"token_code"`
+	PublicKeyBytes       []byte            `json:"public_key_bytes"`
+	ApkVersion           string            `json:"apk_version"`
+	ProtocolVersion      string            `json:"protocol_version"`
+	DeviceSerialNumber   string            `json:"device_serial_number"`
+	DeviceModel          string            `json:"device_model"`
+	DeviceAndroidVersion string            `json:"device_android_version"`
+	DeviceDisplayName    string            `json:"device_display_name"`
+	Capabilities         interface{}       `json:"capabilities"`
+	KeyProtection        *KeyProtectionDTO `json:"key_protection,omitempty"`
 }
 
 type HeartbeatRequestDTO struct {
-	ConnectionID string  `json:"connection_id"`
-	Generation   int64   `json:"generation"`
-	Sequence     int64   `json:"sequence"`
-	Battery      int     `json:"battery"`
-	Network      string  `json:"network"`
-	CPUUsage     float64 `json:"cpu_usage"`
-	RAMUsage     float64 `json:"ram_usage"`
-	TemperatureC float64 `json:"temperature_c"`
+	ConnectionID  string            `json:"connection_id"`
+	Generation    int64             `json:"generation"`
+	Sequence      int64             `json:"sequence"`
+	Battery       *int              `json:"battery,omitempty"`
+	Network       *string           `json:"network,omitempty"`
+	CPUUsage      *float64          `json:"cpu_usage,omitempty"`
+	RAMUsage      *float64          `json:"ram_usage,omitempty"`
+	TemperatureC  *float64          `json:"temperature_c,omitempty"`
+	KeyProtection *KeyProtectionDTO `json:"key_protection,omitempty"`
 }
 
 func (s *AgentService) CreateEnrollmentToken(ctx context.Context, principal *auth.Principal, req CreateTokenRequest) (*TokenIssuedDTO, error) {
@@ -191,6 +199,11 @@ func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*
 		capsJSON, _ = json.Marshal(defaultCaps)
 	}
 
+	var keyProtJSON []byte
+	if req.KeyProtection != nil {
+		keyProtJSON, _ = json.Marshal(req.KeyProtection)
+	}
+
 	payload := pgrepo.AgentEnrollmentPayload{
 		TokenCode:            req.TokenCode,
 		TokenHash:            tokenHash,
@@ -203,6 +216,7 @@ func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*
 		DeviceAndroidVersion: req.DeviceAndroidVersion,
 		DeviceDisplayName:    req.DeviceDisplayName,
 		CapabilitiesJSON:     capsJSON,
+		KeyProtectionJSON:    keyProtJSON,
 	}
 
 	return s.enrollRepo.ConsumeTokenAndRegisterDeviceAgent(ctx, payload)

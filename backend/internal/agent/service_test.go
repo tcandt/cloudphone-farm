@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
@@ -50,6 +51,53 @@ func TestProcessHeartbeat_FencingValidation(t *testing.T) {
 		})
 		if err == nil || err.Error() != "heartbeat owner mismatch: connection_id and generation must be provided" {
 			t.Fatalf("expected generation missing error, got: %v", err)
+		}
+	})
+}
+
+func TestHeartbeatRequestDTO_NullableTelemetryAndKeyProtection(t *testing.T) {
+	t.Run("parses missing telemetry as nil pointers (unknown != zero)", func(t *testing.T) {
+		jsonStr := `{"connection_id":"conn_1","generation":2,"sequence":5}`
+		var req HeartbeatRequestDTO
+		if err := json.Unmarshal([]byte(jsonStr), &req); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+
+		if req.CPUUsage != nil {
+			t.Fatalf("expected CPUUsage to be nil, got: %v", *req.CPUUsage)
+		}
+		if req.TemperatureC != nil {
+			t.Fatalf("expected TemperatureC to be nil, got: %v", *req.TemperatureC)
+		}
+		if req.Battery != nil {
+			t.Fatalf("expected Battery to be nil, got: %v", *req.Battery)
+		}
+		if req.Network != nil {
+			t.Fatalf("expected Network to be nil, got: %v", *req.Network)
+		}
+	})
+
+	t.Run("parses actual key protection metadata", func(t *testing.T) {
+		jsonStr := `{
+			"connection_id":"conn_1",
+			"generation":2,
+			"sequence":5,
+			"key_protection": {
+				"algorithm": "AES-256-GCM",
+				"provider": "AndroidKeyStore",
+				"security_level": "STRONGBOX"
+			}
+		}`
+		var req HeartbeatRequestDTO
+		if err := json.Unmarshal([]byte(jsonStr), &req); err != nil {
+			t.Fatalf("failed to unmarshal JSON: %v", err)
+		}
+
+		if req.KeyProtection == nil {
+			t.Fatalf("expected KeyProtection to be non-nil")
+		}
+		if req.KeyProtection.SecurityLevel != "STRONGBOX" {
+			t.Fatalf("expected SecurityLevel STRONGBOX, got: %s", req.KeyProtection.SecurityLevel)
 		}
 	})
 }

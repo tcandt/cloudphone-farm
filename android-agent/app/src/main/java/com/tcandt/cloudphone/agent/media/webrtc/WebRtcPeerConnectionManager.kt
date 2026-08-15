@@ -434,7 +434,7 @@ class WebRtcPeerConnectionManager(
     inner class AgentMediaProjectionCallback : android.media.projection.MediaProjection.Callback() {
         override fun onStop() {
             Log.w(TAG, "MediaProjectionCallback.onStop triggered by system for SessionID=$activeSessionId")
-            ScreenCaptureManager.onProjectionStoppedBySystem()
+            ScreenCaptureManager.onProjectionStoppedBySystem(context)
             closeSession()
         }
     }
