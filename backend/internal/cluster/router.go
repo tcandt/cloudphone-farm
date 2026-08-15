@@ -76,8 +76,16 @@ func (cr *ClusterRouter) handleIncomingEnvelope(env *RoutedEnvelope) {
 		cr.handleMediaSignalToAgent(env)
 	case "media.signal.to_browser":
 		cr.handleMediaSignalToBrowser(env)
+	case "agent.credential.revoke":
+		cr.handleAgentCredentialRevoke(env)
 	default:
 		slog.Warn("Unknown envelope type received on cluster bus", "type", env.Type, "msg_id", env.MessageID)
+	}
+}
+
+func (cr *ClusterRouter) handleAgentCredentialRevoke(env *RoutedEnvelope) {
+	if cr.wsHub != nil {
+		cr.wsHub.CloseConnectionForAgent(env.OrganizationID, env.DeviceID, env.AgentID)
 	}
 }
 
@@ -323,5 +331,17 @@ func (cr *ClusterRouter) BroadcastBrowserDeliveryEvent(orgID, deviceID, commandI
 		Payload:        bytes,
 	}
 
+	_ = cr.bus.PublishToDevice(context.Background(), deviceID, env)
+}
+
+// BroadcastAgentRevocation broadcasts agent revocation event across cluster to tear down active WebSocket connection immediately.
+func (cr *ClusterRouter) BroadcastAgentRevocation(orgID, deviceID, agentID string) {
+	env := &RoutedEnvelope{
+		MessageID:      fmt.Sprintf("evt_revoke_%s", uuid.New().String()[:8]),
+		OrganizationID: orgID,
+		DeviceID:       deviceID,
+		AgentID:        agentID,
+		Type:           "agent.credential.revoke",
+	}
 	_ = cr.bus.PublishToDevice(context.Background(), deviceID, env)
 }

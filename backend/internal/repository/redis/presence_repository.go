@@ -101,3 +101,13 @@ func (r *PresenceRepository) GetPresence(ctx context.Context, orgID, deviceID st
 
 	return &p, nil
 }
+
+// RemovePresence deletes presence key from Redis upon Agent disconnect or revocation
+func (r *PresenceRepository) RemovePresence(ctx context.Context, orgID, deviceID string) error {
+	if r.rdb == nil {
+		return ErrRedisDown
+	}
+
+	key := presenceKey(orgID, deviceID)
+	return r.rdb.Del(ctx, key).Err()
+}

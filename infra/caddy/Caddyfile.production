@@ -1,0 +1,49 @@
+{$SITE_ADDRESS:control.phonecontrol.io} {
+	# ACME Automatic HTTPS via Let's Encrypt / ZeroSSL
+
+	# Security headers
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		X-XSS-Protection "1; mode=block"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+	}
+
+	# Route Agent WebSocket connection requests to Backend Cluster
+	@agent_ws {
+		path /agent/v1/connect*
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @agent_ws {
+		reverse_proxy pcp-backend-a:8080 pcp-backend-b:8080 pcp-backend-c:8080 {
+			lb_policy round_robin
+		}
+	}
+
+	# Route Browser WebSocket event streams to Backend Cluster
+	@browser_ws {
+		path /api/v1/devices/*/events/ws*
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	handle @browser_ws {
+		reverse_proxy pcp-backend-a:8080 pcp-backend-b:8080 pcp-backend-c:8080 {
+			lb_policy round_robin
+		}
+	}
+
+	# Route API endpoints to Backend Cluster
+	@api path /api/* /health/*
+	handle @api {
+		reverse_proxy pcp-backend-a:8080 pcp-backend-b:8080 pcp-backend-c:8080 {
+			lb_policy round_robin
+		}
+	}
+
+	# Default route: Serve Frontend Web Application
+	handle {
+		reverse_proxy pcp-web:80
+	}
+}

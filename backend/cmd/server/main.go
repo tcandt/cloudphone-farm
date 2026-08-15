@@ -150,6 +150,7 @@ func main() {
 	authService := auth.NewAuthService(userRepo, sessionRepo, time.Duration(cfg.SessionTTLSeconds)*time.Second)
 	deviceService := devservice.NewDeviceService(deviceRepo)
 	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo, rdb)
+	agentService.SetClusterBroadcaster(clusterRouter)
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 	cmdService := command.NewCommandService(pgPool, leaseService)
 
@@ -278,6 +279,7 @@ func main() {
 				r.Post("/enrollment-tokens", agentHandler.CreateToken)
 				r.Get("/enrollment-tokens", agentHandler.ListTokens)
 				r.Delete("/enrollment-tokens/{id}", agentHandler.RevokeToken)
+				r.Delete("/agents/{agentId}", agentHandler.RevokeAgentCredential)
 			})
 
 			r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {

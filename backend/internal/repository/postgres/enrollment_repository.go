@@ -325,6 +325,30 @@ func (r *EnrollmentRepository) GetAgentByFingerprint(ctx context.Context, finger
 	return &a, nil
 }
 
+// RevokeAgentCredential flags a device agent credential as revoked and returns the associated device ID
+func (r *EnrollmentRepository) RevokeAgentCredential(ctx context.Context, orgID, agentID string) (string, error) {
+	if r.pool == nil {
+		return "", errors.New("postgres connection pool uninitialized")
+	}
+
+	query := `
+		UPDATE device_agents
+		SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP
+		WHERE organization_id = $1 AND agent_id = $2 AND revoked_at IS NULL
+		RETURNING device_id
+	`
+	var deviceID string
+	err := r.pool.QueryRow(ctx, query, orgID, agentID).Scan(&deviceID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", errors.New("agent credential not found or already revoked")
+		}
+		return "", fmt.Errorf("failed to revoke agent credential: %w", err)
+	}
+
+	return deviceID, nil
+}
+
 // RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table
 func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp float64, battery int, network string) error {
 	if r.pool == nil {

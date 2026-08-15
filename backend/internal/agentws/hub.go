@@ -106,6 +106,22 @@ func (h *Hub) Unregister(conn *Connection) {
 	}
 }
 
+// CloseConnectionForAgent closes matching active WebSocket connection for an agent immediately upon revocation
+func (h *Hub) CloseConnectionForAgent(orgID, deviceID, agentID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	key := DeviceKey(orgID, deviceID)
+	conn, exists := h.connections[key]
+	if exists && conn != nil && (agentID == "" || conn.AgentID == agentID) {
+		slog.Warn("Closing active Agent WebSocket connection due to revocation event", "device_key", key, "agent_id", conn.AgentID, "conn_id", conn.ConnectionID)
+		go conn.Close()
+		delete(h.connections, key)
+		return true
+	}
+	return false
+}
+
 func (h *Hub) GetConnection(orgID, deviceID string) (*Connection, bool) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

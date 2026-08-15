@@ -120,6 +120,34 @@ func (h *AgentHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *AgentHandler) RevokeAgentCredential(w http.ResponseWriter, r *http.Request) {
+	principal, err := auth.GetPrincipal(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "UNAUTHENTICATED",
+			"message":   "Authentication required",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	agentID := chi.URLParam(r, "agentId")
+	if err := h.agentService.RevokeAgentCredential(r.Context(), principal.OrganizationID, agentID); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "AGENT_NOT_FOUND",
+			"message":   err.Error(),
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *AgentHandler) EnrollAgent(w http.ResponseWriter, r *http.Request) {
 	var req agent.EnrollRequestDTO
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

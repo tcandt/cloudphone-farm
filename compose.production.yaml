@@ -6,15 +6,31 @@ networks:
     driver: bridge
 
 services:
-  pcp-web:
-    build:
-      context: .
-      dockerfile: infra/docker/Dockerfile.web
+  caddy:
+    image: caddy:2.7-alpine
     networks:
       - pcp-public
       - pcp-internal
     ports:
       - "80:80"
+      - "443:443"
+    restart: unless-stopped
+    volumes:
+      - ./infra/caddy/Caddyfile.production:/etc/caddy/Caddyfile
+      - caddydata:/data
+      - caddyconfig:/config
+    depends_on:
+      - pcp-web
+      - pcp-backend-a
+      - pcp-backend-b
+      - pcp-backend-c
+
+  pcp-web:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.web
+    networks:
+      - pcp-internal
     restart: unless-stopped
     environment:
       - NODE_ENV=production
@@ -25,21 +41,83 @@ services:
       timeout: 5s
       retries: 3
 
-  pcp-backend:
+  pcp-backend-a:
     build:
       context: .
       dockerfile: infra/docker/Dockerfile.backend
     networks:
       - pcp-internal
-    # NO PUBLIC HOST PORTS EXPOSED DIRECTLY IN PRODUCTION
     environment:
       - APP_ENV=production
+      - NODE_ID=node-a
       - PORT=8080
       - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
     secrets:
+      - postgres_password
+      - redis_password
+      - coturn_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  pcp-backend-b:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    networks:
+      - pcp-internal
+    environment:
+      - APP_ENV=production
+      - NODE_ID=node-b
+      - PORT=8080
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
+      - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
+      - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+    secrets:
+      - postgres_password
+      - redis_password
+      - coturn_secret
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  pcp-backend-c:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    networks:
+      - pcp-internal
+    environment:
+      - APP_ENV=production
+      - NODE_ID=node-c
+      - PORT=8080
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
+      - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
+      - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+    secrets:
+      - postgres_password
+      - redis_password
       - coturn_secret
     depends_on:
       postgres:
@@ -57,7 +135,6 @@ services:
     image: postgres:15-alpine
     networks:
       - pcp-internal
-    # NO PUBLIC HOST PORTS EXPOSED
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-phone_control_platform}
       POSTGRES_USER: ${POSTGRES_USER:-pcp_user}
@@ -77,7 +154,6 @@ services:
     image: redis:7.2-alpine
     networks:
       - pcp-internal
-    # NO PUBLIC HOST PORTS EXPOSED
     command: ["sh", "-c", "redis-server --appendonly yes --requirepass $$(cat /run/secrets/redis_password)"]
     secrets:
       - redis_password
@@ -119,3 +195,5 @@ secrets:
 volumes:
   pgdata:
   redisdata:
+  caddydata:
+  caddyconfig:

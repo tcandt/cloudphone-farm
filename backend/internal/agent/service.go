@@ -25,6 +25,7 @@ type AgentService struct {
 	enrollRepo   *pgrepo.EnrollmentRepository
 	presenceRepo *redisrepo.PresenceRepository
 	rdb          *redis.Client
+	broadcaster  ClusterRevocationBroadcaster
 }
 
 func NewAgentService(enrollRepo *pgrepo.EnrollmentRepository, presenceRepo *redisrepo.PresenceRepository, rdb *redis.Client) *AgentService {
@@ -129,6 +130,31 @@ func (s *AgentService) ListEnrollmentTokens(ctx context.Context, orgID string) (
 
 func (s *AgentService) RevokeEnrollmentToken(ctx context.Context, orgID, tokenID string) error {
 	return s.enrollRepo.RevokeToken(ctx, orgID, tokenID)
+}
+
+type ClusterRevocationBroadcaster interface {
+	BroadcastAgentRevocation(orgID, deviceID, agentID string)
+}
+
+func (s *AgentService) SetClusterBroadcaster(broadcaster ClusterRevocationBroadcaster) {
+	s.broadcaster = broadcaster
+}
+
+func (s *AgentService) RevokeAgentCredential(ctx context.Context, orgID, agentID string) error {
+	deviceID, err := s.enrollRepo.RevokeAgentCredential(ctx, orgID, agentID)
+	if err != nil {
+		return err
+	}
+
+	if s.presenceRepo != nil {
+		_ = s.presenceRepo.RemovePresence(ctx, orgID, deviceID)
+	}
+
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastAgentRevocation(orgID, deviceID, agentID)
+	}
+
+	return nil
 }
 
 func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*pgrepo.EnrollmentResult, error) {
