@@ -460,12 +460,10 @@ func main() {
 							ok = true
 							dispatched.Add(1)
 							var resBody struct {
-								Data struct {
-									CommandID string `json:"commandId"`
-								} `json:"data"`
+								CommandID string `json:"command_id"`
 							}
-							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" {
-								cmdID := resBody.Data.CommandID
+							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.CommandID != "" {
+								cmdID := resBody.CommandID
 								trackerWg.Add(1)
 								go func(cID string) {
 									defer trackerWg.Done()
