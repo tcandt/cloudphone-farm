@@ -2,6 +2,9 @@ package cluster_test
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +25,7 @@ import (
 	wstransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/ws"
 )
 
-func performAgentHandshake(conn *websocket.Conn) error {
+func performAgentHandshake(conn *websocket.Conn, privKey ed25519.PrivateKey) error {
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, msgData, err := conn.ReadMessage()
 	if err != nil {
@@ -37,8 +40,11 @@ func performAgentHandshake(conn *websocket.Conn) error {
 	var chalPayload agentws.ServerChallengePayload
 	_ = json.Unmarshal(env.Payload, &chalPayload)
 
+	sigBytes := ed25519.Sign(privKey, []byte(chalPayload.ChallengeNonce))
+	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
+
 	respPayload := agentws.AgentChallengeResponsePayload{
-		ChallengeSignature: "dummy_signature_for_test",
+		ChallengeSignature: sigB64,
 	}
 	respBytes, _ := json.Marshal(respPayload)
 	respEnv := agentws.WSEnvelope{
@@ -68,6 +74,11 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	agentRepo := redispkg.NewAgentConnectionRepository(rdb)
 	mediaRepo := redispkg.NewMediaSessionRepository(rdb)
 
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate ed25519 keypair: %v", err)
+	}
+
 	orgID := "org_acme_e2e"
 	userID := "user_operator_01"
 	deviceID := "dev_samsung_s24"
@@ -78,7 +89,7 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 		OrganizationID: orgID,
 		DeviceID:       deviceID,
 		Status:         "active",
-		PublicKey:      nil,
+		PublicKey:      pubKey,
 	}
 
 	// Node A: Agent WebSocket Hub & Cluster Router
@@ -141,7 +152,7 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	}
 	defer agentWSConnA.Close()
 
-	if err := performAgentHandshake(agentWSConnA); err != nil {
+	if err := performAgentHandshake(agentWSConnA, privKey); err != nil {
 		t.Fatalf("failed agent challenge handshake on Node A: %v", err)
 	}
 
@@ -235,7 +246,7 @@ func TestThreeNodeClusterE2EAndFailover(t *testing.T) {
 	}
 	defer agentWSConnC.Close()
 
-	if err := performAgentHandshake(agentWSConnC); err != nil {
+	if err := performAgentHandshake(agentWSConnC, privKey); err != nil {
 		t.Fatalf("failed agent challenge handshake on Node C: %v", err)
 	}
 
