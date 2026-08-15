@@ -109,5 +109,23 @@ func (r *PresenceRepository) RemovePresence(ctx context.Context, orgID, deviceID
 	}
 
 	key := presenceKey(orgID, deviceID)
-	return r.rdb.Del(ctx, key).Err()
+	err := r.rdb.Del(ctx, key).Err()
+	_ = r.PublishPresenceTransition(ctx, orgID, deviceID, "agent_offline")
+	return err
+}
+
+// PublishPresenceTransition publishes combined state change event agent_online / agent_offline
+func (r *PresenceRepository) PublishPresenceTransition(ctx context.Context, orgID, deviceID, eventType string) error {
+	if r.rdb == nil {
+		return nil
+	}
+	ch := fmt.Sprintf("pcp:v1:device-bus:%s", deviceID)
+	evt := map[string]interface{}{
+		"type":            eventType,
+		"organization_id": orgID,
+		"device_id":       deviceID,
+		"timestamp":       time.Now().UTC().Format(time.RFC3339),
+	}
+	bytes, _ := json.Marshal(evt)
+	return r.rdb.Publish(ctx, ch, bytes).Err()
 }

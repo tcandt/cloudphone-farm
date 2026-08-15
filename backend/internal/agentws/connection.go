@@ -44,9 +44,14 @@ func NewConnection(hub *Hub, ws *websocket.Conn, agent *domain.DeviceAgent, gene
 }
 
 func (c *Connection) Close() {
+	c.CloseWithCode(websocket.CloseNormalClosure, "connection closed")
+}
+
+func (c *Connection) CloseWithCode(code int, reason string) {
 	c.once.Do(func() {
 		close(c.closed)
 		close(c.Send)
+		_ = c.ws.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(code, reason), time.Now().Add(1*time.Second))
 		_ = c.ws.Close()
 		c.hub.Unregister(c)
 	})

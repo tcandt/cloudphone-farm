@@ -51,10 +51,12 @@ services:
       - APP_ENV=production
       - NODE_ID=node-a
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
       - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+      - SESSION_COOKIE_SECURE=true
+      - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
       - postgres_password
       - redis_password
@@ -81,10 +83,12 @@ services:
       - APP_ENV=production
       - NODE_ID=node-b
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
       - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+      - SESSION_COOKIE_SECURE=true
+      - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
       - postgres_password
       - redis_password
@@ -111,10 +115,12 @@ services:
       - APP_ENV=production
       - NODE_ID=node-c
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=disable
+      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
       - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
+      - SESSION_COOKIE_SECURE=true
+      - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
       - postgres_password
       - redis_password
@@ -143,6 +149,15 @@ services:
       - postgres_password
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/certs:/var/lib/postgresql/certs:ro
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/var/lib/postgresql/certs/server.crt
+      - -c
+      - ssl_key_file=/var/lib/postgresql/certs/server.key
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pcp_user -d phone_control_platform"]
       interval: 10s

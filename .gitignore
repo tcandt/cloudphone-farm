@@ -36,3 +36,4 @@ secrets/*
 playwright-report/
 test-results/
 scripts/*.json
+scratch/

@@ -26,26 +26,26 @@ type Config struct {
 }
 
 func LoadConfig() *Config {
-	nodeID := getEnv("NODE_ID", "")
+	nodeID := getEnvOrFile("NODE_ID", "")
 	if nodeID == "" {
 		nodeID = fmt.Sprintf("node_%s", uuid.New().String()[:8])
 	}
 
-	appEnv := getEnv("APP_ENV", "development")
-	port := getEnv("PORT", "8080")
-	postgresURL := os.Getenv("POSTGRES_URL")
+	appEnv := getEnvOrFile("APP_ENV", "development")
+	port := getEnvOrFile("PORT", "8080")
+	postgresURL := getEnvOrFile("POSTGRES_URL", "")
 	if postgresURL == "" {
-		postgresURL = os.Getenv("DATABASE_URL")
+		postgresURL = getEnvOrFile("DATABASE_URL", "")
 	}
 	if postgresURL == "" {
 		postgresURL = "postgres://pcp_user:pcp_secure_password_2026@localhost:5432/phone_control_platform?sslmode=disable"
 	}
-	redisURL := getEnv("REDIS_URL", "redis://localhost:6379/0")
-	coturnSecret := getEnv("COTURN_SHARED_SECRET", "pcp_coturn_secret_key")
-	cookieSecureStr := getEnv("SESSION_COOKIE_SECURE", "false")
+	redisURL := getEnvOrFile("REDIS_URL", "redis://localhost:6379/0")
+	coturnSecret := getEnvOrFile("COTURN_SHARED_SECRET", "pcp_coturn_secret_key")
+	cookieSecureStr := getEnvOrFile("SESSION_COOKIE_SECURE", "false")
 	cookieSecure, _ := strconv.ParseBool(cookieSecureStr)
 
-	corsEnv := getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:80")
+	corsEnv := getEnvOrFile("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:80")
 	rawOrigins := strings.Split(corsEnv, ",")
 	var corsOrigins []string
 	for _, o := range rawOrigins {
@@ -55,12 +55,12 @@ func LoadConfig() *Config {
 		}
 	}
 
-	onlineSec, _ := strconv.Atoi(getEnv("DEVICE_ONLINE_THRESHOLD_SECONDS", "30"))
+	onlineSec, _ := strconv.Atoi(getEnvOrFile("DEVICE_ONLINE_THRESHOLD_SECONDS", "30"))
 	if onlineSec <= 0 {
 		onlineSec = 30
 	}
 
-	offlineSec, _ := strconv.Atoi(getEnv("DEVICE_OFFLINE_THRESHOLD_SECONDS", "90"))
+	offlineSec, _ := strconv.Atoi(getEnvOrFile("DEVICE_OFFLINE_THRESHOLD_SECONDS", "90"))
 	if offlineSec <= 0 {
 		offlineSec = 90
 	}
@@ -111,9 +111,14 @@ func ValidateProductionConfig(cfg *Config) error {
 	return nil
 }
 
-func getEnv(key, fallback string) string {
+func getEnvOrFile(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
+	}
+	if file := os.Getenv(key + "_FILE"); file != "" {
+		if bytes, err := os.ReadFile(file); err == nil && len(bytes) > 0 {
+			return strings.TrimSpace(string(bytes))
+		}
 	}
 	return fallback
 }

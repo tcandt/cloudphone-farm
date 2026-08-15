@@ -157,6 +157,7 @@ jobs:
           go build -o /tmp/server ./cmd/server
           go build -o /tmp/e2esmoke ./cmd/e2esmoke
           go build -o /tmp/loadharness ./cmd/loadharness
+          go build -o /tmp/phase16_release_gate ./cmd/phase16_release_gate
 
           APP_ENV=test NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_A=$!
@@ -176,6 +177,8 @@ jobs:
           /tmp/e2esmoke -node-a=http://localhost:8081 -node-b=http://localhost:8082 -node-c=http://localhost:8083 -pid-a=$PID_A
 
           /tmp/loadharness -target-url http://localhost:8083 -concurrency 10 -duration 3s
+
+          /tmp/phase16_release_gate -nodes=http://localhost:8081,http://localhost:8082,http://localhost:8083 -caddy-url=http://localhost:8081 -postgres-url="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" -redis-url="redis://localhost:6379"
 
           kill $PID_B $PID_C
 
