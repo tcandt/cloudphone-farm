@@ -3,6 +3,11 @@
 }
 
 :8080 {
+	header {
+		X-PCP-Edge "caddy"
+		X-Content-Type-Options "nosniff"
+	}
+
 	# Proxy WebSocket agent connections to backend cluster
 	@agent_ws {
 		path /agent/v1/connect*
@@ -28,7 +33,21 @@
 		path /api/* /health/*
 	}
 	handle @api {
-		header_down X-Content-Type-Options "nosniff"
+		reverse_proxy 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083 {
+			lb_policy round_robin
+		}
+	}
+}
+
+:8443 {
+	tls internal
+
+	header {
+		X-PCP-Edge "caddy"
+		X-Content-Type-Options "nosniff"
+	}
+
+	handle {
 		reverse_proxy 127.0.0.1:8081 127.0.0.1:8082 127.0.0.1:8083 {
 			lb_policy round_robin
 		}

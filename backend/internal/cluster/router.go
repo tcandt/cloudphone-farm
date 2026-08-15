@@ -97,6 +97,9 @@ func (cr *ClusterRouter) handlePresenceTransition(env *RoutedEnvelope) {
 		"organization_id", env.OrganizationID,
 		"device_id", env.DeviceID,
 	)
+	if cr.browserHub != nil {
+		cr.browserHub.BroadcastPresenceEvent(env.OrganizationID, env.DeviceID, env.Type)
+	}
 }
 
 func (cr *ClusterRouter) handleCommandRouteRequest(env *RoutedEnvelope) {

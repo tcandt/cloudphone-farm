@@ -181,7 +181,15 @@ jobs:
           PID_A=$!
           sleep 2
 
-          # Start Caddy Perimeter Reverse Proxy container
+          # Generate temporary runtime secrets for CI stack verification
+          mkdir -p ../secrets ../infra/postgres/certs
+          echo "postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" > ../secrets/postgres_url.txt
+          echo "redis://localhost:6379" > ../secrets/redis_url.txt
+          echo "pcp_password" > ../secrets/postgres_password.txt
+          echo "pcp_password" > ../secrets/redis_password.txt
+          echo "coturn_secret_2026" > ../secrets/coturn_secret.txt
+
+          # Start Caddy Perimeter Reverse Proxy container with Caddyfile.local
           docker run -d --name caddy-perimeter --network host -v $(pwd)/../infra/caddy/Caddyfile.local:/etc/caddy/Caddyfile caddy:2-alpine
           sleep 2
 

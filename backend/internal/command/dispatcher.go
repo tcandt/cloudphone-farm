@@ -27,6 +27,10 @@ type OutboxDispatcher struct {
 	stopChan      chan struct{}
 	wg            sync.WaitGroup
 	maxAttempts   int
+	mu            sync.RWMutex
+	isRunning     bool
+	lastLoopAt    time.Time
+	lastError     string
 }
 
 func NewOutboxDispatcher(
@@ -53,9 +57,20 @@ func (d *OutboxDispatcher) SetClusterComponents(agentConnRepo *redispkg.AgentCon
 }
 
 func (d *OutboxDispatcher) Start(ctx context.Context) {
+	d.mu.Lock()
+	d.isRunning = true
+	d.lastLoopAt = time.Now()
+	d.mu.Unlock()
+
 	d.wg.Add(1)
 	go func() {
 		defer d.wg.Done()
+		defer func() {
+			d.mu.Lock()
+			d.isRunning = false
+			d.mu.Unlock()
+		}()
+
 		slog.Info("Outbox Dispatcher worker started", "worker_id", d.workerID)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
@@ -63,6 +78,9 @@ func (d *OutboxDispatcher) Start(ctx context.Context) {
 		for {
 			select {
 			case <-ticker.C:
+				d.mu.Lock()
+				d.lastLoopAt = time.Now()
+				d.mu.Unlock()
 				d.processBatch(ctx)
 			case <-d.stopChan:
 				slog.Info("Outbox Dispatcher worker stopping", "worker_id", d.workerID)
@@ -77,11 +95,26 @@ func (d *OutboxDispatcher) Start(ctx context.Context) {
 func (d *OutboxDispatcher) Stop() {
 	close(d.stopChan)
 	d.wg.Wait()
+	d.mu.Lock()
+	d.isRunning = false
+	d.mu.Unlock()
+}
+
+func (d *OutboxDispatcher) GetWorkerStatus() (bool, time.Time, string) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.isRunning, d.lastLoopAt, d.lastError
 }
 
 func (d *OutboxDispatcher) processBatch(ctx context.Context) {
 	messages, err := d.outboxRepo.ClaimPendingOutboxMessages(ctx, d.workerID, 50)
-	if err != nil || len(messages) == 0 {
+	if err != nil {
+		d.mu.Lock()
+		d.lastError = err.Error()
+		d.mu.Unlock()
+		return
+	}
+	if len(messages) == 0 {
 		return
 	}
 

@@ -82,15 +82,15 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 			checks["outbox_worker"] = "up"
 		}
 
-		// Check Migration Version State
-		var migVersion int
-		var dirty bool
-		err = h.pgPool.QueryRow(ctx, "SELECT version, dirty FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&migVersion, &dirty)
+		// Check Migration Authority State in pcp_schema_migrations
+		var migVersion int64
+		var migName, migChecksum string
+		err = h.pgPool.QueryRow(ctx, "SELECT version, name, checksum FROM pcp_schema_migrations ORDER BY version DESC LIMIT 1").Scan(&migVersion, &migName, &migChecksum)
 		if err != nil {
 			checks["migrations"] = "down: " + err.Error()
 			isReady = false
-		} else if dirty {
-			checks["migrations"] = "degraded: dirty migration"
+		} else if migVersion < 7 {
+			checks["migrations"] = "degraded: pending migrations"
 			isReady = false
 		} else {
 			checks["migrations"] = "up"

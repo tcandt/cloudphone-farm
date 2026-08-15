@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -44,7 +47,6 @@ func main() {
 
 	migrationsDir := filepath.Join("db", "migrations")
 	if _, err := os.Stat(migrationsDir); os.IsNotExist(err) {
-		// Fallback check parent or backend dir
 		migrationsDir = filepath.Join(".", "backend", "db", "migrations")
 	}
 
@@ -72,12 +74,34 @@ func main() {
 			os.Exit(1)
 		}
 
-		slog.Info("Executing migration", "file", file)
+		parts := strings.Split(file, "_")
+		var version int64
+		if len(parts) > 0 {
+			_, _ = fmt.Sscanf(parts[0], "%d", &version)
+		}
+
+		hash := sha256.Sum256(sqlBytes)
+		checksumHex := hex.EncodeToString(hash[:])
+
+		slog.Info("Executing migration", "file", file, "version", version, "checksum", checksumHex[:8])
+
 		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
 			slog.Error("Failed to execute migration", "file", file, "error", err)
 			os.Exit(1)
 		}
+
+		if version > 0 {
+			_, err = pool.Exec(ctx, `
+				INSERT INTO pcp_schema_migrations (version, name, checksum)
+				VALUES ($1, $2, $3)
+				ON CONFLICT (version) DO UPDATE SET name = $2, checksum = $3, applied_at = CURRENT_TIMESTAMP;
+			`, version, file, checksumHex)
+			if err != nil {
+				slog.Error("Failed to record migration in pcp_schema_migrations", "file", file, "error", err)
+				os.Exit(1)
+			}
+		}
 	}
 
-	slog.Info("All database migrations applied successfully")
+	slog.Info("All database migrations applied successfully and recorded in pcp_schema_migrations")
 }

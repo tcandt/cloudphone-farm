@@ -226,9 +226,10 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_org_created ON audit_logs(organization_id, created_at DESC);
 
 -- 20. Migration Authority Tracking Table
-CREATE TABLE IF NOT EXISTS schema_migrations (
+CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
     version BIGINT PRIMARY KEY,
-    dirty BOOLEAN NOT NULL DEFAULT FALSE,
+    name VARCHAR(255) NOT NULL,
+    checksum VARCHAR(64) NOT NULL,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO schema_migrations (version, dirty) VALUES (1, false) ON CONFLICT (version) DO UPDATE SET dirty = false;
+INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES (1, '000001_create_core_tables.up.sql', 'v1_core') ON CONFLICT (version) DO UPDATE SET name = EXCLUDED.name;

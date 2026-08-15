@@ -18,4 +18,4 @@ CREATE TABLE IF NOT EXISTS command_delivery_attempts (
 
 CREATE INDEX IF NOT EXISTS idx_command_delivery_attempts_cmd ON command_delivery_attempts(command_id, attempt_no DESC);
 
-INSERT INTO schema_migrations (version, dirty) VALUES (7, false) ON CONFLICT (version) DO UPDATE SET dirty = false;
+INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES (7, '000007_phase14_command_delivery_attempts.up.sql', 'v7_delivery') ON CONFLICT (version) DO UPDATE SET name = EXCLUDED.name;

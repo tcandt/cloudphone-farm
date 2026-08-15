@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -213,7 +214,11 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 		Name:   fmt.Sprintf("Caddy Perimeter Reverse Proxy Check (%s)", caddyURL),
 	}
 
-	client := &http.Client{Timeout: 3 * time.Second}
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Timeout: 3 * time.Second, Transport: tr}
+
 	resp, err := client.Get(fmt.Sprintf("%s/health/ready", caddyURL))
 	if err != nil {
 		gate.ErrorMessage = fmt.Sprintf("Caddy perimeter request failed: %v", err)
@@ -226,9 +231,9 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 		return gate
 	}
 
-	serverHeader := resp.Header.Get("Server")
-	if !strings.Contains(strings.ToLower(serverHeader), "caddy") {
-		gate.ErrorMessage = fmt.Sprintf("Reverse proxy perimeter missing 'Server: Caddy' header, got '%s'", serverHeader)
+	edgeMarker := resp.Header.Get("X-PCP-Edge")
+	if edgeMarker != "caddy" {
+		gate.ErrorMessage = fmt.Sprintf("Caddy perimeter missing 'X-PCP-Edge: caddy' marker header, got '%s'", edgeMarker)
 		return gate
 	}
 
@@ -539,7 +544,13 @@ func checkBackupRestoreSmoke(ctx context.Context, pool *pgxpool.Pool, pgURL stri
 
 	pgDumpPath, err := exec.LookPath("pg_dump")
 	if err != nil {
-		gate.ErrorMessage = "pg_dump CLI utility missing on system PATH"
+		gate.ErrorMessage = "HARD FAIL: pg_dump CLI utility missing on system PATH"
+		return gate
+	}
+
+	psqlPath, err := exec.LookPath("psql")
+	if err != nil {
+		gate.ErrorMessage = "HARD FAIL: psql CLI utility missing on system PATH for restore verification"
 		return gate
 	}
 
@@ -559,6 +570,10 @@ func checkBackupRestoreSmoke(ctx context.Context, pool *pgxpool.Pool, pgURL stri
 	defer func() {
 		_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE device_id = $1", testDevID)
 	}()
+
+	var preOrgCnt, preDevCnt int
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM organizations").Scan(&preOrgCnt)
+	_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM devices").Scan(&preDevCnt)
 
 	backupFile := "/tmp/pcp_real_data_backup.sql"
 	cmd := exec.Command(pgDumpPath, "--dbname="+pgURL, "--file="+backupFile, "--clean", "--if-exists")
@@ -581,22 +596,51 @@ func checkBackupRestoreSmoke(ctx context.Context, pool *pgxpool.Pool, pgURL stri
 		return gate
 	}
 
-	psqlPath, err := exec.LookPath("psql")
+	// Create Isolated Verification Database (pcp_restore_verify)
+	_, _ = pool.Exec(ctx, "DROP DATABASE IF EXISTS pcp_restore_verify;")
+	_, err = pool.Exec(ctx, "CREATE DATABASE pcp_restore_verify TEMPLATE template0;")
 	if err != nil {
-		gate.ErrorMessage = "psql CLI utility missing on system PATH for restore verification"
+		gate.ErrorMessage = fmt.Sprintf("Failed to create isolated restore verification DB 'pcp_restore_verify': %v", err)
 		return gate
 	}
+	defer func() {
+		_, _ = pool.Exec(context.Background(), "DROP DATABASE IF EXISTS pcp_restore_verify;")
+	}()
 
-	restoreCmd := exec.Command(psqlPath, pgURL, "-v", "ON_ERROR_STOP=1", "-f", backupFile)
+	verifyPGURL := strings.Replace(pgURL, "/phone_farm", "/pcp_restore_verify", 1)
+	verifyPGURL = strings.Replace(verifyPGURL, "/phone_control_platform", "/pcp_restore_verify", 1)
+
+	restoreCmd := exec.Command(psqlPath, verifyPGURL, "-X", "-v", "ON_ERROR_STOP=1", "-f", backupFile)
 	if out, err := restoreCmd.CombinedOutput(); err != nil {
-		gate.ErrorMessage = fmt.Sprintf("psql restore execution failed: %v (output: %s)", err, string(out))
+		gate.ErrorMessage = fmt.Sprintf("psql restore into pcp_restore_verify failed: %v (output: %s)", err, string(out))
 		return gate
 	}
 
-	var count int
-	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM devices WHERE serial_number = $1", testSerial).Scan(&count)
-	if err != nil || count != 1 {
-		gate.ErrorMessage = fmt.Sprintf("Post-restore integrity check failed: expected 1 restored row, got %d (err: %v)", count, err)
+	verifyPool, err := pgxpool.New(ctx, verifyPGURL)
+	if err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Failed to connect to restored database pcp_restore_verify: %v", err)
+		return gate
+	}
+	defer verifyPool.Close()
+
+	var postDevCnt int
+	err = verifyPool.QueryRow(ctx, "SELECT COUNT(*) FROM devices WHERE serial_number = $1", testSerial).Scan(&postDevCnt)
+	if err != nil || postDevCnt != 1 {
+		gate.ErrorMessage = fmt.Sprintf("Post-restore integrity check on pcp_restore_verify failed: expected 1 restored test device, got %d (err: %v)", postDevCnt, err)
+		return gate
+	}
+
+	var postTotalDevCnt int
+	_ = verifyPool.QueryRow(ctx, "SELECT COUNT(*) FROM devices").Scan(&postTotalDevCnt)
+	if postTotalDevCnt != preDevCnt {
+		gate.ErrorMessage = fmt.Sprintf("Post-restore device count mismatch: source had %d devices, restored had %d", preDevCnt, postTotalDevCnt)
+		return gate
+	}
+
+	var fkOrphans int
+	err = verifyPool.QueryRow(ctx, "SELECT COUNT(*) FROM device_agents a LEFT JOIN devices d ON a.device_id = d.device_id WHERE d.device_id IS NULL").Scan(&fkOrphans)
+	if err != nil || fkOrphans > 0 {
+		gate.ErrorMessage = fmt.Sprintf("Foreign key integrity check on restored DB failed: %d orphaned agent records found", fkOrphans)
 		return gate
 	}
 

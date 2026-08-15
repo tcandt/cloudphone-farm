@@ -20,11 +20,17 @@ backend/.gotmp/
 
 # Secrets & Local credentials & TLS private keys
 secrets/*
-!.secrets/.gitkeep
+!secrets/.gitkeep
+!secrets/*.example
 *.key
 *.pem
-infra/postgres/certs/*.key
-infra/postgres/certs/*.crt
+*.crt
+*.p12
+*.pfx
+infra/postgres/certs/*
+infra/caddy/certs/*
+!infra/postgres/certs/.gitkeep
+!infra/caddy/certs/.gitkeep
 
 # Editor directories and files
 .vscode/*

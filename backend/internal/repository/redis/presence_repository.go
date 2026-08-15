@@ -108,18 +108,49 @@ func (r *PresenceRepository) GetPresence(ctx context.Context, orgID, deviceID st
 	return &p, nil
 }
 
-// RemovePresence deletes presence key from Redis upon Agent disconnect or revocation
+var atomicRemovePresenceLua = redis.NewScript(`
+local key = KEYS[1]
+local req_gen = tonumber(ARGV[1] or 0)
+
+local existing = redis.call('GET', key)
+if existing and existing ~= '' then
+    local ok, data = pcall(cjson.decode, existing)
+    if ok and data then
+        local current_gen = tonumber(data['generation'] or 0)
+        if req_gen > 0 and current_gen > req_gen then
+            return 0
+        end
+    end
+    redis.call('DEL', key)
+    return 1
+end
+redis.call('DEL', key)
+return 1
+`)
+
+// RemovePresence deletes presence key from Redis upon Agent disconnect or revocation with optional generation fencing
 func (r *PresenceRepository) RemovePresence(ctx context.Context, orgID, deviceID string) error {
+	return r.RemovePresenceFenced(ctx, orgID, deviceID, 0)
+}
+
+func (r *PresenceRepository) RemovePresenceFenced(ctx context.Context, orgID, deviceID string, reqGen int64) error {
 	if r.rdb == nil {
 		return ErrRedisDown
 	}
 
 	key := presenceKey(orgID, deviceID)
-	deleted, err := r.rdb.Del(ctx, key).Result()
-	if deleted > 0 {
+	keys := []string{key}
+	args := []interface{}{reqGen}
+
+	res, err := atomicRemovePresenceLua.Run(ctx, r.rdb, keys, args...).Int64()
+	if err != nil {
+		return fmt.Errorf("%w: atomic remove presence Lua failed: %v", ErrRedisDown, err)
+	}
+
+	if res > 0 {
 		_ = r.PublishPresenceTransition(ctx, orgID, deviceID, "agent_offline")
 	}
-	return err
+	return nil
 }
 
 // PublishPresenceTransition publishes combined state change event agent_online / agent_offline
@@ -129,10 +160,13 @@ func (r *PresenceRepository) PublishPresenceTransition(ctx context.Context, orgI
 	}
 	ch := fmt.Sprintf("pcp:v1:device-bus:%s", deviceID)
 	evt := map[string]interface{}{
-		"type":            eventType,
+		"message_id":      fmt.Sprintf("pres_%d", time.Now().UnixNano()),
+		"source_node_id":  "presence_repository",
+		"target_node_id":  "",
 		"organization_id": orgID,
 		"device_id":       deviceID,
-		"timestamp":       time.Now().UTC().Format(time.RFC3339),
+		"type":           eventType,
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
 	}
 	bytes, _ := json.Marshal(evt)
 	return r.rdb.Publish(ctx, ch, bytes).Err()

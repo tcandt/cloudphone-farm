@@ -191,3 +191,48 @@ func (b *BrowserHub) BroadcastRawMediaSignal(orgID, deviceID string, data []byte
 	}
 }
 
+type DevicePresenceEvent struct {
+	Type string                  `json:"type"`
+	Data DevicePresenceEventData `json:"data"`
+}
+
+type DevicePresenceEventData struct {
+	DeviceID   string `json:"device_id"`
+	Status     string `json:"status"`
+	OccurredAt string `json:"occurred_at"`
+}
+
+func (b *BrowserHub) BroadcastPresenceEvent(orgID, deviceID, eventType string) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	key := DeviceKey(orgID, deviceID)
+	subs, exists := b.subscribers[key]
+	if !exists || len(subs) == 0 {
+		return
+	}
+
+	event := DevicePresenceEvent{
+		Type: "device.presence.changed",
+		Data: DevicePresenceEventData{
+			DeviceID:   deviceID,
+			Status:     eventType,
+			OccurredAt: time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+
+	bytes, err := json.Marshal(event)
+	if err != nil {
+		slog.Error("Failed to marshal device presence event for browser fanout", "error", err)
+		return
+	}
+
+	for _, sub := range subs {
+		select {
+		case sub.Send <- bytes:
+		default:
+			slog.Warn("Browser subscriber channel buffer full, skipping presence frame", "subscriber_id", sub.SubscriberID)
+		}
+	}
+}
+
