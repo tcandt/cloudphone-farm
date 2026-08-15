@@ -51,13 +51,15 @@ services:
       - APP_ENV=production
       - NODE_ID=node-a
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
-      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
+      - POSTGRES_URL_FILE=/run/secrets/postgres_url
+      - REDIS_URL_FILE=/run/secrets/redis_url
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
       - SESSION_COOKIE_SECURE=true
       - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
+      - postgres_url
+      - redis_url
       - postgres_password
       - redis_password
       - coturn_secret
@@ -83,13 +85,15 @@ services:
       - APP_ENV=production
       - NODE_ID=node-b
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
-      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
+      - POSTGRES_URL_FILE=/run/secrets/postgres_url
+      - REDIS_URL_FILE=/run/secrets/redis_url
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
       - SESSION_COOKIE_SECURE=true
       - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
+      - postgres_url
+      - redis_url
       - postgres_password
       - redis_password
       - coturn_secret
@@ -115,13 +119,15 @@ services:
       - APP_ENV=production
       - NODE_ID=node-c
       - PORT=8080
-      - POSTGRES_URL=postgres://pcp_user:pcp_secure_password_2026@postgres:5432/phone_control_platform?sslmode=require
-      - REDIS_URL=redis://:pcp_redis_password_2026@redis:6379/0
+      - POSTGRES_URL_FILE=/run/secrets/postgres_url
+      - REDIS_URL_FILE=/run/secrets/redis_url
       - COTURN_SHARED_SECRET_FILE=/run/secrets/coturn_secret
       - COTURN_HOST=${COTURN_HOST:-turn.phonecontrol.io}
       - SESSION_COOKIE_SECURE=true
       - CORS_ALLOWED_ORIGINS=https://control.phonecontrol.io
     secrets:
+      - postgres_url
+      - redis_url
       - postgres_password
       - redis_password
       - coturn_secret
@@ -200,6 +206,10 @@ services:
     restart: unless-stopped
 
 secrets:
+  postgres_url:
+    file: ./secrets/postgres_url.txt
+  redis_url:
+    file: ./secrets/redis_url.txt
   postgres_password:
     file: ./secrets/postgres_password.txt
   redis_password:

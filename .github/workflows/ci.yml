@@ -181,10 +181,13 @@ jobs:
           PID_A=$!
           sleep 2
 
-          /tmp/loadharness -target-url http://localhost:8083 -concurrency 10 -duration 3s
+          # Start Caddy Perimeter Reverse Proxy container
+          docker run -d --name caddy-perimeter --network host -v $(pwd)/infra/caddy/Caddyfile.local:/etc/caddy/Caddyfile caddy:2-alpine
+          sleep 2
 
-          /tmp/phase16_release_gate -nodes=http://localhost:8081,http://localhost:8082,http://localhost:8083 -caddy-url=http://localhost:8081 -postgres-url="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" -redis-url="redis://localhost:6379"
+          /tmp/phase16_release_gate -nodes=http://localhost:8081,http://localhost:8082,http://localhost:8083 -caddy-url=http://localhost:8080 -postgres-url="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" -redis-url="redis://localhost:6379"
 
+          docker rm -f caddy-perimeter || true
           kill $PID_A $PID_B $PID_C
 
   android-build:

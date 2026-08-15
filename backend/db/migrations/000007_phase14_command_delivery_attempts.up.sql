@@ -17,3 +17,5 @@ CREATE TABLE IF NOT EXISTS command_delivery_attempts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_command_delivery_attempts_cmd ON command_delivery_attempts(command_id, attempt_no DESC);
+
+INSERT INTO schema_migrations (version, dirty) VALUES (7, false) ON CONFLICT (version) DO UPDATE SET dirty = false;

@@ -78,6 +78,8 @@ func (cr *ClusterRouter) handleIncomingEnvelope(env *RoutedEnvelope) {
 		cr.handleMediaSignalToBrowser(env)
 	case "agent.credential.revoke":
 		cr.handleAgentCredentialRevoke(env)
+	case "agent_online", "agent_offline":
+		cr.handlePresenceTransition(env)
 	default:
 		slog.Warn("Unknown envelope type received on cluster bus", "type", env.Type, "msg_id", env.MessageID)
 	}
@@ -87,6 +89,14 @@ func (cr *ClusterRouter) handleAgentCredentialRevoke(env *RoutedEnvelope) {
 	if cr.wsHub != nil {
 		cr.wsHub.CloseConnectionForAgent(env.OrganizationID, env.DeviceID, env.AgentID)
 	}
+}
+
+func (cr *ClusterRouter) handlePresenceTransition(env *RoutedEnvelope) {
+	slog.Info("Device presence combined state transition event received",
+		"type", env.Type,
+		"organization_id", env.OrganizationID,
+		"device_id", env.DeviceID,
+	)
 }
 
 func (cr *ClusterRouter) handleCommandRouteRequest(env *RoutedEnvelope) {

@@ -63,6 +63,8 @@ func (r *PresenceRepository) UpdatePresence(ctx context.Context, orgID, deviceID
 	}
 
 	key := presenceKey(orgID, deviceID)
+	wasOnline := r.rdb.Exists(ctx, key).Val() > 0
+
 	data, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("failed to serialize presence payload: %w", err)
@@ -74,6 +76,10 @@ func (r *PresenceRepository) UpdatePresence(ctx context.Context, orgID, deviceID
 
 	if err := atomicPresenceLua.Run(ctx, r.rdb, keys, args...).Err(); err != nil {
 		return fmt.Errorf("%w: atomic presence Lua execution failed: %v", ErrRedisDown, err)
+	}
+
+	if !wasOnline {
+		_ = r.PublishPresenceTransition(ctx, orgID, deviceID, "agent_online")
 	}
 
 	return nil
@@ -109,8 +115,10 @@ func (r *PresenceRepository) RemovePresence(ctx context.Context, orgID, deviceID
 	}
 
 	key := presenceKey(orgID, deviceID)
-	err := r.rdb.Del(ctx, key).Err()
-	_ = r.PublishPresenceTransition(ctx, orgID, deviceID, "agent_offline")
+	deleted, err := r.rdb.Del(ctx, key).Result()
+	if deleted > 0 {
+		_ = r.PublishPresenceTransition(ctx, orgID, deviceID, "agent_offline")
+	}
 	return err
 }
 

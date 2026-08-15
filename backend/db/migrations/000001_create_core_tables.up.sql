@@ -224,3 +224,11 @@ CREATE INDEX IF NOT EXISTS idx_commands_device_created ON commands(device_id, cr
 CREATE INDEX IF NOT EXISTS idx_outbox_status_created ON command_outbox(status, created_at ASC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_org_created ON audit_logs(organization_id, created_at DESC);
+
+-- 20. Migration Authority Tracking Table
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version BIGINT PRIMARY KEY,
+    dirty BOOLEAN NOT NULL DEFAULT FALSE,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+INSERT INTO schema_migrations (version, dirty) VALUES (1, false) ON CONFLICT (version) DO UPDATE SET dirty = false;

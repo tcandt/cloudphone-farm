@@ -10,6 +10,7 @@ node_modules
 dist
 dist-ssr
 *.local
+!infra/caddy/Caddyfile.local
 .env
 
 # Binary Executables & Go tmp
@@ -17,9 +18,13 @@ dist-ssr
 backend/*.exe
 backend/.gotmp/
 
-# Secrets & Local credentials
+# Secrets & Local credentials & TLS private keys
 secrets/*
 !.secrets/.gitkeep
+*.key
+*.pem
+infra/postgres/certs/*.key
+infra/postgres/certs/*.crt
 
 # Editor directories and files
 .vscode/*

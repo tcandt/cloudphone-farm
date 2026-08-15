@@ -73,7 +73,8 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 		var outboxCnt int
 		err := h.pgPool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE status = 'failed'").Scan(&outboxCnt)
 		if err != nil {
-			checks["outbox_worker"] = "up" // Table empty or not queried, graceful fallback
+			checks["outbox_worker"] = "down: " + err.Error()
+			isReady = false
 		} else if outboxCnt > 50 {
 			checks["outbox_worker"] = "degraded: excessive outbox failures"
 			isReady = false
@@ -86,9 +87,10 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 		var dirty bool
 		err = h.pgPool.QueryRow(ctx, "SELECT version, dirty FROM schema_migrations ORDER BY version DESC LIMIT 1").Scan(&migVersion, &dirty)
 		if err != nil {
-			checks["migrations"] = "up" // Graceful fallback if schema_migrations table managed via psql
+			checks["migrations"] = "down: " + err.Error()
+			isReady = false
 		} else if dirty {
-			checks["migrations"] = "dirty"
+			checks["migrations"] = "degraded: dirty migration"
 			isReady = false
 		} else {
 			checks["migrations"] = "up"

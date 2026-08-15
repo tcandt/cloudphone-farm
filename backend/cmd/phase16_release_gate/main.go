@@ -106,7 +106,7 @@ func main() {
 	results = append(results, checkRealViewerQuotaLimit(nodes[1], pool, rdb, orgID, userID, sessionToken))
 
 	// Gate 6: Backup, Restore & Rollback Smoke Test
-	results = append(results, checkBackupRestoreSmoke(*pgURLFlag))
+	results = append(results, checkBackupRestoreSmoke(ctx, pool, *pgURLFlag))
 
 	// Calculate Report Verdict
 	report.Results = results
@@ -214,7 +214,7 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 	}
 
 	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("%s/health/live", caddyURL))
+	resp, err := client.Get(fmt.Sprintf("%s/health/ready", caddyURL))
 	if err != nil {
 		gate.ErrorMessage = fmt.Sprintf("Caddy perimeter request failed: %v", err)
 		return gate
@@ -223,6 +223,12 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 
 	if resp.StatusCode != http.StatusOK {
 		gate.ErrorMessage = fmt.Sprintf("Expected HTTP 200 OK from Caddy perimeter, got HTTP %d", resp.StatusCode)
+		return gate
+	}
+
+	serverHeader := resp.Header.Get("Server")
+	if !strings.Contains(strings.ToLower(serverHeader), "caddy") {
+		gate.ErrorMessage = fmt.Sprintf("Reverse proxy perimeter missing 'Server: Caddy' header, got '%s'", serverHeader)
 		return gate
 	}
 
@@ -525,7 +531,7 @@ func checkRealViewerQuotaLimit(nodeURL string, pool *pgxpool.Pool, rdb *redis.Cl
 	return gate
 }
 
-func checkBackupRestoreSmoke(pgURL string) GateResult {
+func checkBackupRestoreSmoke(ctx context.Context, pool *pgxpool.Pool, pgURL string) GateResult {
 	gate := GateResult{
 		Pillar: "1. Production Deployment & Infrastructure",
 		Name:   "PostgreSQL Backup, Integrity & Restore Smoke Proof",
@@ -533,19 +539,67 @@ func checkBackupRestoreSmoke(pgURL string) GateResult {
 
 	pgDumpPath, err := exec.LookPath("pg_dump")
 	if err != nil {
-		slog.Warn("pg_dump CLI utility not found on PATH. Executing synthetic schema backup & integrity check.")
-		gate.Passed = true
+		gate.ErrorMessage = "pg_dump CLI utility missing on system PATH"
 		return gate
 	}
 
-	backupFile := "/tmp/pcp_backup_test.sql"
-	cmd := exec.Command(pgDumpPath, "--dbname="+pgURL, "--file="+backupFile, "--schema-only")
-	if err := cmd.Run(); err != nil {
-		gate.ErrorMessage = fmt.Sprintf("pg_dump backup execution failed: %v", err)
+	testSerial := fmt.Sprintf("SN_BACKUP_TEST_%d", time.Now().UnixNano())
+	testDevID := fmt.Sprintf("dev_bkp_%d", time.Now().UnixNano())
+	orgID := "org_p16_gate"
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status)
+		VALUES ($1, $2, 'Backup Integrity Benchmark Device', $3, 'BkpModel', 'Android 15', 'online')
+		ON CONFLICT (organization_id, device_id) DO UPDATE SET serial_number = $3;
+	`, testDevID, orgID, testSerial)
+	if err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Failed to seed backup benchmark record: %v", err)
+		return gate
+	}
+	defer func() {
+		_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE device_id = $1", testDevID)
+	}()
+
+	backupFile := "/tmp/pcp_real_data_backup.sql"
+	cmd := exec.Command(pgDumpPath, "--dbname="+pgURL, "--file="+backupFile, "--clean", "--if-exists")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		gate.ErrorMessage = fmt.Sprintf("pg_dump data backup failed: %v (output: %s)", err, string(out))
+		return gate
+	}
+	defer func() {
+		_ = os.Remove(backupFile)
+	}()
+
+	sqlBytes, err := os.ReadFile(backupFile)
+	if err != nil || len(sqlBytes) == 0 {
+		gate.ErrorMessage = "Backup file unreadable or zero bytes"
 		return gate
 	}
 
-	_ = os.Remove(backupFile)
+	if !strings.Contains(string(sqlBytes), testSerial) {
+		gate.ErrorMessage = "Backup file content integrity check failed: seeded record serial missing from SQL dump"
+		return gate
+	}
+
+	psqlPath, err := exec.LookPath("psql")
+	if err != nil {
+		gate.ErrorMessage = "psql CLI utility missing on system PATH for restore verification"
+		return gate
+	}
+
+	restoreCmd := exec.Command(psqlPath, pgURL, "-v", "ON_ERROR_STOP=1", "-f", backupFile)
+	if out, err := restoreCmd.CombinedOutput(); err != nil {
+		gate.ErrorMessage = fmt.Sprintf("psql restore execution failed: %v (output: %s)", err, string(out))
+		return gate
+	}
+
+	var count int
+	err = pool.QueryRow(ctx, "SELECT COUNT(*) FROM devices WHERE serial_number = $1", testSerial).Scan(&count)
+	if err != nil || count != 1 {
+		gate.ErrorMessage = fmt.Sprintf("Post-restore integrity check failed: expected 1 restored row, got %d (err: %v)", count, err)
+		return gate
+	}
+
 	gate.Passed = true
 	return gate
 }
