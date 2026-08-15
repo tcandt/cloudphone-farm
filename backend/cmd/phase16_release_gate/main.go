@@ -82,9 +82,6 @@ func main() {
 		results = append(results, g)
 	}
 
-	// Gate 2: Caddy Reverse Proxy & Security Headers
-	results = append(results, checkCaddyPerimeter(*caddyFlag))
-
 	// Seed Entities for Real Auth, Revocation & Viewer Tests
 	orgID := "org_p16_gate"
 	userID := "usr_p16_admin"
@@ -96,6 +93,9 @@ func main() {
 	sessionToken := "sess_token_p16_admin"
 
 	seedEntities(ctx, pool, rdb, orgID, userID, deviceID, agentID, pubKey, fingerprint, sessionToken)
+
+	// Gate 2: Caddy Reverse Proxy, HTTPS & Authenticated WSS Upgrade 101 Check
+	results = append(results, checkCaddyPerimeter(*caddyFlag, deviceID, agentID, privKey))
 
 	// Gate 3: Real Agent Production Auth & WSS Challenge Handshake
 	results = append(results, checkRealAgentAuthHandshake(nodes[0], deviceID, agentID, privKey, fingerprint))
@@ -208,10 +208,10 @@ func checkNodeReadiness(nodeURL string, index int) GateResult {
 	return gate
 }
 
-func checkCaddyPerimeter(caddyURL string) GateResult {
+func checkCaddyPerimeter(caddyURL, deviceID, agentID string, privKey ed25519.PrivateKey) GateResult {
 	gate := GateResult{
 		Pillar: "1. Production Deployment & Caddy Infrastructure",
-		Name:   fmt.Sprintf("Caddy Perimeter Reverse Proxy Check (HTTP %s & HTTPS/WSS :8443)", caddyURL),
+		Name:   fmt.Sprintf("Caddy Perimeter Reverse Proxy Check (HTTP %s, HTTPS :8443 & Authenticated WSS Upgrade 101)", caddyURL),
 	}
 
 	tr := &http.Transport{
@@ -266,26 +266,93 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 		return gate
 	}
 
-	// 3. WSS Agent Connection Proxy Check via Caddy (:8443)
+	// 3. Authenticated WSS Upgrade 101 & Challenge Response Handshake through Caddy (:8443)
+	timestampStr := strconv.FormatInt(time.Now().Unix(), 10)
+	nonceBytes := make([]byte, 16)
+	_, _ = rand.Read(nonceBytes)
+	nonceStr := hex.EncodeToString(nonceBytes)
+
+	emptyBodyHash := sha256.Sum256([]byte(""))
+	bodyHashHex := hex.EncodeToString(emptyBodyHash[:])
+	canonicalPath := "/agent/v1/connect"
+	canonicalMsg := fmt.Sprintf("GET\n%s\n%s\n%s\n%s", canonicalPath, bodyHashHex, timestampStr, nonceStr)
+
+	sigBytes := ed25519.Sign(privKey, []byte(canonicalMsg))
+	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
+
+	headers := http.Header{}
+	headers.Set("X-Agent-ID", agentID)
+	headers.Set("X-Agent-Timestamp", timestampStr)
+	headers.Set("X-Agent-Nonce", nonceStr)
+	headers.Set("X-Agent-Signature", sigB64)
+
 	wsDialer := websocket.Dialer{
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: true,
 			ServerName:         "127.0.0.1",
 		},
-		HandshakeTimeout: 3 * time.Second,
+		HandshakeTimeout: 5 * time.Second,
 	}
-	wssURL := "wss://127.0.0.1:8443/agent/v1/connect"
-	wsConn, wsResp, wsErr := wsDialer.Dial(wssURL, nil)
-	if wsErr == nil {
-		wsConn.Close()
-	} else if wsResp != nil {
-		// Backend returning 400 Bad Request or 401 Unauthorized via Caddy proxy is proof WSS proxying works
-		if wsResp.StatusCode != http.StatusBadRequest && wsResp.StatusCode != http.StatusUnauthorized {
-			gate.ErrorMessage = fmt.Sprintf("Caddy WSS proxying failed, expected HTTP 400/401 from backend, got HTTP %d", wsResp.StatusCode)
-			return gate
+
+	wssURL := fmt.Sprintf("wss://127.0.0.1:8443/agent/v1/connect?device_id=%s", deviceID)
+	wsConn, wsResp, err := wsDialer.Dial(wssURL, headers)
+	if err != nil {
+		if wsResp != nil {
+			gate.ErrorMessage = fmt.Sprintf("Caddy WSS authenticated dial failed with HTTP status %d: %v", wsResp.StatusCode, err)
+		} else {
+			gate.ErrorMessage = fmt.Sprintf("Caddy WSS authenticated dial failed: %v", err)
 		}
-	} else {
-		gate.ErrorMessage = fmt.Sprintf("Caddy WSS connection failed to %s: %v", wssURL, wsErr)
+		return gate
+	}
+	defer wsConn.Close()
+
+	if wsResp.StatusCode != http.StatusSwitchingProtocols {
+		gate.ErrorMessage = fmt.Sprintf("Expected HTTP 101 Switching Protocols from Caddy WSS upgrade, got HTTP %d", wsResp.StatusCode)
+		return gate
+	}
+
+	// Read Server Challenge via Caddy WSS proxy
+	_ = wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, msg, err := wsConn.ReadMessage()
+	if err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Failed to read WSS server challenge through Caddy: %v", err)
+		return gate
+	}
+
+	var challengeEnv agentws.WSEnvelope
+	if err := json.Unmarshal(msg, &challengeEnv); err != nil || challengeEnv.Type != agentws.MessageTypeServerChallenge {
+		gate.ErrorMessage = fmt.Sprintf("Invalid server challenge payload through Caddy: %s", string(msg))
+		return gate
+	}
+
+	var challengePayload agentws.ServerChallengePayload
+	_ = json.Unmarshal(challengeEnv.Payload, &challengePayload)
+
+	// Sign Challenge Nonce and send Agent Challenge Response through Caddy
+	chalSig := ed25519.Sign(privKey, []byte(challengePayload.ChallengeNonce))
+	respPayload := agentws.AgentChallengeResponsePayload{
+		ChallengeSignature: base64.StdEncoding.EncodeToString(chalSig),
+	}
+	respEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeAgentChallengeResponse, "chal_resp_caddy_01", respPayload)
+	respBytes, _ := json.Marshal(respEnv)
+
+	_ = wsConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := wsConn.WriteMessage(websocket.TextMessage, respBytes); err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Failed to send challenge response through Caddy WSS: %v", err)
+		return gate
+	}
+
+	// Read Connection Ready confirmation via Caddy WSS proxy
+	_ = wsConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, readyMsg, err := wsConn.ReadMessage()
+	if err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Failed to read connection.ready message through Caddy WSS: %v", err)
+		return gate
+	}
+
+	var readyEnv agentws.WSEnvelope
+	if err := json.Unmarshal(readyMsg, &readyEnv); err != nil || readyEnv.Type != agentws.MessageTypeConnectionReady {
+		gate.ErrorMessage = fmt.Sprintf("Expected connection.ready through Caddy WSS, got: %s", string(readyMsg))
 		return gate
 	}
 

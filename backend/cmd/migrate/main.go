@@ -66,6 +66,20 @@ func main() {
 
 	slog.Info("Found migration files to apply", "count", len(upFiles), "files", upFiles)
 
+	// Ensure pcp_schema_migrations table exists upfront
+	_, err = pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
+			version BIGINT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			checksum VARCHAR(64) NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		slog.Error("Failed to initialize pcp_schema_migrations table", "error", err)
+		os.Exit(1)
+	}
+
 	for _, file := range upFiles {
 		filePath := filepath.Join(migrationsDir, file)
 		sqlBytes, err := os.ReadFile(filePath)
@@ -83,6 +97,24 @@ func main() {
 		hash := sha256.Sum256(sqlBytes)
 		checksumHex := hex.EncodeToString(hash[:])
 
+		if version > 0 {
+			var recordedChecksum string
+			err := pool.QueryRow(ctx, "SELECT checksum FROM pcp_schema_migrations WHERE version = $1", version).Scan(&recordedChecksum)
+			if err == nil {
+				if recordedChecksum == checksumHex {
+					slog.Info("Migration already applied, skipping", "version", version, "file", file, "checksum", checksumHex[:8])
+					continue
+				}
+				slog.Error("FATAL: Migration checksum mismatch / drift detected! File has been altered after initial deployment",
+					"version", version,
+					"file", file,
+					"recorded_checksum", recordedChecksum,
+					"computed_checksum", checksumHex,
+				)
+				os.Exit(1)
+			}
+		}
+
 		slog.Info("Executing migration", "file", file, "version", version, "checksum", checksumHex[:8])
 
 		if _, err := pool.Exec(ctx, string(sqlBytes)); err != nil {
@@ -94,7 +126,6 @@ func main() {
 			_, err = pool.Exec(ctx, `
 				INSERT INTO pcp_schema_migrations (version, name, checksum)
 				VALUES ($1, $2, $3)
-				ON CONFLICT (version) DO UPDATE SET name = $2, checksum = $3, applied_at = CURRENT_TIMESTAMP;
 			`, version, file, checksumHex)
 			if err != nil {
 				slog.Error("Failed to record migration in pcp_schema_migrations", "file", file, "error", err)
@@ -103,5 +134,5 @@ func main() {
 		}
 	}
 
-	slog.Info("All database migrations applied successfully and recorded in pcp_schema_migrations")
+	slog.Info("All database migrations applied successfully and verified in pcp_schema_migrations")
 }
