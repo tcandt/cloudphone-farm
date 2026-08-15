@@ -162,7 +162,7 @@ func runPhase1(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	slog.Info("--- RUNNING PHASE 1: Real HTTP -> Outbox -> Agent WS (Node A) -> Browser WS (Node B) ---")
 
 	// 1. Agent WS Connection to Node A (:8081)
-	wsNodeA := strings.Replace(cfg.NodeAURL, "http://", "ws://", 1) + "/agent/v1/ws?device_id=" + deviceID
+	wsNodeA := strings.Replace(cfg.NodeAURL, "http://", "ws://", 1) + "/agent/v1/connect?device_id=" + deviceID
 	agentConn, _, err := websocket.DefaultDialer.DialContext(ctx, wsNodeA, nil)
 	if err != nil {
 		slog.Error("Failed to connect Agent WS to Node A", "url", wsNodeA, "error", err)
@@ -173,7 +173,7 @@ func runPhase1(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	performAgentHandshake(agentConn, privKey)
 
 	// 2. Browser WS Connection to Node B (:8082)
-	wsNodeB := strings.Replace(cfg.NodeBURL, "http://", "ws://", 1) + "/devices/" + deviceID + "/events/ws"
+	wsNodeB := strings.Replace(cfg.NodeBURL, "http://", "ws://", 1) + "/api/v1/devices/" + deviceID + "/events/ws"
 	headerB := make(http.Header)
 	headerB.Set("X-Dev-User-ID", userID)
 	headerB.Set("X-Dev-Org-ID", orgID)
@@ -271,7 +271,7 @@ func runPhase2(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	slog.Info("--- RUNNING PHASE 2: Failover Reconnect to Node C & Command Routing via Node B ---")
 
 	// 1. Agent WS Reconnect to Node C (:8083)
-	wsNodeC := strings.Replace(cfg.NodeCURL, "http://", "ws://", 1) + "/agent/v1/ws?device_id=" + deviceID
+	wsNodeC := strings.Replace(cfg.NodeCURL, "http://", "ws://", 1) + "/agent/v1/connect?device_id=" + deviceID
 	agentConnC, _, err := websocket.DefaultDialer.DialContext(ctx, wsNodeC, nil)
 	if err != nil {
 		slog.Error("Failed to connect Agent WS to Node C after failover", "url", wsNodeC, "error", err)
@@ -283,7 +283,7 @@ func runPhase2(ctx context.Context, cfg E2ESmokeConfig, orgID, userID, deviceID,
 	slog.Info("Agent successfully reconnected and authenticated on Node C")
 
 	// 2. Browser WS Connection to Node B (:8082)
-	wsNodeB := strings.Replace(cfg.NodeBURL, "http://", "ws://", 1) + "/devices/" + deviceID + "/events/ws"
+	wsNodeB := strings.Replace(cfg.NodeBURL, "http://", "ws://", 1) + "/api/v1/devices/" + deviceID + "/events/ws"
 	headerB := make(http.Header)
 	headerB.Set("X-Dev-User-ID", userID)
 	headerB.Set("X-Dev-Org-ID", orgID)
