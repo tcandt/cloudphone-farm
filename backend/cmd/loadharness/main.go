@@ -25,6 +25,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
@@ -223,35 +224,42 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 						if err != nil {
 							continue
 						}
-						var env struct {
-							Type    string                 `json:"type"`
-							Payload map[string]interface{} `json:"payload"`
-						}
-						if json.Unmarshal(msg, &env) == nil && (env.Type == "command" || env.Type == "device.command") {
-							cmdID, _ := env.Payload["commandId"].(string)
+						var env agentws.WSEnvelope
+						if json.Unmarshal(msg, &env) == nil && (env.Type == agentws.MessageTypeCommandDispatch || string(env.Type) == "command") {
+							var payload agentws.CommandDispatchPayload
+							_ = json.Unmarshal(env.Payload, &payload)
+							cmdID := payload.CommandID
+							if cmdID == "" {
+								var raw map[string]interface{}
+								_ = json.Unmarshal(env.Payload, &raw)
+								cmdID, _ = raw["commandId"].(string)
+							}
 							if cmdID != "" {
 								// Send ACK
-								ackPayload := map[string]interface{}{
-									"type": "command.status",
-									"payload": map[string]interface{}{
-										"commandId": cmdID,
-										"status":    "ack",
-										"sequence":  1,
-									},
-								}
-								ackBytes, _ := json.Marshal(ackPayload)
+								ackEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("ack_%s", cmdID), agentws.CommandStatusPayload{
+									CommandID: cmdID,
+									Status:    "ack",
+									Sequence:  1,
+								})
+								ackBytes, _ := json.Marshal(ackEnv)
 								_ = w.Conn.WriteMessage(websocket.TextMessage, ackBytes)
 
+								// Send Executing
+								execEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("exec_%s", cmdID), agentws.CommandStatusPayload{
+									CommandID: cmdID,
+									Status:    "executing",
+									Sequence:  2,
+								})
+								execBytes, _ := json.Marshal(execEnv)
+								_ = w.Conn.WriteMessage(websocket.TextMessage, execBytes)
+
 								// Send Succeeded
-								succPayload := map[string]interface{}{
-									"type": "command.status",
-									"payload": map[string]interface{}{
-										"commandId": cmdID,
-										"status":    "succeeded",
-										"sequence":  2,
-									},
-								}
-								succBytes, _ := json.Marshal(succPayload)
+								succEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeCommandStatus, fmt.Sprintf("succ_%s", cmdID), agentws.CommandStatusPayload{
+									CommandID: cmdID,
+									Status:    "succeeded",
+									Sequence:  3,
+								})
+								succBytes, _ := json.Marshal(succEnv)
 								_ = w.Conn.WriteMessage(websocket.TextMessage, succBytes)
 							}
 						}
@@ -311,27 +319,26 @@ func connectSyntheticAgentWS(ctx context.Context, nodeURL, deviceID, agentID str
 		return nil
 	}
 
-	var challengeEnv struct {
-		Type    string `json:"type"`
-		Payload struct {
-			ChallengeNonce string `json:"challenge_nonce"`
-		} `json:"payload"`
-	}
+	var challengeEnv agentws.WSEnvelope
 	if json.Unmarshal(msg, &challengeEnv) != nil {
 		_ = conn.Close()
 		return nil
 	}
 
-	sig := ed25519.Sign(privKey, []byte(challengeEnv.Payload.ChallengeNonce))
+	var challengePayload agentws.ServerChallengePayload
+	_ = json.Unmarshal(challengeEnv.Payload, &challengePayload)
+
+	sig := ed25519.Sign(privKey, []byte(challengePayload.ChallengeNonce))
 	sigB64 = base64.StdEncoding.EncodeToString(sig)
 
-	respPayload := map[string]interface{}{
-		"type": "agent_challenge_response",
-		"payload": map[string]interface{}{
-			"challenge_signature": sigB64,
+	respEnv, _ := agentws.NewWSEnvelope(
+		agentws.MessageTypeAgentChallengeResponse,
+		"chal_resp_01",
+		agentws.AgentChallengeResponsePayload{
+			ChallengeSignature: sigB64,
 		},
-	}
-	respBytes, _ := json.Marshal(respPayload)
+	)
+	respBytes, _ := json.Marshal(respEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, respBytes)
 
 	// Read connection.ready confirmation

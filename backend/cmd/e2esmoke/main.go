@@ -23,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
@@ -133,12 +134,16 @@ func main() {
 			if err != nil {
 				return
 			}
-			var env struct {
-				Type    string                 `json:"type"`
-				Payload map[string]interface{} `json:"payload"`
-			}
-			if json.Unmarshal(message, &env) == nil && (env.Type == "command" || env.Type == "device.command") {
-				cmdID, _ := env.Payload["commandId"].(string)
+			var env agentws.WSEnvelope
+			if json.Unmarshal(message, &env) == nil && (env.Type == agentws.MessageTypeCommandDispatch || string(env.Type) == "command") {
+				var payload agentws.CommandDispatchPayload
+				_ = json.Unmarshal(env.Payload, &payload)
+				cmdID := payload.CommandID
+				if cmdID == "" {
+					var raw map[string]interface{}
+					_ = json.Unmarshal(env.Payload, &raw)
+					cmdID, _ = raw["commandId"].(string)
+				}
 				if cmdID != "" {
 					agentCmdChanA <- cmdID
 
@@ -207,12 +212,16 @@ func main() {
 			if err != nil {
 				return
 			}
-			var env struct {
-				Type    string                 `json:"type"`
-				Payload map[string]interface{} `json:"payload"`
-			}
-			if json.Unmarshal(message, &env) == nil && (env.Type == "command" || env.Type == "device.command") {
-				cmdID, _ := env.Payload["commandId"].(string)
+			var env agentws.WSEnvelope
+			if json.Unmarshal(message, &env) == nil && (env.Type == agentws.MessageTypeCommandDispatch || string(env.Type) == "command") {
+				var payload agentws.CommandDispatchPayload
+				_ = json.Unmarshal(env.Payload, &payload)
+				cmdID := payload.CommandID
+				if cmdID == "" {
+					var raw map[string]interface{}
+					_ = json.Unmarshal(env.Payload, &raw)
+					cmdID, _ = raw["commandId"].(string)
+				}
 				if cmdID != "" {
 					agentCmdChanC <- cmdID
 
@@ -418,27 +427,26 @@ func performAgentChallengeHandshake(conn *websocket.Conn, privKey ed25519.Privat
 		os.Exit(1)
 	}
 
-	var challengeEnv struct {
-		Type    string `json:"type"`
-		Payload struct {
-			ChallengeNonce string `json:"challenge_nonce"`
-		} `json:"payload"`
-	}
+	var challengeEnv agentws.WSEnvelope
 	if err := json.Unmarshal(msg, &challengeEnv); err != nil {
 		slog.Error("Malformed WSS server challenge", "error", err)
 		os.Exit(1)
 	}
 
-	sig := ed25519.Sign(privKey, []byte(challengeEnv.Payload.ChallengeNonce))
+	var challengePayload agentws.ServerChallengePayload
+	_ = json.Unmarshal(challengeEnv.Payload, &challengePayload)
+
+	sig := ed25519.Sign(privKey, []byte(challengePayload.ChallengeNonce))
 	sigB64 := base64.StdEncoding.EncodeToString(sig)
 
-	respPayload := map[string]interface{}{
-		"type": "agent_challenge_response",
-		"payload": map[string]interface{}{
-			"challenge_signature": sigB64,
+	respEnv, _ := agentws.NewWSEnvelope(
+		agentws.MessageTypeAgentChallengeResponse,
+		"chal_resp_01",
+		agentws.AgentChallengeResponsePayload{
+			ChallengeSignature: sigB64,
 		},
-	}
-	respBytes, _ := json.Marshal(respPayload)
+	)
+	respBytes, _ := json.Marshal(respEnv)
 	_ = conn.WriteMessage(websocket.TextMessage, respBytes)
 
 	// Read connection.ready confirmation
@@ -448,9 +456,7 @@ func performAgentChallengeHandshake(conn *websocket.Conn, privKey ed25519.Privat
 		os.Exit(1)
 	}
 
-	var readyEnv struct {
-		Type string `json:"type"`
-	}
+	var readyEnv agentws.WSEnvelope
 	_ = json.Unmarshal(readyMsg, &readyEnv)
 	_ = conn.SetReadDeadline(time.Time{})
 }
@@ -475,16 +481,18 @@ func connectBrowserWS(ctx context.Context, nodeURL, deviceID, sessionToken strin
 }
 
 func sendAgentStatus(conn *websocket.Conn, commandID, status string, sequence int, errStr string) error {
-	payload := map[string]interface{}{
-		"type": "command.status",
-		"payload": map[string]interface{}{
-			"commandId":    commandID,
-			"status":       status,
-			"sequence":     sequence,
-			"errorMessage": errStr,
-		},
+	statusPayload := agentws.CommandStatusPayload{
+		CommandID:    commandID,
+		Status:       status,
+		Sequence:     int64(sequence),
+		ErrorMessage: errStr,
 	}
-	bytesData, _ := json.Marshal(payload)
+	env, _ := agentws.NewWSEnvelope(
+		agentws.MessageTypeCommandStatus,
+		fmt.Sprintf("status_%s_%d", status, sequence),
+		statusPayload,
+	)
+	bytesData, _ := json.Marshal(env)
 	return conn.WriteMessage(websocket.TextMessage, bytesData)
 }
 
