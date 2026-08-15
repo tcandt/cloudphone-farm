@@ -281,7 +281,7 @@ func connectSyntheticAgentWS(ctx context.Context, nodeURL, deviceID, agentID str
 
 	emptyBodyHash := sha256.Sum256([]byte(""))
 	bodyHashHex := hex.EncodeToString(emptyBodyHash[:])
-	canonicalMsg := fmt.Sprintf("GET\n/agent/v1/connect\n%s\n%s\n%s", bodyHashHex, timestampStr, nonce)
+	canonicalMsg := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", "GET", "/agent/v1/connect", bodyHashHex, timestampStr, nonce)
 	sigBytes := ed25519.Sign(privKey, []byte(canonicalMsg))
 	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
 

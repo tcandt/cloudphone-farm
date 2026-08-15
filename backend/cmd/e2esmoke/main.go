@@ -363,7 +363,7 @@ func connectAgentWS(ctx context.Context, nodeURL, deviceID, agentID string, priv
 	bodyHashHex := hex.EncodeToString(emptyBodyHash[:])
 	canonicalPath := "/agent/v1/connect"
 
-	canonicalMsg := fmt.Sprintf("GET\n%s\n%s\n%s\n%s", canonicalPath, bodyHashHex, timestampStr, nonce)
+	canonicalMsg := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", "GET", canonicalPath, bodyHashHex, timestampStr, nonce)
 	sigBytes := ed25519.Sign(privKey, []byte(canonicalMsg))
 	sigB64 := base64.StdEncoding.EncodeToString(sigBytes)
 
