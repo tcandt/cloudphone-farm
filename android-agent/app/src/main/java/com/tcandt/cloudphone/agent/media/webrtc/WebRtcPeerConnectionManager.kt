@@ -190,7 +190,7 @@ class WebRtcPeerConnectionManager(
         return try {
             val initialGeom = DisplayGeometryProvider.getGeometry(context)
 
-            videoCapturer = ScreenCapturerAndroid(projectionResultData, object : MediaProjectionCallback() {})
+            videoCapturer = ScreenCapturerAndroid(projectionResultData, AgentMediaProjectionCallback())
             surfaceTextureHelper = SurfaceTextureHelper.create("PCP_WebRTC_Thread", rootEglBase.eglBaseContext)
             videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
                 ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoSource is null"))
@@ -382,32 +382,60 @@ class WebRtcPeerConnectionManager(
         try {
             unregisterDisplayListener()
 
-            videoCapturer?.stopCapture()
-            videoCapturer?.dispose()
+            try {
+                videoCapturer?.stopCapture()
+                videoCapturer?.dispose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error disposing videoCapturer: ${e.message}")
+            }
             videoCapturer = null
 
-            videoSource?.dispose()
+            try {
+                videoTrack?.dispose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error disposing videoTrack: ${e.message}")
+            }
+            videoTrack = null
+
+            try {
+                videoSource?.dispose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error disposing videoSource: ${e.message}")
+            }
             videoSource = null
 
-            surfaceTextureHelper?.dispose()
+            try {
+                surfaceTextureHelper?.dispose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error disposing surfaceTextureHelper: ${e.message}")
+            }
             surfaceTextureHelper = null
 
-            peerConnection?.close()
+            try {
+                peerConnection?.close()
+                peerConnection?.dispose()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing peerConnection: ${e.message}")
+            }
             peerConnection = null
 
             isRemoteDescriptionSet = false
             pendingIceCandidates.clear()
 
-            Log.i(TAG, "Closed WebRTC PeerConnection session cleanly for SessionID=$activeSessionId")
+            ScreenCaptureManager.stopCapture(context)
+
+            Log.i(TAG, "Closed WebRTC PeerConnection session and FGS cleanly for SessionID=$activeSessionId")
             activeSessionId = ""
         } catch (e: Exception) {
             Log.e(TAG, "Error closing WebRTC session: ${e.message}")
         }
     }
 
-    open class MediaProjectionCallback : android.media.projection.MediaProjection.Callback() {
+    inner class AgentMediaProjectionCallback : android.media.projection.MediaProjection.Callback() {
         override fun onStop() {
-            Log.i("MediaProjectionCallback", "MediaProjection stopped by system")
+            Log.w(TAG, "MediaProjectionCallback.onStop triggered by system for SessionID=$activeSessionId")
+            ScreenCaptureManager.onProjectionStoppedBySystem()
+            closeSession()
         }
     }
 

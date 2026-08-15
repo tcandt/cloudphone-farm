@@ -11,6 +11,10 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 
+object MediaCaptureServiceNotifier {
+    var onFgsReadyListener: (() -> Unit)? = null
+}
+
 class MediaCaptureService : Service() {
 
     companion object {
@@ -36,6 +40,7 @@ class MediaCaptureService : Service() {
             ACTION_START_CAPTURE -> {
                 startForegroundServiceNotification()
                 Log.i(TAG, "MediaCaptureService started as active mediaProjection Foreground Service (FGS)")
+                MediaCaptureServiceNotifier.onFgsReadyListener?.invoke()
             }
             ACTION_STOP_CAPTURE -> {
                 stopForeground(true)

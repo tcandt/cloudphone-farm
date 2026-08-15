@@ -51,7 +51,9 @@ class AgentWebSocketClient(
         private const val EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
 
-    fun connect() {
+    private var isExplicitlyStopped = false
+
+    init {
         commandProcessor = CommandProcessor(context) { commandId, status, error, sequence ->
             sendStatusMessage(commandId, status, error, sequence)
         }
@@ -110,6 +112,13 @@ class AgentWebSocketClient(
                 webSocket?.send(envelope.toString())
                 Log.w(TAG, "Sent media.session.started [failed] WSS envelope (SessionID=$sessionId, error=$error)")
             }
+        }
+    }
+
+    fun connect() {
+        if (isExplicitlyStopped) {
+            Log.d(TAG, "connect() ignored: AgentWebSocketClient is explicitly stopped")
+            return
         }
 
         val timestamp = (System.currentTimeMillis() / 1000).toString()
@@ -285,6 +294,7 @@ class AgentWebSocketClient(
             put("connection_id", connectionId)
             put("generation", generation)
             put("sequence", heartbeatSequence++)
+            put("key_protection", keyStore.getKeyProtectionMetadata())
         }
 
         val bodyBytes = bodyJson.toString().toByteArray(Charsets.UTF_8)
@@ -347,6 +357,11 @@ class AgentWebSocketClient(
     private var reconnectAttempt = 0
 
     private fun scheduleReconnect() {
+        if (isExplicitlyStopped) {
+            Log.d(TAG, "scheduleReconnect() ignored: AgentWebSocketClient is explicitly stopped")
+            return
+        }
+
         synchronized(this) {
             if (isReconnecting) return
             isReconnecting = true
@@ -365,11 +380,14 @@ class AgentWebSocketClient(
             synchronized(this@AgentWebSocketClient) {
                 isReconnecting = false
             }
-            connect()
+            if (!isExplicitlyStopped) {
+                connect()
+            }
         }
     }
 
     fun disconnect() {
+        isExplicitlyStopped = true
         reconnectJob?.cancel()
         reconnectJob = null
         stopHeartbeat()

@@ -155,11 +155,20 @@ object ScreenCaptureManager {
             return
         }
 
-        Log.i(TAG, "Consent granted for Gen=$generation. Starting mediaProjection FGS then passing token to WebRTC for SessionID=$activeSessionId")
+        Log.i(TAG, "Consent granted for Gen=$generation. Registering FGS_READY listener and starting MediaCaptureService for SessionID=$activeSessionId")
         val intentGrant = resultData
         val currentSessionId = activeSessionId
 
-        // TargetSdk 34 Rule: Start mediaProjection Foreground Service BEFORE consuming projection token
+        // TargetSdk 34 Rule: Register FGS_READY listener BEFORE starting foreground service
+        MediaCaptureServiceNotifier.onFgsReadyListener = {
+            MediaCaptureServiceNotifier.onFgsReadyListener = null
+            Log.i(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$currentSessionId")
+
+            clearPermissionGrantOnly()
+            currentState = ScreenCaptureState.READY
+            onConsentGrantedHandler?.invoke(currentSessionId, intentGrant)
+        }
+
         val fgsIntent = Intent(context, MediaCaptureService::class.java).apply {
             action = MediaCaptureService.ACTION_START_CAPTURE
         }
@@ -168,13 +177,6 @@ object ScreenCaptureManager {
         } else {
             context.startService(fgsIntent)
         }
-
-        // CONSUME PERMISSION GRANT IMMEDIATELY: Never store reusable permission Intent (preserves activeSessionId!)
-        clearPermissionGrantOnly()
-        currentState = ScreenCaptureState.READY
-
-        // Single Owner: Pass MediaProjection Intent directly to WebRTC ScreenCapturerAndroid
-        onConsentGrantedHandler?.invoke(currentSessionId, intentGrant)
     }
 
     fun onConsentDenied(context: Context, generation: Long) {

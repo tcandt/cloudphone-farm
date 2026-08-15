@@ -506,6 +506,7 @@ export class WebRtcMediaClient {
         const codecMap = new Map<string, Record<string, unknown>>();
         let selectedPairId = '';
         let selectedPairReport: Record<string, unknown> | null = null;
+        let activeSelectedPairId: string | undefined;
 
         stats.forEach((report) => {
           if (report.type === 'transport' && typeof report.selectedCandidatePairId === 'string') {
@@ -565,6 +566,9 @@ export class WebRtcMediaClient {
 
         if (selectedPairReport) {
           const pair = selectedPairReport as Record<string, unknown>;
+          if (typeof pair.id === 'string') {
+            activeSelectedPairId = pair.id;
+          }
           if (typeof pair.currentRoundTripTime === 'number') {
             roundTripTime = Math.round((pair.currentRoundTripTime as number) * 1000);
           }
@@ -596,7 +600,7 @@ export class WebRtcMediaClient {
           candidateType: candType,
           localCandidateType: localCandType,
           remoteCandidateType: remoteCandType,
-          selectedCandidatePairId: selectedPairId || (selectedPairReport ? (selectedPairReport.id as string) : undefined),
+          selectedCandidatePairId: selectedPairId || activeSelectedPairId,
           localCandidateId: localCandId,
           remoteCandidateId: remoteCandId,
           codecId: activeCodecId,

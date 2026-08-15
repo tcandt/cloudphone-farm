@@ -96,22 +96,45 @@ object HardwareTelemetryCollector {
         }
     }
 
+    private var lastProcStatTotal: Long = 0L
+    private var lastProcStatIdle: Long = 0L
+
     private fun getCpuUsagePercent(): Double? {
-        // Proc stat reading restricted on Android 8+; return null if unreadable. Zero synthetic fallbacks.
         return try {
             val statFile = java.io.File("/proc/stat")
             if (!statFile.canRead()) return null
             val lines = statFile.readLines()
             if (lines.isEmpty()) return null
-            val toks = lines[0].split("\\s+".toRegex())
-            if (toks.size < 8) return null
-            val user = toks[1].toDoubleOrNull() ?: return null
-            val nice = toks[2].toDoubleOrNull() ?: return null
-            val system = toks[3].toDoubleOrNull() ?: return null
-            val idle = toks[4].toDoubleOrNull() ?: return null
-            val total = user + nice + system + idle
-            if (total <= 0) return null
-            val pct = ((user + nice + system) / total) * 100.0
+            val toks = lines[0].trim().split("\\s+".toRegex())
+            if (toks.size < 5) return null
+
+            val user = toks[1].toLongOrNull() ?: return null
+            val nice = toks[2].toLongOrNull() ?: return null
+            val system = toks[3].toLongOrNull() ?: return null
+            val idle = toks[4].toLongOrNull() ?: return null
+            val iowait = if (toks.size > 5) toks[5].toLongOrNull() ?: 0L else 0L
+            val irq = if (toks.size > 6) toks[6].toLongOrNull() ?: 0L else 0L
+            val softirq = if (toks.size > 7) toks[7].toLongOrNull() ?: 0L else 0L
+
+            val currentTotal = user + nice + system + idle + iowait + irq + softirq
+            val currentIdle = idle + iowait
+
+            val prevTotal = lastProcStatTotal
+            val prevIdle = lastProcStatIdle
+
+            lastProcStatTotal = currentTotal
+            lastProcStatIdle = currentIdle
+
+            if (prevTotal <= 0L || currentTotal <= prevTotal) {
+                return null // First sample baseline established
+            }
+
+            val deltaTotal = currentTotal - prevTotal
+            val deltaIdle = currentIdle - prevIdle
+            val deltaBusy = deltaTotal - deltaIdle
+
+            if (deltaTotal <= 0L) return null
+            val pct = (deltaBusy.toDouble() / deltaTotal.toDouble()) * 100.0
             Math.round(pct * 10.0) / 10.0
         } catch (e: Exception) {
             null
