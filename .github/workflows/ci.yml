@@ -182,7 +182,7 @@ jobs:
           sleep 2
 
           # Start Caddy Perimeter Reverse Proxy container
-          docker run -d --name caddy-perimeter --network host -v $(pwd)/infra/caddy/Caddyfile.local:/etc/caddy/Caddyfile caddy:2-alpine
+          docker run -d --name caddy-perimeter --network host -v $(pwd)/../infra/caddy/Caddyfile.local:/etc/caddy/Caddyfile caddy:2-alpine
           sleep 2
 
           /tmp/phase16_release_gate -nodes=http://localhost:8081,http://localhost:8082,http://localhost:8083 -caddy-url=http://localhost:8080 -postgres-url="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" -redis-url="redis://localhost:6379"
