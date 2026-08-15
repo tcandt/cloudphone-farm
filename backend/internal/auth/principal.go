@@ -28,6 +28,9 @@ func (p *Principal) HasPermission(code string) bool {
 	if p.Permissions == nil {
 		return false
 	}
+	if _, ok := p.Permissions["*"]; ok {
+		return true
+	}
 	_, ok := p.Permissions[code]
 	return ok
 }

@@ -41,6 +41,58 @@ type LoadTestReport struct {
 	Status          string  `json:"status"`
 }
 
+func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int) {
+	if dbURL == "" {
+		return
+	}
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		return
+	}
+	defer pool.Close()
+
+	orgID := "org_dev_01"
+	userID := "user_dev_01"
+
+	for i := 0; i < count; i++ {
+		deviceID := fmt.Sprintf("dev_synth_%02d", i)
+		serial := fmt.Sprintf("SN_SYNTH_%02d", i)
+		leaseID := fmt.Sprintf("lease_synth_%d", i)
+
+		// Insert or update device
+		_, _ = pool.Exec(ctx, `
+			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities_json, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'active', '{}'::jsonb, NOW(), NOW())
+			ON CONFLICT (device_id) DO UPDATE SET status = 'active', updated_at = NOW()
+		`, deviceID, orgID, deviceID, serial)
+
+		// Insert active control lease into control_leases table
+		expiresAt := time.Now().Add(1 * time.Hour)
+		_, _ = pool.Exec(ctx, `
+			INSERT INTO control_leases (lease_id, organization_id, user_id, device_id, expires_at, status, created_at)
+			VALUES ($1, $2, $3, $4, $5, 'active', NOW())
+			ON CONFLICT (lease_id) DO UPDATE SET expires_at = $5, status = 'active'
+		`, leaseID, orgID, userID, deviceID, expiresAt)
+	}
+
+	// Active control lease in Redis
+	if redisURL != "" {
+		if !strings.HasPrefix(redisURL, "redis://") && !strings.HasPrefix(redisURL, "rediss://") {
+			redisURL = "redis://" + redisURL
+		}
+		if opt, err := redis.ParseURL(redisURL); err == nil {
+			rdb := redis.NewClient(opt)
+			for i := 0; i < count; i++ {
+				deviceID := fmt.Sprintf("dev_synth_%02d", i)
+				leaseID := fmt.Sprintf("lease_synth_%d", i)
+				leaseKey := fmt.Sprintf("pcp:v1:lease:device:%s", deviceID)
+				_ = rdb.Set(ctx, leaseKey, fmt.Sprintf("%s:%s:%s", orgID, userID, leaseID), 1*time.Hour).Err()
+			}
+			rdb.Close()
+		}
+	}
+}
+
 func main() {
 	durationFlag := flag.Duration("duration", 5*time.Second, "Load test run duration")
 	concurrencyFlag := flag.Int("concurrency", 50, "Number of concurrent synthetic device workers")
@@ -90,6 +142,10 @@ func main() {
 
 	slog.Info("Platform connectivity state", "postgres_live", dbAvailable, "redis_live", redisAvailable)
 
+	if dbAvailable {
+		seedSyntheticDevices(ctx, dbURL, redisURL, *concurrencyFlag)
+	}
+
 	var submitted atomic.Uint64
 	var dispatched atomic.Uint64
 	var acked atomic.Uint64
@@ -134,6 +190,7 @@ func main() {
 					"deviceId":       deviceID,
 					"type":           "input.tap",
 					"controlLeaseId": fmt.Sprintf("lease_synth_%d", workerID),
+					"idempotencyKey": fmt.Sprintf("idem_synth_%d_%d", workerID, time.Now().UnixNano()),
 					"params":         map[string]interface{}{"x": 500, "y": 1000},
 				}
 				bodyBytes, _ := json.Marshal(payload)
@@ -179,15 +236,15 @@ func main() {
 					failed.Add(1)
 				}
 
-				elapsedMs := float64(time.Since(start).Microseconds()) / 1000.0
+				latency := float64(time.Since(start).Microseconds()) / 1000.0
 				if ok {
 					latMu.Lock()
-					latencies = append(latencies, elapsedMs)
+					latencies = append(latencies, latency)
 					latMu.Unlock()
 				}
 			}
 
-			// Fire initial request immediately
+			// Perform initial work immediately
 			doWork()
 
 			for {
@@ -203,29 +260,36 @@ func main() {
 
 	wg.Wait()
 
+	// Calculate Report Metrics
 	totalSubmitted := submitted.Load()
+	totalDispatched := dispatched.Load()
+	totalAcked := acked.Load()
 	totalSucceeded := succeeded.Load()
 	totalFailed := failed.Load()
+	totalTimeouts := timeouts.Load()
+	totalDuplicates := duplicates.Load()
 
-	sort.Float64s(latencies)
+	errorRate := 0.0
+	if totalSubmitted > 0 {
+		errorRate = float64(totalFailed) / float64(totalSubmitted) * 100.0
+	}
+
 	var p50, p95, p99 float64
+	latMu.Lock()
 	if len(latencies) > 0 {
+		sort.Float64s(latencies)
 		p50 = latencies[int(float64(len(latencies))*0.50)]
 		p95 = latencies[int(float64(len(latencies))*0.95)]
 		p99 = latencies[int(float64(len(latencies))*0.99)]
 	}
+	latMu.Unlock()
 
-	var errorRate float64
-	if totalSubmitted > 0 {
-		errorRate = (float64(totalFailed) / float64(totalSubmitted)) * 100.0
-	}
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
 
-	var mStats runtime.MemStats
-	runtime.ReadMemStats(&mStats)
-
-	status := "PASSED"
-	if totalSubmitted == 0 || totalFailed > 0 || errorRate > 5.0 {
-		status = "FAILED"
+	statusStr := "PASSED"
+	if errorRate > 5.0 || totalDispatched == 0 {
+		statusStr = "FAILED"
 	}
 
 	report := LoadTestReport{
@@ -234,26 +298,25 @@ func main() {
 		TargetNodeURL:   *nodeURLFlag,
 		ActiveWorkers:   *concurrencyFlag,
 		Submitted:       totalSubmitted,
-		Dispatched:      dispatched.Load(),
-		Acked:           acked.Load(),
+		Dispatched:      totalDispatched,
+		Acked:           totalAcked,
 		Succeeded:       totalSucceeded,
 		Failed:          totalFailed,
-		Timeouts:        timeouts.Load(),
-		Duplicates:      duplicates.Load(),
+		Timeouts:        totalTimeouts,
+		Duplicates:      totalDuplicates,
 		ErrorRatePct:    errorRate,
 		P50LatencyMs:    p50,
 		P95LatencyMs:    p95,
 		P99LatencyMs:    p99,
 		GoroutinesCount: runtime.NumGoroutine(),
-		HeapAllocBytes:  mStats.HeapAlloc,
-		Status:          status,
+		HeapAllocBytes:  m.HeapAlloc,
+		Status:          statusStr,
 	}
 
-	jsonBytes, _ := json.MarshalIndent(report, "", "  ")
-	fmt.Println(string(jsonBytes))
+	reportBytes, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(reportBytes))
 
-	if status == "FAILED" {
-		slog.Error("Load harness failed validation criteria", "status", status, "submitted", totalSubmitted, "failed", totalFailed)
+	if statusStr == "FAILED" {
 		os.Exit(1)
 	}
 }

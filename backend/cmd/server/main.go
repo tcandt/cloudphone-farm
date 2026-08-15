@@ -170,7 +170,7 @@ func main() {
 	rateLimiter := custommw.NewRateLimiter(rdb, cfg.AppEnv)
 	commandHandler := httptransport.NewCommandHandler(cmdService, rateLimiter)
 
-	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName)
+	authMiddleware := custommw.NewAuthMiddleware(authService, cfg.SessionCookieName, cfg.AppEnv)
 	agentAuthMiddleware := custommw.NewAgentAuthMiddleware(enrollRepo, rdb)
 
 	// Create Chi router
