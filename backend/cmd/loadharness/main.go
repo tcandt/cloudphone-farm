@@ -109,6 +109,10 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 			payload JSONB NOT NULL DEFAULT '{}'::jsonb,
 			status VARCHAR(32) NOT NULL DEFAULT 'pending',
 			idempotency_key VARCHAR(128) NOT NULL,
+			expires_at TIMESTAMPTZ,
+			executed_at TIMESTAMPTZ,
+			error_message TEXT,
+			last_status_sequence BIGINT NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			CONSTRAINT fk_command_device FOREIGN KEY (organization_id, device_id) REFERENCES devices(organization_id, device_id) ON DELETE CASCADE,
 			CONSTRAINT uk_org_actor_idempotency UNIQUE (organization_id, actor_id, idempotency_key)
