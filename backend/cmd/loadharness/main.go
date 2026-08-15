@@ -47,6 +47,7 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	}
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+		slog.Error("Failed to connect pgxpool in loadharness", "error", err)
 		return
 	}
 	defer pool.Close()
@@ -54,25 +55,51 @@ func seedSyntheticDevices(ctx context.Context, dbURL, redisURL string, count int
 	orgID := "org_dev_01"
 	userID := "user_dev_01"
 
+	// 1. Seed Organization & User
+	_, err = pool.Exec(ctx, `
+		INSERT INTO organizations (organization_id, name, slug, created_at, updated_at)
+		VALUES ($1, 'Dev Org', 'dev-org-01', NOW(), NOW())
+		ON CONFLICT (organization_id) DO NOTHING;
+	`, orgID)
+	if err != nil {
+		slog.Error("Failed to seed organization", "error", err)
+	}
+
+	_, err = pool.Exec(ctx, `
+		INSERT INTO users (user_id, email, password_hash, display_name, created_at, updated_at)
+		VALUES ($1, 'synth_user@dev.local', 'hash', 'Synth User', NOW(), NOW())
+		ON CONFLICT (user_id) DO NOTHING;
+	`, userID)
+	if err != nil {
+		slog.Error("Failed to seed user", "error", err)
+	}
+
+	// 2. Seed Devices & Control Leases
 	for i := 0; i < count; i++ {
 		deviceID := fmt.Sprintf("dev_synth_%02d", i)
 		serial := fmt.Sprintf("SN_SYNTH_%02d", i)
 		leaseID := fmt.Sprintf("lease_synth_%d", i)
 
 		// Insert or update device
-		_, _ = pool.Exec(ctx, `
-			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities_json, created_at, updated_at)
+		_, err = pool.Exec(ctx, `
+			INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities, created_at, updated_at)
 			VALUES ($1, $2, $3, $4, 'SynthModel', 'Android 14', 'active', '{}'::jsonb, NOW(), NOW())
 			ON CONFLICT (device_id) DO UPDATE SET status = 'active', updated_at = NOW()
 		`, deviceID, orgID, deviceID, serial)
+		if err != nil {
+			slog.Error("Failed to seed device", "device_id", deviceID, "error", err)
+		}
 
 		// Insert active control lease into control_leases table
 		expiresAt := time.Now().Add(1 * time.Hour)
-		_, _ = pool.Exec(ctx, `
-			INSERT INTO control_leases (lease_id, organization_id, user_id, device_id, expires_at, status, created_at)
-			VALUES ($1, $2, $3, $4, $5, 'active', NOW())
-			ON CONFLICT (lease_id) DO UPDATE SET expires_at = $5, status = 'active'
+		_, err = pool.Exec(ctx, `
+			INSERT INTO control_leases (control_lease_id, organization_id, user_id, device_id, expires_at, fencing_token, acquired_at)
+			VALUES ($1, $2, $3, $4, $5, 1, NOW())
+			ON CONFLICT (control_lease_id) DO UPDATE SET expires_at = $5
 		`, leaseID, orgID, userID, deviceID, expiresAt)
+		if err != nil {
+			slog.Error("Failed to seed control lease", "lease_id", leaseID, "error", err)
+		}
 	}
 
 	// Active control lease in Redis
