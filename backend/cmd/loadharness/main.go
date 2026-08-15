@@ -147,14 +147,27 @@ func main() {
 				if err == nil {
 					resp, httpErr := httpClient.Do(req)
 					if httpErr == nil {
-						if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+						if resp.StatusCode == http.StatusAccepted {
 							ok = true
 							dispatched.Add(1)
-							acked.Add(1)
-							succeeded.Add(1)
+							// Parse response for authoritative status verification
+							var resBody struct {
+								Data struct {
+									CommandID string `json:"commandId"`
+									Status    string `json:"status"`
+								} `json:"data"`
+							}
+							if json.NewDecoder(resp.Body).Decode(&resBody) == nil && resBody.Data.CommandID != "" {
+								// Count ACKED/SUCCEEDED only from authoritative delivery state
+								if resBody.Data.Status == "ack" || resBody.Data.Status == "executing" || resBody.Data.Status == "succeeded" {
+									acked.Add(1)
+								}
+								if resBody.Data.Status == "succeeded" {
+									succeeded.Add(1)
+								}
+							}
 						} else if resp.StatusCode == http.StatusTooManyRequests {
 							duplicates.Add(1)
-							ok = true
 						} else {
 							failed.Add(1)
 						}

@@ -200,8 +200,12 @@ func main() {
 	// Internal Prometheus Telemetry Exporter (Protected in production)
 	r.Get("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.AppEnv == "production" {
-			authHeader := r.Header.Get("X-Internal-Token")
-			if authHeader != os.Getenv("INTERNAL_METRICS_TOKEN") && authHeader != "internal_metrics_secret" {
+			token := os.Getenv("INTERNAL_METRICS_TOKEN")
+			if token == "" {
+				http.Error(w, "Metrics endpoint disabled: INTERNAL_METRICS_TOKEN missing in production", http.StatusForbidden)
+				return
+			}
+			if r.Header.Get("X-Internal-Token") != token {
 				http.Error(w, "Forbidden", http.StatusForbidden)
 				return
 			}
