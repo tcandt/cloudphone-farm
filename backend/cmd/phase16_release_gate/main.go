@@ -211,7 +211,7 @@ func checkNodeReadiness(nodeURL string, index int) GateResult {
 func checkCaddyPerimeter(caddyURL string) GateResult {
 	gate := GateResult{
 		Pillar: "1. Production Deployment & Caddy Infrastructure",
-		Name:   fmt.Sprintf("Caddy Perimeter Reverse Proxy Check (%s)", caddyURL),
+		Name:   fmt.Sprintf("Caddy Perimeter Reverse Proxy Check (HTTP %s & HTTPS/WSS :8443)", caddyURL),
 	}
 
 	tr := &http.Transport{
@@ -219,9 +219,10 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 	}
 	client := &http.Client{Timeout: 3 * time.Second, Transport: tr}
 
+	// 1. HTTP Perimeter Check (:8080)
 	resp, err := client.Get(fmt.Sprintf("%s/health/ready", caddyURL))
 	if err != nil {
-		gate.ErrorMessage = fmt.Sprintf("Caddy perimeter request failed: %v", err)
+		gate.ErrorMessage = fmt.Sprintf("Caddy HTTP perimeter request failed: %v", err)
 		return gate
 	}
 	defer resp.Body.Close()
@@ -240,6 +241,45 @@ func checkCaddyPerimeter(caddyURL string) GateResult {
 	contentTypeOpt := resp.Header.Get("X-Content-Type-Options")
 	if contentTypeOpt != "nosniff" {
 		gate.ErrorMessage = fmt.Sprintf("Missing or invalid X-Content-Type-Options security header: '%s'", contentTypeOpt)
+		return gate
+	}
+
+	// 2. HTTPS Perimeter Check (:8443)
+	caddyHTTPSURL := "https://127.0.0.1:8443"
+	respTLS, err := client.Get(fmt.Sprintf("%s/health/ready", caddyHTTPSURL))
+	if err != nil {
+		gate.ErrorMessage = fmt.Sprintf("Caddy HTTPS perimeter request failed on %s: %v", caddyHTTPSURL, err)
+		return gate
+	}
+	defer respTLS.Body.Close()
+
+	if respTLS.StatusCode != http.StatusOK {
+		gate.ErrorMessage = fmt.Sprintf("Expected HTTP 200 OK from Caddy HTTPS perimeter, got HTTP %d", respTLS.StatusCode)
+		return gate
+	}
+
+	if edgeMarkerTLS := respTLS.Header.Get("X-PCP-Edge"); edgeMarkerTLS != "caddy" {
+		gate.ErrorMessage = fmt.Sprintf("Caddy HTTPS perimeter missing 'X-PCP-Edge: caddy' marker header, got '%s'", edgeMarkerTLS)
+		return gate
+	}
+
+	// 3. WSS Agent Connection Proxy Check via Caddy (:8443)
+	wsDialer := websocket.Dialer{
+		TLSClientConfig:  &tls.Config{InsecureSkipVerify: true},
+		HandshakeTimeout: 3 * time.Second,
+	}
+	wssURL := "wss://127.0.0.1:8443/agent/v1/connect"
+	wsConn, wsResp, wsErr := wsDialer.Dial(wssURL, nil)
+	if wsErr == nil {
+		wsConn.Close()
+	} else if wsResp != nil {
+		// Backend returning 400 Bad Request or 401 Unauthorized via Caddy proxy is proof WSS proxying works
+		if wsResp.StatusCode != http.StatusBadRequest && wsResp.StatusCode != http.StatusUnauthorized {
+			gate.ErrorMessage = fmt.Sprintf("Caddy WSS proxying failed, expected HTTP 400/401 from backend, got HTTP %d", wsResp.StatusCode)
+			return gate
+		}
+	} else {
+		gate.ErrorMessage = fmt.Sprintf("Caddy WSS connection failed to %s: %v", wssURL, wsErr)
 		return gate
 	}
 

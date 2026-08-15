@@ -13,7 +13,7 @@
 | **STREAM-02** | TURN Relay Candidate Selection | ⚠️ **NOT RUN** | Invariant assertion: `selectedCandidatePair.localCandidate.candidateType == 'relay'` OR `remoteCandidate.candidateType == 'relay'`, `bytesReceived > 0`, `framesDecoded > 0`. |
 | **STREAM-03** | `FLAG_SECURE` Black Frame Redirection | ⚠️ **NOT RUN** | Requires physical display capture. |
 | **OPS-01** | Isolated Database Backup & Restore Verification | ✅ **VERIFIED (100% PASS)** | Dumped source DB via `pg_dump`, created `pcp_restore_verify` DB from `template0`, restored via `psql -X --set ON_ERROR_STOP=1`, verified row counts and FK integrity. |
-| **OPS-02** | Zero-Downtime Rollback via Docker Compose Image Digest | ✅ **VERIFIED (100% PASS)** | Rolling updates executed via `PCP_IMAGE_TAG=<SHA> docker compose up -d --no-deps pcp-backend-a/b/c` with `/health/ready` check gate. |
+| **OPS-02** | Zero-Downtime Rollback via Docker Compose Image Digest | ⚠️ **NOT RUN** | Standalone manual hardware/registry deployment procedure. Image tags supported in `compose.production.yaml`. |
 
 ---
 

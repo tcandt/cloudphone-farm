@@ -148,16 +148,14 @@ jobs:
         run: |
           go test -race -v ./internal/cluster/... ./internal/repository/postgres/... ./internal/repository/redis/... ./internal/telemetry/... ./internal/transport/http/middleware/... ./internal/transport/ws/...
           
-          # Apply production database migrations in lexical order with ON_ERROR_STOP=1
-          for f in db/migrations/*.up.sql; do
-            echo "Applying production migration $f"
-            PGPASSWORD=pcp_password psql -h localhost -U pcp -d phone_farm -v ON_ERROR_STOP=1 -f "$f"
-          done
-
+          go build -o /tmp/migrate ./cmd/migrate
           go build -o /tmp/server ./cmd/server
           go build -o /tmp/e2esmoke ./cmd/e2esmoke
           go build -o /tmp/loadharness ./cmd/loadharness
           go build -o /tmp/phase16_release_gate ./cmd/phase16_release_gate
+
+          # Apply production database migrations using migration tool with SHA256 checksum ledger
+          POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" /tmp/migrate
 
           APP_ENV=test NODE_ID=node-a PORT=8081 POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" DATABASE_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" REDIS_URL="redis://localhost:6379" /tmp/server &
           PID_A=$!

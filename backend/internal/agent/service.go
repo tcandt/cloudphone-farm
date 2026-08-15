@@ -22,10 +22,11 @@ import (
 )
 
 type AgentService struct {
-	enrollRepo   *pgrepo.EnrollmentRepository
-	presenceRepo *redisrepo.PresenceRepository
-	rdb          *redis.Client
-	broadcaster  ClusterRevocationBroadcaster
+	enrollRepo    *pgrepo.EnrollmentRepository
+	presenceRepo  *redisrepo.PresenceRepository
+	agentConnRepo *redisrepo.AgentConnectionRepository
+	rdb           *redis.Client
+	broadcaster   ClusterRevocationBroadcaster
 }
 
 func NewAgentService(enrollRepo *pgrepo.EnrollmentRepository, presenceRepo *redisrepo.PresenceRepository, rdb *redis.Client) *AgentService {
@@ -34,6 +35,10 @@ func NewAgentService(enrollRepo *pgrepo.EnrollmentRepository, presenceRepo *redi
 		presenceRepo: presenceRepo,
 		rdb:          rdb,
 	}
+}
+
+func (s *AgentService) SetAgentConnectionRepository(connRepo *redisrepo.AgentConnectionRepository) {
+	s.agentConnRepo = connRepo
 }
 
 type CreateTokenRequest struct {
@@ -204,6 +209,19 @@ func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*
 }
 
 func (s *AgentService) ProcessHeartbeat(ctx context.Context, agent *domain.DeviceAgent, req HeartbeatRequestDTO) error {
+	// 0. Verify heartbeat matches current active Redis owner tuple (connection_id, generation)
+	if s.agentConnRepo != nil && req.ConnectionID != "" {
+		owner, err := s.agentConnRepo.GetOwner(ctx, agent.OrganizationID, agent.DeviceID)
+		if err != nil || owner == nil || owner.ConnectionID != req.ConnectionID || owner.Generation != req.Generation {
+			slog.Warn("Heartbeat rejected: request does not match current authenticated WS owner",
+				"device_id", agent.DeviceID,
+				"req_conn_id", req.ConnectionID,
+				"req_gen", req.Generation,
+			)
+			return errors.New("heartbeat owner mismatch: connection or generation does not match current authenticated WS owner")
+		}
+	}
+
 	presence := &domain.AgentPresencePayload{
 		AgentID:      agent.AgentID,
 		ConnectionID: req.ConnectionID,

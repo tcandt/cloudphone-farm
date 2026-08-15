@@ -10,16 +10,25 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type HealthHandler struct {
-	pgPool *pgxpool.Pool
-	rdb    *redis.Client
+type OutboxStatusProvider interface {
+	GetWorkerStatus() (bool, time.Time, string)
 }
 
-func NewHealthHandler(pgPool *pgxpool.Pool, rdb *redis.Client) *HealthHandler {
-	return &HealthHandler{
+type HealthHandler struct {
+	pgPool               *pgxpool.Pool
+	rdb                  *redis.Client
+	outboxStatusProvider OutboxStatusProvider
+}
+
+func NewHealthHandler(pgPool *pgxpool.Pool, rdb *redis.Client, outboxProvider ...OutboxStatusProvider) *HealthHandler {
+	h := &HealthHandler{
 		pgPool: pgPool,
 		rdb:    rdb,
 	}
+	if len(outboxProvider) > 0 {
+		h.outboxStatusProvider = outboxProvider[0]
+	}
+	return h
 }
 
 type HealthResponse struct {
@@ -68,8 +77,21 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 		checks["redis"] = "disabled"
 	}
 
-	// Check Outbox Worker Table Health
-	if h.pgPool != nil {
+	// Check Outbox Worker Process Heartbeat
+	if h.outboxStatusProvider != nil {
+		isRunning, lastLoopAt, lastErr := h.outboxStatusProvider.GetWorkerStatus()
+		if !isRunning {
+			checks["outbox_worker"] = "down: dispatcher process stopped"
+			isReady = false
+		} else if time.Since(lastLoopAt) > 30*time.Second {
+			checks["outbox_worker"] = "down: dispatcher heartbeat stale (>30s)"
+			isReady = false
+		} else if lastErr != "" {
+			checks["outbox_worker"] = "degraded: " + lastErr
+		} else {
+			checks["outbox_worker"] = "up"
+		}
+	} else if h.pgPool != nil {
 		var outboxCnt int
 		err := h.pgPool.QueryRow(ctx, "SELECT COUNT(*) FROM command_outbox WHERE status = 'failed'").Scan(&outboxCnt)
 		if err != nil {
@@ -81,22 +103,29 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 		} else {
 			checks["outbox_worker"] = "up"
 		}
+	} else {
+		checks["outbox_worker"] = "disabled"
+	}
 
-		// Check Migration Authority State in pcp_schema_migrations
+	// Check Migration Authority State in pcp_schema_migrations
+	if h.pgPool != nil {
 		var migVersion int64
 		var migName, migChecksum string
-		err = h.pgPool.QueryRow(ctx, "SELECT version, name, checksum FROM pcp_schema_migrations ORDER BY version DESC LIMIT 1").Scan(&migVersion, &migName, &migChecksum)
+		err := h.pgPool.QueryRow(ctx, "SELECT version, name, checksum FROM pcp_schema_migrations ORDER BY version DESC LIMIT 1").Scan(&migVersion, &migName, &migChecksum)
 		if err != nil {
 			checks["migrations"] = "down: " + err.Error()
 			isReady = false
 		} else if migVersion < 7 {
 			checks["migrations"] = "degraded: pending migrations"
 			isReady = false
+		} else if len(migChecksum) != 64 {
+			// Require valid 64-char SHA256 hex checksum
+			checks["migrations"] = "degraded: migration checksum invalid"
+			isReady = false
 		} else {
 			checks["migrations"] = "up"
 		}
 	} else {
-		checks["outbox_worker"] = "disabled"
 		checks["migrations"] = "disabled"
 	}
 

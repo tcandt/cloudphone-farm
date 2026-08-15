@@ -42,5 +42,3 @@ INSERT INTO role_permissions (role_id, permission_code) VALUES
 ('role_sys_viewer', 'device.read'),
 ('role_sys_viewer', 'device.stream.view')
 ON CONFLICT DO NOTHING;
-
-INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES (2, '000002_seed_initial_rbac.up.sql', 'v2_rbac') ON CONFLICT (version) DO UPDATE SET name = EXCLUDED.name;

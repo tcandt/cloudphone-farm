@@ -232,4 +232,3 @@ CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
     checksum VARCHAR(64) NOT NULL,
     applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES (1, '000001_create_core_tables.up.sql', 'v1_core') ON CONFLICT (version) DO UPDATE SET name = EXCLUDED.name;

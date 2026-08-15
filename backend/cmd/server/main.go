@@ -151,11 +151,12 @@ func main() {
 	deviceService := devservice.NewDeviceService(deviceRepo)
 	agentService := agentservice.NewAgentService(enrollRepo, presenceRepo, rdb)
 	agentService.SetClusterBroadcaster(clusterRouter)
+	agentService.SetAgentConnectionRepository(agentConnRepo)
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 	cmdService := command.NewCommandService(pgPool, leaseService)
 
 	// Handlers & Middlewares
-	healthHandler := httptransport.NewHealthHandler(pgPool, rdb)
+	healthHandler := httptransport.NewHealthHandler(pgPool, rdb, outboxDispatcher)
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
