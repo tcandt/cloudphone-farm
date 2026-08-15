@@ -116,7 +116,7 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		agent, err := m.enrollRepo.GetAgentByID(r.Context(), agentID)
 		if err != nil || len(agent.PublicKey) != ed25519.PublicKeySize {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code":      "AGENT_CREDENTIAL_INVALID",
 				"message":   "Agent credential invalid, revoked, or key size malformed",
@@ -171,7 +171,7 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		// 6. Cryptographic Ed25519 Verification
 		if !ed25519.Verify(agent.PublicKey, []byte(canonicalMsg), sigBytes) {
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
+			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code":      "SIGNATURE_VERIFICATION_FAILED",
 				"message":   "Cryptographic proof-of-possession verification failed",
