@@ -9,11 +9,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"runtime"
@@ -221,13 +219,8 @@ func seedSyntheticDevicesAndStartAgents(ctx context.Context, targetNodeURL, dbUR
 					case <-w.stopChan:
 						return
 					default:
-						_ = w.Conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 						_, msg, err := w.Conn.ReadMessage()
 						if err != nil {
-							var netErr net.Error
-							if errors.As(err, &netErr) && netErr.Timeout() {
-								continue
-							}
 							return
 						}
 						var env agentws.WSEnvelope
