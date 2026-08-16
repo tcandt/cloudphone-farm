@@ -261,8 +261,8 @@ object ScreenCaptureManager {
                         action = MediaCaptureService.ACTION_STOP_CAPTURE
                     }
                     context.stopService(stopIntent)
-                } catch (e: Exception) {
-                    logW(TAG, "Error stopping MediaCaptureService: ${e.message}")
+                } catch (e: Throwable) {
+                    logW(TAG, "Error stopping MediaCaptureService (JVM test mode or service stopped): ${e.message}")
                 }
                 isFgsRunning = false
                 logI(TAG, "MediaCaptureService FGS stopped unconditionally by ScreenCaptureManager")
