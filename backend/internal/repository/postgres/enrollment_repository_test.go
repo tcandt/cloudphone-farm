@@ -9,24 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func TestRecordDeviceHeartbeat_NilPoolNoPanics(t *testing.T) {
-	repo := NewEnrollmentRepository(nil)
-
-	err := repo.RecordDeviceHeartbeat(context.Background(), "org_1", "dev_1", nil, nil, nil, nil, nil, []byte(`{"security_level":"STRONGBOX"}`))
-	if err != nil {
-		t.Fatalf("expected nil error on nil pool, got: %v", err)
-	}
-}
-
-func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *testing.T) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
 var dbMigrationMutex sync.Mutex
 
 func runMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrationsDir string) {

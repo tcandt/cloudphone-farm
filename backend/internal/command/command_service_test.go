@@ -102,14 +102,14 @@ func TestParseNumber(t *testing.T) {
 }
 
 func TestComparePayloadFingerprint(t *testing.T) {
-	p1 := map[string]interface{}{"x": 0.5, "y": 0.5}
-	p2 := map[string]interface{}{"x": 0.5, "y": 0.5}
-	p3 := map[string]interface{}{"x": 0.6, "y": 0.5}
+	existingBytes := []byte(`{"x":0.5,"y":0.5,"coordinateSpace":"normalized_display_v1"}`)
+	pSame := map[string]interface{}{"x": 0.5, "y": 0.5, "coordinateSpace": "normalized_display_v1"}
+	pDiff := map[string]interface{}{"x": 0.6, "y": 0.5, "coordinateSpace": "normalized_display_v1"}
 
-	if !comparePayloadFingerprint(p1, p2) {
+	if !comparePayloadFingerprint(existingBytes, pSame) {
 		t.Fatalf("expected payload fingerprint comparison to match for identical payload maps")
 	}
-	if comparePayloadFingerprint(p1, p3) {
+	if comparePayloadFingerprint(existingBytes, pDiff) {
 		t.Fatalf("expected payload fingerprint comparison to fail for different coordinates")
 	}
 }
