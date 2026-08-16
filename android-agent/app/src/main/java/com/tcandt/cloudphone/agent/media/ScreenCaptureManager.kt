@@ -169,7 +169,7 @@ object ScreenCaptureManager {
 
             if (capturedGen != sessionRequestGeneration || activeSessionId != capturedSessionId || currentState != ScreenCaptureState.CONSENT_REQUIRED) {
                 logW(TAG, "FGS_READY callback rejected: stale session or generation (Gen=$capturedGen vs currentGen=$sessionRequestGeneration, state=$currentState). Stopping orphan FGS.")
-                terminateMediaSession(context, SessionOutcome.STOPPED, "stale_fgs_ready")
+                terminateMediaSession(context, SessionOutcome.STOPPED, "stale_fgs_ready", capturedSessionId)
             } else {
                 logI(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
                 clearPermissionGrantOnly()
@@ -223,10 +223,14 @@ object ScreenCaptureManager {
 
     fun markConnected(sessionId: String) {
         if (activeSessionId == sessionId) {
-            currentState = ScreenCaptureState.CONNECTED
-            logI(TAG, "ScreenCaptureState -> CONNECTED (SessionID=$sessionId)")
-            sessionListener?.onSessionStarted(sessionId)
+            currentState = ScreenCaptureState.STREAMING
+            logI(TAG, "ScreenCaptureState -> STREAMING (SessionID=$sessionId)")
         }
+    }
+
+    fun onCapturerStopped() {
+        logI(TAG, "Capturer stopped callback received for SessionID=$activeSessionId")
+        terminateMediaSession(null, SessionOutcome.STOPPED, "capturer_stopped")
     }
 
     fun onEncoderFormatConfirmed() {
@@ -251,11 +255,15 @@ object ScreenCaptureManager {
         terminateMediaSession(context, SessionOutcome.STOPPED, "operator_requested")
     }
 
-    fun terminateMediaSession(context: Context?, outcome: SessionOutcome, reason: String) {
-        logI(TAG, "terminateMediaSession called (outcome=$outcome, reason=$reason, SessionID=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
+    fun terminateMediaSession(context: Context?, outcome: SessionOutcome, reason: String, targetSessionId: String? = null) {
+        logI(TAG, "terminateMediaSession called (outcome=$outcome, reason=$reason, targetSessionId=$targetSessionId, activeSessionId=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
 
-        sessionRequestGeneration++
-        MediaCaptureServiceNotifier.onFgsReadyListener = null
+        val sessId = targetSessionId ?: activeSessionId
+
+        if (targetSessionId == null || targetSessionId == activeSessionId) {
+            sessionRequestGeneration++
+            MediaCaptureServiceNotifier.onFgsReadyListener = null
+        }
 
         if (context != null) {
             dismissConsentNotification(context)
@@ -275,13 +283,14 @@ object ScreenCaptureManager {
             isFgsRunning = false
         }
 
-        val sessId = activeSessionId
         if (currentState == ScreenCaptureState.IDLE && sessId.isEmpty()) {
             return
         }
 
         val isFailed = (outcome == SessionOutcome.FAILED)
-        clearAllSessionState()
+        if (targetSessionId == null || targetSessionId == activeSessionId) {
+            clearAllSessionState()
+        }
 
         if (sessId.isNotEmpty()) {
             if (isFailed) {
