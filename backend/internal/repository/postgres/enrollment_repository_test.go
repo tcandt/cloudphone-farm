@@ -23,7 +23,10 @@ func TestRecordDeviceHeartbeat_NilPoolNoPanics(t *testing.T) {
 func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *testing.T) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL not set")
+		dbURL = os.Getenv("POSTGRES_URL")
+	}
+	if dbURL == "" {
+		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL and POSTGRES_URL not set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -68,7 +71,7 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 	_, _ = pool.Exec(ctx, "DELETE FROM devices WHERE organization_id = $1", orgID)
 	_, _ = pool.Exec(ctx, "DELETE FROM organizations WHERE organization_id = $1", orgID)
 
-	// Insert production seed hierarchy
+	// Insert production seed hierarchy matching 000001_create_core_tables.up.sql
 	_, err = pool.Exec(ctx, `
 		INSERT INTO organizations (organization_id, name, slug)
 		VALUES ($1, 'HB Test Org', 'org-test-hb-sql')
@@ -78,17 +81,17 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO devices (id, organization_id, serial_number, model, status)
-		VALUES ($1, $2, 'sn_hb_001', 'Pixel 6', 'ENROLLED')
+		INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status)
+		VALUES ($1, $2, 'Test Device', 'sn_hb_001', 'Pixel 6', '14.0', 'ENROLLED')
 	`, deviceID, orgID)
 	if err != nil {
 		t.Fatalf("failed to insert device: %v", err)
 	}
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO device_agents (organization_id, device_id, agent_pubkey, registered_at)
-		VALUES ($1, $2, 'pubkey_hb_001', CURRENT_TIMESTAMP)
-	`, orgID, deviceID)
+		INSERT INTO device_agents (agent_id, organization_id, device_id, apk_version, protocol_version, status, registered_at)
+		VALUES ($1, $2, $1, '1.0.0', 'v1', 'active', CURRENT_TIMESTAMP)
+	`, deviceID, orgID)
 	if err != nil {
 		t.Fatalf("failed to insert device_agent: %v", err)
 	}
@@ -150,7 +153,7 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 	}
 
 	var devKeyProtRaw []byte
-	err = pool.QueryRow(ctx, `SELECT key_protection FROM devices WHERE organization_id = $1 AND id = $2`, orgID, deviceID).Scan(&devKeyProtRaw)
+	err = pool.QueryRow(ctx, `SELECT key_protection FROM devices WHERE organization_id = $1 AND device_id = $2`, orgID, deviceID).Scan(&devKeyProtRaw)
 	if err != nil {
 		t.Fatalf("failed to query devices key_protection: %v", err)
 	}
