@@ -120,6 +120,70 @@ func (h *AgentHandler) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *AgentHandler) GetTokenReadiness(w http.ResponseWriter, r *http.Request) {
+	principal, err := auth.GetPrincipal(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "UNAUTHENTICATED",
+			"message":   "Authentication required",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	tokenID := chi.URLParam(r, "id")
+	readiness, err := h.agentService.GetTokenReadiness(r.Context(), principal.OrganizationID, tokenID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "TOKEN_NOT_FOUND",
+			"message":   err.Error(),
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(readiness)
+}
+
+func (h *AgentHandler) ListAgents(w http.ResponseWriter, r *http.Request) {
+	principal, err := auth.GetPrincipal(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "UNAUTHENTICATED",
+			"message":   "Authentication required",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	agents, err := h.agentService.ListAgents(r.Context(), principal.OrganizationID)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "INTERNAL_SERVER_ERROR",
+			"message":   "Failed to list agents",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"items": agents,
+		"count": len(agents),
+	})
+}
+
 func (h *AgentHandler) RevokeAgentCredential(w http.ResponseWriter, r *http.Request) {
 	principal, err := auth.GetPrincipal(r.Context())
 	if err != nil {

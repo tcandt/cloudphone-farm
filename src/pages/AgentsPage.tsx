@@ -20,8 +20,40 @@ export const AgentsPage: React.FC = () => {
     agentService.listAgents().then(setAgents).catch(() => {});
   }, []);
 
+  const [successToast, setSuccessToast] = useState<string | null>(null);
+
   useEffect(() => {
     if (!activeTokenModal) return;
+
+    let isSubscribed = true;
+    const readinessInterval = setInterval(async () => {
+      try {
+        const readiness = await agentService.getTokenReadiness(activeTokenModal.token_id);
+        if (!isSubscribed) return;
+
+        if (readiness.consumed && readiness.wss_connected && readiness.heartbeat_active) {
+          clearInterval(readinessInterval);
+          setSuccessToast('Thiết bị đã kết nối thành công!');
+          // Refresh lists
+          const [updatedAgents, updatedTokens] = await Promise.all([
+            agentService.listAgents(),
+            enrollmentService.listTokens(),
+          ]);
+          if (isSubscribed) {
+            setAgents(updatedAgents);
+            setTokens(updatedTokens);
+          }
+          setTimeout(() => {
+            if (isSubscribed) {
+              setSuccessToast(null);
+              setActiveTokenModal(null);
+            }
+          }, 1200);
+        }
+      } catch {
+        // Continue polling
+      }
+    }, 1500);
 
     const timer = setInterval(() => {
       const remaining = Math.max(
@@ -34,7 +66,11 @@ export const AgentsPage: React.FC = () => {
       }
     }, 1000);
 
-    return () => clearInterval(timer);
+    return () => {
+      isSubscribed = false;
+      clearInterval(timer);
+      clearInterval(readinessInterval);
+    };
   }, [activeTokenModal]);
 
   const handleGenerateToken = async () => {
@@ -171,6 +207,13 @@ export const AgentsPage: React.FC = () => {
                   </button>
                 </div>
               </div>
+
+              {successToast && (
+                <div className="w-full p-3 bg-emerald-50 border border-emerald-200 rounded-2xl flex items-center justify-center gap-2 text-emerald-800 font-bold text-xs animate-bounce">
+                  <Check size={18} className="text-emerald-600" />
+                  <span>{successToast}</span>
+                </div>
+              )}
 
               <div className="text-xs font-semibold text-amber-600 bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200">
                 Mã sẽ hết hạn sau {Math.floor(secondsLeft / 60)}m {secondsLeft % 60}s

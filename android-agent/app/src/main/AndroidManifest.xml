@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -36,9 +37,28 @@
         </activity>
 
         <activity
+            android:name=".LogsActivity"
+            android:exported="false"
+            android:label="Diagnostics Logs" />
+
+        <activity
             android:name=".media.ConsentPromptActivity"
             android:exported="false"
             android:theme="@style/Theme.AppCompat.Translucent" />
+
+        <!-- Remote Input Method Keyboard Service -->
+        <service
+            android:name=".ime.PcpRemoteInputMethodService"
+            android:label="PCP Remote Keyboard"
+            android:permission="android.permission.BIND_INPUT_METHOD"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/method" />
+        </service>
 
         <!-- Physical Gesture Execution Accessibility Service -->
         <service

@@ -141,6 +141,60 @@ func (s *AgentService) ListEnrollmentTokens(ctx context.Context, orgID string) (
 	return s.enrollRepo.ListTokens(ctx, orgID)
 }
 
+func (s *AgentService) ListAgents(ctx context.Context, orgID string) ([]domain.DeviceAgent, error) {
+	return s.enrollRepo.ListAgentsByOrg(ctx, orgID)
+}
+
+type TokenReadinessDTO struct {
+	TokenID         string     `json:"token_id"`
+	Status          string     `json:"status"` // "active", "consumed", "expired", "revoked"
+	Consumed        bool       `json:"consumed"`
+	ConsumedAt      *time.Time `json:"consumed_at,omitempty"`
+	WSSConnected    bool       `json:"wss_connected"`
+	Presence        string     `json:"presence"`
+	HeartbeatActive bool       `json:"heartbeat_active"`
+}
+
+func (s *AgentService) GetTokenReadiness(ctx context.Context, orgID, tokenID string) (*TokenReadinessDTO, error) {
+	tok, err := s.enrollRepo.GetTokenByID(ctx, orgID, tokenID)
+	if err != nil {
+		return nil, err
+	}
+
+	dto := &TokenReadinessDTO{
+		TokenID:    tok.TokenID,
+		ConsumedAt: tok.ConsumedAt,
+		Consumed:   tok.ConsumedAt != nil,
+	}
+
+	now := time.Now()
+	if tok.RevokedAt != nil {
+		dto.Status = "revoked"
+	} else if tok.ConsumedAt != nil {
+		dto.Status = "consumed"
+	} else if now.After(tok.ExpiresAt) {
+		dto.Status = "expired"
+	} else {
+		dto.Status = "active"
+	}
+
+	if s.presenceRepo != nil {
+		// Check presence for active agents in the organization
+		agents, _ := s.enrollRepo.ListAgentsByOrg(ctx, orgID)
+		for _, agt := range agents {
+			presence, err := s.presenceRepo.GetPresence(ctx, orgID, agt.DeviceID)
+			if err == nil && presence != nil && presence.AgentID != "" {
+				dto.WSSConnected = true
+				dto.Presence = "online"
+				dto.HeartbeatActive = true
+				break
+			}
+		}
+	}
+
+	return dto, nil
+}
+
 func (s *AgentService) RevokeEnrollmentToken(ctx context.Context, orgID, tokenID string) error {
 	return s.enrollRepo.RevokeToken(ctx, orgID, tokenID)
 }

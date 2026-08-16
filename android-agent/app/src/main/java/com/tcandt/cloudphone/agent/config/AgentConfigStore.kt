@@ -47,6 +47,15 @@ class AgentConfigStore(context: Context) {
             .putString(KEY_DEVICE_ID, deviceId)
             .putString(KEY_ORG_ID, orgId)
             .putBoolean(KEY_IS_ENROLLED, true)
-            .apply()
+            .commit()
+    }
+
+    fun resetEnrollment() {
+        prefs.edit()
+            .remove(KEY_AGENT_ID)
+            .remove(KEY_DEVICE_ID)
+            .remove(KEY_ORG_ID)
+            .putBoolean(KEY_IS_ENROLLED, false)
+            .commit()
     }
 }

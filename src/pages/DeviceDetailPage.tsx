@@ -94,15 +94,27 @@ export const DeviceDetailPage: React.FC = () => {
           </div>
         </div>
 
-        <PermissionGuard requiredPermission="device.control.input">
-          <button
-            onClick={() => setIsControlModalOpen(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm text-xs flex items-center gap-2 transition-all"
-          >
-            <Play size={16} />
-            <span>Xin quyền điều khiển</span>
-          </button>
-        </PermissionGuard>
+        <div className="flex items-center gap-2">
+          <PermissionGuard requiredPermission="device.stream.view">
+            <button
+              onClick={() => setIsControlModalOpen(true)}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm text-xs flex items-center gap-2 transition-all"
+            >
+              <Play size={16} />
+              <span>Xem trực tiếp</span>
+            </button>
+          </PermissionGuard>
+
+          <PermissionGuard requiredPermission="device.control.input">
+            <button
+              onClick={() => setIsControlModalOpen(true)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm text-xs flex items-center gap-2 transition-all"
+            >
+              <Play size={16} />
+              <span>Bật điều khiển</span>
+            </button>
+          </PermissionGuard>
+        </div>
       </div>
 
       {/* Grid Specs */}

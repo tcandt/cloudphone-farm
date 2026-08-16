@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -45,7 +46,7 @@ func (e *CommandExecutor) Execute(ctx context.Context, commandID string, fencing
 			CommandID: commandID,
 			Status:    "failed",
 			Error:     errStr,
-		}, fmt.Errorf(errStr)
+		}, errors.New(errStr)
 	}
 
 	// 3. Physical Input Execution Dispatch

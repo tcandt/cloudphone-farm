@@ -274,11 +274,17 @@ func main() {
 				r.Post("/commands", commandHandler.Dispatch)
 			})
 
-			// Enrollment Tokens Management Routes
+			// Agent & Enrollment Tokens Management Routes
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequireAnyPermission("agent.enroll", "device.read"))
+				r.Get("/agents", agentHandler.ListAgents)
+			})
+
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("agent.enroll"))
 				r.Post("/enrollment-tokens", agentHandler.CreateToken)
 				r.Get("/enrollment-tokens", agentHandler.ListTokens)
+				r.Get("/enrollment-tokens/{id}/readiness", agentHandler.GetTokenReadiness)
 				r.Delete("/enrollment-tokens/{id}", agentHandler.RevokeToken)
 				r.Delete("/agents/{agentId}", agentHandler.RevokeAgentCredential)
 			})

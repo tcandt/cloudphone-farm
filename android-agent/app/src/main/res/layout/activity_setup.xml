@@ -1,48 +1,522 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
-    android:gravity="center_horizontal">
+    android:background="#F8FAFC"
+    android:fillViewport="true">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Phone Control Platform Agent Setup"
-        android:textSize="20sp"
-        android:textStyle="bold"
-        android:layout_marginBottom="24dp"/>
-
-    <EditText
-        android:id="@+id/etServerUrl"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:hint="Server URL (e.g. http://192.168.1.100:8080)"
-        android:inputType="textUri"
-        android:layout_marginBottom="12dp"/>
+        android:orientation="vertical"
+        android:padding="16dp">
 
-    <EditText
-        android:id="@+id/etEnrollToken"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:hint="Enrollment Token Code"
-        android:inputType="text"
-        android:layout_marginBottom="24dp"/>
+        <!-- ========================================== -->
+        <!-- 1. ENROLLMENT FORM (When Not Enrolled)     -->
+        <!-- ========================================== -->
+        <LinearLayout
+            android:id="@+id/layoutEnrollForm"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone"
+            android:padding="12dp">
 
-    <Button
-        android:id="@+id/btnEnroll"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="Enroll Device"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Phone Control Platform"
+                android:textSize="22sp"
+                android:textStyle="bold"
+                android:textColor="#0F172A"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="4dp"/>
 
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:text="Ready for setup"
-        android:textColor="#555555"
-        android:gravity="center"/>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Agent Device Setup &amp; Registration"
+                android:textSize="13sp"
+                android:textColor="#64748B"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginBottom="24dp"/>
 
-</LinearLayout>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Backend Gateway URL"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#334155"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/etServerUrl"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/editbox_background_normal"
+                android:hint="http://192.168.1.100:8080"
+                android:inputType="textUri"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:layout_marginBottom="16dp"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Enrollment Token Code"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:textColor="#334155"
+                android:layout_marginBottom="4dp"/>
+
+            <EditText
+                android:id="@+id/etEnrollToken"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="@android:drawable/editbox_background_normal"
+                android:hint="PCP-XXXX-XXXX-XXXX"
+                android:inputType="text"
+                android:fontFamily="monospace"
+                android:textSize="14sp"
+                android:padding="12dp"
+                android:layout_marginBottom="24dp"/>
+
+            <Button
+                android:id="@+id/btnEnroll"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:backgroundTint="#2563EB"
+                android:textColor="#FFFFFF"
+                android:textStyle="bold"
+                android:text="ENROLL DEVICE NOW"/>
+
+            <TextView
+                android:id="@+id/tvSetupStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="Ready for setup"
+                android:textColor="#64748B"
+                android:textSize="12sp"
+                android:gravity="center"/>
+        </LinearLayout>
+
+        <!-- ========================================== -->
+        <!-- 2. DASHBOARD VIEW (When Enrolled)          -->
+        <!-- ========================================== -->
+        <LinearLayout
+            android:id="@+id/layoutDashboard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <!-- App Header & Device Identifier Card -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="2dp"
+                android:padding="16dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:id="@+id/tvDashDeviceName"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Samsung Galaxy S7"
+                            android:textSize="18sp"
+                            android:textStyle="bold"
+                            android:textColor="#0F172A"/>
+
+                        <TextView
+                            android:id="@+id/tvDashOsVersion"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Android 10 (API 29)"
+                            android:textSize="12sp"
+                            android:textColor="#64748B"/>
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/tvAgentStatusBadge"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="● ONLINE"
+                        android:textStyle="bold"
+                        android:textSize="11sp"
+                        android:textColor="#059669"
+                        android:background="#ECFDF5"
+                        android:paddingHorizontal="10dp"
+                        android:paddingVertical="4dp"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginTop="8dp">
+
+                    <TextView
+                        android:id="@+id/tvReadinessPercent"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Readiness: 85%"
+                        android:textSize="12sp"
+                        android:textStyle="bold"
+                        android:textColor="#2563EB"/>
+
+                    <Button
+                        android:id="@+id/btnResetEnrollment"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        style="?android:attr/borderlessButtonStyle"
+                        android:text="Reset"
+                        android:textColor="#DC2626"
+                        android:textSize="11sp"/>
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Card 1: Connection & Cryptographic Identity -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="1dp"
+                android:padding="14dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="CONNECTION &amp; IDENTITY"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#64748B"
+                    android:layout_marginBottom="8dp"/>
+
+                <TextView
+                    android:id="@+id/tvDashAgentId"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Agent ID: agt_..."
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:textColor="#1E293B"
+                    android:layout_marginBottom="2dp"/>
+
+                <TextView
+                    android:id="@+id/tvDashDeviceId"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Device ID: dev_..."
+                    android:fontFamily="monospace"
+                    android:textSize="12sp"
+                    android:textColor="#1E293B"
+                    android:layout_marginBottom="2dp"/>
+
+                <TextView
+                    android:id="@+id/tvDashWssStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="WebSocket: ✓ Connected (192.168.1.26:8080)"
+                    android:textSize="12sp"
+                    android:textColor="#059669"
+                    android:layout_marginBottom="2dp"/>
+
+                <TextView
+                    android:id="@+id/tvDashHeartbeatStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Heartbeat: ✓ HTTP 200 OK (Periodic 10s)"
+                    android:textSize="12sp"
+                    android:textColor="#059669"/>
+            </LinearLayout>
+
+            <!-- Card 2: Required for Live View -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="1dp"
+                android:padding="14dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="REQUIRED FOR LIVE VIEW"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#2563EB"
+                    android:layout_marginBottom="8dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="6dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Screen Capture"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:textColor="#1E293B"/>
+
+                    <TextView
+                        android:id="@+id/tvScreenCaptureState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="○ Chưa có phiên"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#64748B"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnGrantScreenCapture"
+                    android:layout_width="match_parent"
+                    android:layout_height="38dp"
+                    android:backgroundTint="#059669"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:text="CẤP QUYỀN GHI MÀN HÌNH"/>
+
+                <TextView
+                    android:id="@+id/tvFgsStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Foreground Service: ✓ Ready"
+                    android:textSize="12sp"
+                    android:textColor="#059669"
+                    android:layout_marginTop="8dp"/>
+            </LinearLayout>
+
+            <!-- Card 3: Required for Remote Control -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="1dp"
+                android:padding="14dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="REQUIRED FOR REMOTE CONTROL"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#D97706"
+                    android:layout_marginBottom="8dp"/>
+
+                <!-- Accessibility Service Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Accessibility Service"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:textColor="#1E293B"/>
+
+                    <TextView
+                        android:id="@+id/tvAccessibilityState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="✕ Disabled"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#DC2626"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnEnableAccessibility"
+                    android:layout_width="match_parent"
+                    android:layout_height="38dp"
+                    android:backgroundTint="#D97706"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:text="MỞ CÀI ĐẶT TRỢ NĂNG (ACCESSIBILITY)"
+                    android:layout_marginBottom="12dp"/>
+
+                <!-- Remote Keyboard IME Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="PCP Remote Keyboard IME"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:textColor="#1E293B"/>
+
+                    <TextView
+                        android:id="@+id/tvImeState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="○ Optional"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#64748B"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnEnableIme"
+                    android:layout_width="match_parent"
+                    android:layout_height="38dp"
+                    android:backgroundTint="#475569"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:text="BẬT BÀN PHÍM PCP (INPUT METHOD)"/>
+            </LinearLayout>
+
+            <!-- Card 4: Optional Capabilities -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="1dp"
+                android:padding="14dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="12dp">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="OPTIONAL CAPABILITIES"
+                    android:textSize="11sp"
+                    android:textStyle="bold"
+                    android:textColor="#64748B"
+                    android:layout_marginBottom="8dp"/>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="4dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Install Unknown APKs"
+                        android:textSize="13sp"
+                        android:textStyle="bold"
+                        android:textColor="#1E293B"/>
+
+                    <TextView
+                        android:id="@+id/tvInstallApkState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="✕ Not allowed"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#64748B"/>
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnAllowInstallApk"
+                    android:layout_width="match_parent"
+                    android:layout_height="38dp"
+                    android:backgroundTint="#475569"
+                    android:textColor="#FFFFFF"
+                    android:textStyle="bold"
+                    android:textSize="12sp"
+                    android:text="CẤP QUYỀN CÀI ĐẶT APK"/>
+            </LinearLayout>
+
+            <!-- Card 5: Recent Diagnostics Logs -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FFFFFF"
+                android:elevation="1dp"
+                android:padding="14dp"
+                android:orientation="vertical"
+                android:layout_marginBottom="16dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:layout_marginBottom="8dp">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="RECENT DIAGNOSTICS LOGS"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:textColor="#64748B"/>
+
+                    <Button
+                        android:id="@+id/btnOpenLogsActivity"
+                        android:layout_width="wrap_content"
+                        android:layout_height="32dp"
+                        style="?android:attr/borderlessButtonStyle"
+                        android:text="XEM TẤT CẢ"
+                        android:textColor="#2563EB"
+                        android:textStyle="bold"
+                        android:textSize="11sp"/>
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/tvRecentLogsSnippet"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="monospace"
+                    android:textSize="10sp"
+                    android:background="#0F172A"
+                    android:textColor="#38BDF8"
+                    android:padding="10dp"
+                    android:text="Waiting for diagnostic events..."/>
+            </LinearLayout>
+
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

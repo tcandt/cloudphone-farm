@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#0F172A">
+
+    <!-- Action Bar / Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="12dp"
+        android:background="#1E293B"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="PCP Diagnostics Logs"
+            android:textColor="#F8FAFC"
+            android:textStyle="bold"
+            android:textSize="16sp"/>
+
+        <Button
+            android:id="@+id/btnCopyLogs"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            style="?android:attr/borderlessButtonStyle"
+            android:text="SAO CHÉP"
+            android:textColor="#38BDF8"
+            android:textSize="11sp"/>
+
+        <Button
+            android:id="@+id/btnClearLogs"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            style="?android:attr/borderlessButtonStyle"
+            android:text="XÓA"
+            android:textColor="#F87171"
+            android:textSize="11sp"/>
+    </LinearLayout>
+
+    <!-- Search & Filter Bar -->
+    <EditText
+        android:id="@+id/etLogSearch"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#334155"
+        android:textColor="#F8FAFC"
+        android:textColorHint="#94A3B8"
+        android:hint="Tìm kiếm log (WSS, AUTH, MEDIA, WEBRTC...)"
+        android:textSize="12sp"
+        android:paddingHorizontal="12dp"
+        android:layout_margin="8dp"/>
+
+    <!-- Log text scroll container -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="12dp"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/tvLogsContent"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="11sp"
+            android:textColor="#E2E8F0"
+            android:textIsSelectable="true"/>
+    </ScrollView>
+</LinearLayout>

@@ -217,6 +217,7 @@ func (r *EnrollmentRepository) ConsumeTokenAndRegisterDeviceAgent(ctx context.Co
 		INSERT INTO device_agents (agent_id, organization_id, device_id, public_key, public_key_fingerprint, apk_version, protocol_version, status, key_protection)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', COALESCE($8::jsonb, '{}'::jsonb))
 		ON CONFLICT (agent_id) DO UPDATE SET
+			device_id = EXCLUDED.device_id,
 			public_key = EXCLUDED.public_key,
 			public_key_fingerprint = EXCLUDED.public_key_fingerprint,
 			apk_version = EXCLUDED.apk_version,
@@ -372,12 +373,70 @@ func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID,
 		if _, err := r.pool.Exec(ctx, updateDA, orgID, deviceID, keyProtectionJSON); err != nil {
 			return fmt.Errorf("failed to update device_agents key_protection in PostgreSQL: %w", err)
 		}
-
-		updateDev := `UPDATE devices SET key_protection = $3::jsonb WHERE organization_id = $1 AND device_id = $2`
-		if _, err := r.pool.Exec(ctx, updateDev, orgID, deviceID, keyProtectionJSON); err != nil {
-			return fmt.Errorf("failed to update devices key_protection in PostgreSQL: %w", err)
-		}
 	}
 
 	return nil
+}
+
+// ListAgentsByOrg fetches all device agent credentials for the organization
+func (r *EnrollmentRepository) ListAgentsByOrg(ctx context.Context, orgID string) ([]domain.DeviceAgent, error) {
+	if r.pool == nil {
+		return nil, errors.New("postgres connection pool uninitialized")
+	}
+
+	query := `
+		SELECT agent_id, organization_id, device_id, public_key, COALESCE(public_key_fingerprint, ''), apk_version, status, last_authenticated_at
+		FROM device_agents
+		WHERE organization_id = $1
+		ORDER BY registered_at DESC
+	`
+	rows, err := r.pool.Query(ctx, query, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query device agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []domain.DeviceAgent
+	for rows.Next() {
+		var a domain.DeviceAgent
+		var lastAuth *time.Time
+		if err := rows.Scan(&a.AgentID, &a.OrganizationID, &a.DeviceID, &a.PublicKey, &a.PublicKeyFingerprint, &a.ApkVersion, &a.Status, &lastAuth); err != nil {
+			return nil, fmt.Errorf("failed to scan device agent: %w", err)
+		}
+		if lastAuth != nil {
+			a.LastAuthenticatedAt = lastAuth
+		}
+		agents = append(agents, a)
+	}
+
+	if agents == nil {
+		agents = []domain.DeviceAgent{}
+	}
+	return agents, nil
+}
+
+// GetTokenByID retrieves a single enrollment token record by ID
+func (r *EnrollmentRepository) GetTokenByID(ctx context.Context, orgID, tokenID string) (*EnrollmentTokenRecord, error) {
+	if r.pool == nil {
+		return nil, errors.New("postgres connection pool uninitialized")
+	}
+
+	query := `
+		SELECT token_id, organization_id, token_hash, created_by, bound_group_id, expires_at, created_at, consumed_at, revoked_at
+		FROM enrollment_tokens
+		WHERE organization_id = $1 AND token_id = $2
+	`
+	var rec EnrollmentTokenRecord
+	err := r.pool.QueryRow(ctx, query, orgID, tokenID).Scan(
+		&rec.TokenID, &rec.OrganizationID, &rec.TokenHash, &rec.CreatedBy,
+		&rec.BoundGroupID, &rec.ExpiresAt, &rec.CreatedAt, &rec.ConsumedAt, &rec.RevokedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("enrollment token not found")
+		}
+		return nil, fmt.Errorf("failed to fetch enrollment token: %w", err)
+	}
+
+	return &rec, nil
 }

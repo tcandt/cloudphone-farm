@@ -104,8 +104,12 @@ const ROLE_PERMISSIONS: Record<UserRole, PermissionCode[]> = {
   ],
 };
 
+const isHttpMode = import.meta.env.VITE_API_MODE === 'http';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<UserSession | null>(() => {
+    // When connected to real backend, NEVER hydrate stale mock session from localStorage
+    if (isHttpMode) return null;
     if (import.meta.env.DEV) {
       const saved = localStorage.getItem('pcp_auth_session');
       if (saved === 'null' || saved === 'none' || !saved) return null;
@@ -117,7 +121,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     return null;
   });
-  const [isLoading, setIsLoading] = useState<boolean>(!import.meta.env.DEV);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
     let mounted = true;
@@ -127,6 +131,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const current = await authService.fetchSession();
         if (mounted) {
           setSession(current);
+          if (!current && isHttpMode) {
+            localStorage.removeItem('pcp_auth_session');
+          }
+        }
+      } catch {
+        if (mounted) {
+          setSession(null);
+          if (isHttpMode) {
+            localStorage.removeItem('pcp_auth_session');
+          }
         }
       } finally {
         if (mounted) {
@@ -141,7 +155,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   useEffect(() => {
-    if (import.meta.env.DEV) {
+    if (import.meta.env.DEV && !isHttpMode) {
       if (session) {
         localStorage.setItem('pcp_auth_session', JSON.stringify(session));
       } else {
@@ -165,14 +179,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       await authService.logout();
       setSession(null);
+      if (isHttpMode) {
+        localStorage.removeItem('pcp_auth_session');
+      }
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Dev-only role switcher guarded by feature flag
+  // Dev-only role switcher guarded by feature flag & mock mode only
   const switchRole = (newRole: UserRole) => {
-    if (!import.meta.env.DEV || !featureFlags.rbacSimulator) return;
+    if (isHttpMode || !import.meta.env.DEV || !featureFlags.rbacSimulator) return;
     if (!session) return;
 
     const updatedSession: UserSession = {

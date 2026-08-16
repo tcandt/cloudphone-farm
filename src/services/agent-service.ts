@@ -30,11 +30,22 @@ export interface EnrollmentTokenMetadata {
   bound_group_id?: string;
 }
 
+export interface TokenReadiness {
+  token_id: string;
+  status: 'active' | 'consumed' | 'expired' | 'revoked';
+  consumed: boolean;
+  consumed_at?: string;
+  wss_connected: boolean;
+  presence: string;
+  heartbeat_active: boolean;
+}
+
 export interface AgentService {
   listAgents(): Promise<AgentItem[]>;
   createEnrollmentToken(ttlMinutes?: number): Promise<EnrollmentTokenIssued>;
   listEnrollmentTokens(): Promise<EnrollmentTokenMetadata[]>;
   revokeEnrollmentToken(id: string): Promise<void>;
+  getTokenReadiness(id: string): Promise<TokenReadiness>;
 }
 
 export class MockAgentService implements AgentService {
@@ -71,32 +82,63 @@ export class MockAgentService implements AgentService {
   async revokeEnrollmentToken(_id: string): Promise<void> {
     await new Promise((res) => setTimeout(res, 50));
   }
+
+  async getTokenReadiness(id: string): Promise<TokenReadiness> {
+    await new Promise((res) => setTimeout(res, 50));
+    return {
+      token_id: id,
+      status: 'active',
+      consumed: false,
+      wss_connected: false,
+      presence: 'offline',
+      heartbeat_active: false,
+    };
+  }
 }
 
 export class HttpAgentService implements AgentService {
   private baseUrl = '/api/v1';
 
   async listAgents(): Promise<AgentItem[]> {
-    // Agents list derived from devices list endpoint
-    const res = await fetch(`${this.baseUrl}/devices`, {
+    const res = await fetch(`${this.baseUrl}/agents`, {
       headers: { Accept: 'application/json' },
       credentials: 'include',
     });
 
     if (!res.ok) {
-      throw new Error(`Agent list error: HTTP ${res.status}`);
+      // Fallback to /devices if agents endpoint is restricted
+      const fallbackRes = await fetch(`${this.baseUrl}/devices`, {
+        headers: { Accept: 'application/json' },
+        credentials: 'include',
+      });
+      if (!fallbackRes.ok) throw new Error(`Agent list error: HTTP ${res.status}`);
+      const data = await fallbackRes.json();
+      const items: DeviceEntity[] = data.items || [];
+      return items.map((d) => ({
+        agent_id: `agt_${d.device_id}`,
+        organization_id: d.organization_id,
+        device_id: d.device_id,
+        apk_version: '1.0.0',
+        status: d.status === 'online' ? 'active' : 'inactive',
+        last_authenticated_at: d.last_seen_at,
+      }));
     }
 
     const data = await res.json();
-    const items: DeviceEntity[] = data.items || [];
-    return items.map((d) => ({
-      agent_id: `agt_${d.device_id}`,
-      organization_id: d.organization_id,
-      device_id: d.device_id,
-      apk_version: '1.0.0',
-      status: d.status === 'online' ? 'active' : 'inactive',
-      last_authenticated_at: d.last_seen_at,
-    }));
+    return data.items || [];
+  }
+
+  async getTokenReadiness(id: string): Promise<TokenReadiness> {
+    const res = await fetch(`${this.baseUrl}/enrollment-tokens/${encodeURIComponent(id)}/readiness`, {
+      headers: { Accept: 'application/json' },
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      throw new Error(`Token readiness error: HTTP ${res.status}`);
+    }
+
+    return await res.json();
   }
 
   async createEnrollmentToken(ttlMinutes = 10): Promise<EnrollmentTokenIssued> {

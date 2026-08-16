@@ -10,24 +10,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
+	"github.com/tcandt/cloudphone-farm/backend/internal/domain"
 )
 
 type agentCtxKey string
 
 const AgentContextKey agentCtxKey = "authenticated_agent"
 
+type AgentProvider interface {
+	GetAgentByID(ctx context.Context, agentID string) (*domain.DeviceAgent, error)
+}
+
 type AgentAuthMiddleware struct {
-	enrollRepo *pgrepo.EnrollmentRepository
+	enrollRepo AgentProvider
 	rdb        *redis.Client
 }
 
-func NewAgentAuthMiddleware(enrollRepo *pgrepo.EnrollmentRepository, rdb *redis.Client) *AgentAuthMiddleware {
+func NewAgentAuthMiddleware(enrollRepo AgentProvider, rdb *redis.Client) *AgentAuthMiddleware {
 	return &AgentAuthMiddleware{
 		enrollRepo: enrollRepo,
 		rdb:        rdb,
@@ -40,6 +45,14 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		timestampStr := r.Header.Get("X-Agent-Timestamp")
 		nonce := r.Header.Get("X-Agent-Nonce")
 		signatureB64 := r.Header.Get("X-Agent-Signature")
+
+		slog.Info("AgentAuthMiddleware received request",
+			"path", r.URL.Path,
+			"agent_id", agentID,
+			"ts", timestampStr,
+			"nonce", nonce,
+			"sig_len", len(signatureB64),
+		)
 
 		if agentID == "" || timestampStr == "" || nonce == "" || signatureB64 == "" {
 			w.Header().Set("Content-Type", "application/json")
@@ -66,12 +79,13 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		nowTs := time.Now().Unix()
-		if ts < nowTs-60 || ts > nowTs+60 {
+		skewWindow := int64(300) // 5 minutes clock skew tolerance for mobile agents
+		if ts < nowTs-skewWindow || ts > nowTs+skewWindow {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"code":      "TIMESTAMP_OUT_OF_BOUNDS",
-				"message":   "Request timestamp outside of ±60s clock skew window",
+				"message":   "Request timestamp outside of clock skew window",
 				"timestamp": time.Now().UTC().Format(time.RFC3339),
 			})
 			return
@@ -90,7 +104,7 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 		}
 
 		nonceKey := fmt.Sprintf("pcp:replay:%s:%s", agentID, nonce)
-		setOk, err := m.rdb.SetNX(r.Context(), nonceKey, 1, 120*time.Second).Result()
+		setOk, err := m.rdb.SetNX(r.Context(), nonceKey, 1, 660*time.Second).Result()
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -170,6 +184,12 @@ func (m *AgentAuthMiddleware) Handler(next http.Handler) http.Handler {
 
 		// 6. Cryptographic Ed25519 Verification
 		if !ed25519.Verify(agent.PublicKey, []byte(canonicalMsg), sigBytes) {
+			slog.Warn("Agent signature verification failed",
+				"agent_id", agentID,
+				"canonical_msg", canonicalMsg,
+				"pk_len", len(agent.PublicKey),
+				"sig_len", len(sigBytes),
+			)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{

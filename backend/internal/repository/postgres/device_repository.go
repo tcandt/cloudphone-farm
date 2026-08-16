@@ -167,14 +167,25 @@ func (r *DeviceRepository) ListDevices(ctx context.Context, orgID string, params
 
 		if lastSeen != nil {
 			dev.Status = domain.DeriveRealtimeStatus(dev.Status, lastSeen, r.onlineThresholdSec, r.offlineThresholdSec)
-			dev.Telemetry = &domain.DeviceTelemetry{
-				Battery:      *battery,
-				Network:      *netType,
-				CPUUsage:     *cpu,
-				RAMUsage:     *mem,
-				TemperatureC: *temp,
-				UpdatedAt:    *lastSeen,
+			t := &domain.DeviceTelemetry{
+				UpdatedAt: *lastSeen,
 			}
+			if battery != nil {
+				t.Battery = *battery
+			}
+			if netType != nil {
+				t.Network = *netType
+			}
+			if cpu != nil {
+				t.CPUUsage = *cpu
+			}
+			if mem != nil {
+				t.RAMUsage = *mem
+			}
+			if temp != nil {
+				t.TemperatureC = *temp
+			}
+			dev.Telemetry = t
 		}
 
 		items = append(items, dev)
@@ -267,14 +278,25 @@ func (r *DeviceRepository) GetDeviceByID(ctx context.Context, orgID, deviceID st
 
 	if lastSeen != nil {
 		dev.Status = domain.DeriveRealtimeStatus(dev.Status, lastSeen, r.onlineThresholdSec, r.offlineThresholdSec)
-		dev.Telemetry = &domain.DeviceTelemetry{
-			Battery:      *battery,
-			Network:      *netType,
-			CPUUsage:     *cpu,
-			RAMUsage:     *mem,
-			TemperatureC: *temp,
-			UpdatedAt:    *lastSeen,
+		t := &domain.DeviceTelemetry{
+			UpdatedAt: *lastSeen,
 		}
+		if battery != nil {
+			t.Battery = *battery
+		}
+		if netType != nil {
+			t.Network = *netType
+		}
+		if cpu != nil {
+			t.CPUUsage = *cpu
+		}
+		if mem != nil {
+			t.RAMUsage = *mem
+		}
+		if temp != nil {
+			t.TemperatureC = *temp
+		}
+		dev.Telemetry = t
 	}
 
 	return &dev, nil
