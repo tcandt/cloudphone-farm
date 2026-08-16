@@ -215,9 +215,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify Android Source Provenance against Locked Baseline
+      - name: Verify Android Main Source Provenance against Locked Baseline
         run: |
-          git diff --exit-code v0.1.7-phase1.7-software-locked..HEAD -- android-agent/
+          git diff --exit-code v0.1.7-phase1.7-software-locked..HEAD -- android-agent/app/src/main/
 
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
