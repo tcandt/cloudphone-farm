@@ -43,4 +43,5 @@ dependencies {
     implementation("io.getstream:stream-webrtc-android:1.2.2")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.8.0")
 }
