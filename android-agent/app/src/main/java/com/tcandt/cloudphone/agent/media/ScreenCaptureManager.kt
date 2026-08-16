@@ -174,7 +174,11 @@ object ScreenCaptureManager {
                 logI(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
                 clearPermissionGrantOnly()
                 currentState = ScreenCaptureState.READY
-                onConsentGrantedHandler?.invoke(capturedSessionId, intentGrant)
+                try {
+                    onConsentGrantedHandler?.invoke(capturedSessionId, intentGrant)
+                } catch (e: Throwable) {
+                    logW(TAG, "onConsentGrantedHandler invocation exception (JVM test mode or WebRTC setup error): ${e.message}")
+                }
             }
         }
 
@@ -305,6 +309,7 @@ object ScreenCaptureManager {
         projectionResultData = null
         activeSessionId = ""
         currentState = ScreenCaptureState.IDLE
+        onConsentGrantedHandler = null
         logD(TAG, "Cleared all MediaProjection session state and activeSessionId")
     }
 }

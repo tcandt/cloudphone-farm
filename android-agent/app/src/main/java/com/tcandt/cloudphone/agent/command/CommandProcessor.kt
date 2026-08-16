@@ -21,9 +21,9 @@ class CommandProcessor(
     private val context: Context,
     private val statusPublisher: (commandId: String, status: String, error: String?, sequence: Int) -> Unit
 ) {
-    private val configStore = AgentConfigStore(context)
-    private val fencingStore = FencingStore(context)
-    private val journal = CommandJournal(context)
+    private val configStore by lazy { AgentConfigStore(context) }
+    private val fencingStore by lazy { FencingStore(context) }
+    private val journal by lazy { CommandJournal(context) }
     private val commandChannel = Channel<JSONObject>(Channel.UNLIMITED)
 
     companion object {
