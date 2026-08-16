@@ -294,6 +294,23 @@ export class WebRtcMediaClient {
       case 'media.session.stopped': {
         const reason = (payload.reason as string) || 'operator_requested';
         console.log(`[WebRtcMediaClient] Session stopped by agent: ${reason}`);
+
+        const terminalReasons = new Set([
+          'operator_requested',
+          'superseded_by_new_session',
+          'user_cancelled',
+          'media_projection_denied',
+          'session_closed',
+          'system_projection_stopped',
+        ]);
+
+        if (terminalReasons.has(reason)) {
+          this.isClosedExplicitly = true;
+          this.close();
+          this.setState('IDLE', `Session ended (${reason})`);
+          return;
+        }
+
         if (!this.isClosedExplicitly) {
           this.performReconnect(`agent_stopped:${reason}`);
         }

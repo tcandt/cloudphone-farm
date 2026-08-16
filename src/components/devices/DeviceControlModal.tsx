@@ -65,7 +65,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
     leaseRef.current = lease;
   }, [lease]);
 
-  const [viewerSessionId] = useState(() => `str_${device.device_id}_${Math.random().toString(36).substring(2, 7)}`);
+  const [viewerSessionId] = useState(() => `str_${device.device_id}`);
 
   const addLog = useCallback((msg: string) => {
     const timeStr = new Date().toLocaleTimeString('vi-VN');

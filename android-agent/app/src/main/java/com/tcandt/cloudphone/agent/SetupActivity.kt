@@ -187,9 +187,21 @@ class SetupActivity : AppCompatActivity() {
         }
 
         btnGrantScreenCapture.setOnClickListener {
-            logStore.log("INFO", "MEDIA", "CONSENT_PROMPT_REQUESTED", "User tapped Grant Screen Capture button")
-            val sessId = ScreenCaptureManager.activeSessionId.ifEmpty { "sess_manual_${System.currentTimeMillis()}" }
-            ScreenCaptureManager.requestConsent(this, sessId)
+            when (ScreenCaptureManager.currentState) {
+                ScreenCaptureState.IDLE -> {
+                    Toast.makeText(this, "Chưa có yêu cầu xem trực tiếp. Hãy bấm [Xem trực tiếp] trên website.", Toast.LENGTH_SHORT).show()
+                }
+                ScreenCaptureState.CONSENT_REQUIRED -> {
+                    logStore.log("INFO", "MEDIA", "CONSENT_UI_OPENED", "Opening pending consent UI for session ${ScreenCaptureManager.activeSessionId} (Gen=${ScreenCaptureManager.sessionRequestGeneration})")
+                    ScreenCaptureManager.openPendingConsentPrompt(this)
+                }
+                ScreenCaptureState.CAPTURING, ScreenCaptureState.READY, ScreenCaptureState.NEGOTIATING, ScreenCaptureState.CONNECTED -> {
+                    Toast.makeText(this, "Đang ghi màn hình cho phiên xem trực tiếp.", Toast.LENGTH_SHORT).show()
+                }
+                ScreenCaptureState.FAILED, ScreenCaptureState.STOPPING -> {
+                    Toast.makeText(this, "Phiên trước bị dừng hoặc lỗi. Vui lòng bấm [Xem trực tiếp] lại trên website.", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
 
         btnEnableAccessibility.setOnClickListener {

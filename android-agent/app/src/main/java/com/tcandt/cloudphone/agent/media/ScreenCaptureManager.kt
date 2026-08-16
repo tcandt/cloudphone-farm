@@ -57,8 +57,21 @@ object ScreenCaptureManager {
     private fun logE(tag: String, msg: String) { try { Log.e(tag, msg) } catch (_: Throwable) {} }
 
     fun requestConsent(context: Context, sessionId: String): Long {
+        logI(TAG, "MEDIA_SESSION_RECEIVED: Request for SessionID=$sessionId in state=$currentState (active=$activeSessionId, Gen=$sessionRequestGeneration)")
+
+        if (sessionId == activeSessionId && currentState == ScreenCaptureState.CONSENT_REQUIRED) {
+            logI(TAG, "MEDIA_SESSION_DUPLICATE_IGNORED: Consent already pending for SessionID=$sessionId (Gen=$sessionRequestGeneration)")
+            showConsentNotification(context, sessionRequestGeneration)
+            return sessionRequestGeneration
+        }
+
+        if (sessionId == activeSessionId && (currentState == ScreenCaptureState.READY || currentState == ScreenCaptureState.CAPTURING || currentState == ScreenCaptureState.CONNECTED || currentState == ScreenCaptureState.NEGOTIATING)) {
+            logI(TAG, "MEDIA_SESSION_DUPLICATE_IGNORED: Session $sessionId already active in state $currentState")
+            return sessionRequestGeneration
+        }
+
         if (currentState != ScreenCaptureState.IDLE) {
-            logW(TAG, "New requestConsent for SessionID=$sessionId superseding existing state=$currentState (SessionID=$activeSessionId). Resetting state.")
+            logW(TAG, "New requestConsent for SessionID=$sessionId terminating previous state=$currentState (SessionID=$activeSessionId). Resetting state.")
             terminateMediaSession(context, SessionOutcome.STOPPED, "superseded_by_new_session")
         }
 
@@ -66,9 +79,27 @@ object ScreenCaptureManager {
         activeSessionId = sessionId
         currentState = ScreenCaptureState.CONSENT_REQUIRED
 
-        logI(TAG, "Requesting MediaProjection consent for SessionID=$sessionId (Gen=$sessionRequestGeneration)")
+        logI(TAG, "MEDIA_SESSION_START_REQUESTED: Requesting MediaProjection consent for SessionID=$sessionId (Gen=$sessionRequestGeneration)")
         showConsentNotification(context, sessionRequestGeneration)
         return sessionRequestGeneration
+    }
+
+    fun openPendingConsentPrompt(context: Context) {
+        if (currentState != ScreenCaptureState.CONSENT_REQUIRED) {
+            logW(TAG, "Cannot open consent prompt: current state is $currentState (expected CONSENT_REQUIRED)")
+            return
+        }
+        logI(TAG, "CONSENT_UI_OPENED: Opening consent prompt for SessionID=$activeSessionId (Gen=$sessionRequestGeneration)")
+        try {
+            val intent = Intent(context, ConsentPromptActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("generation", sessionRequestGeneration)
+                putExtra("session_id", activeSessionId)
+            }
+            context.startActivity(intent)
+        } catch (e: Throwable) {
+            logE(TAG, "Failed to launch ConsentPromptActivity: ${e.message}")
+        }
     }
 
     private fun showConsentNotification(context: Context, generation: Long) {
@@ -131,11 +162,11 @@ object ScreenCaptureManager {
         dismissConsentNotification(context)
 
         if (generation != sessionRequestGeneration || currentState != ScreenCaptureState.CONSENT_REQUIRED) {
-            logW(TAG, "Stale or canceled MediaProjection consent received (Gen=$generation, currentGen=$sessionRequestGeneration, state=$currentState). Ignoring.")
+            logW(TAG, "CONSENT_RESULT_STALE: Stale or canceled MediaProjection consent received (Gen=$generation, currentGen=$sessionRequestGeneration, state=$currentState). Ignoring.")
             return
         }
 
-        logI(TAG, "Consent granted for Gen=$generation. Registering FGS_READY listener and starting MediaCaptureService for SessionID=$activeSessionId")
+        logI(TAG, "CONSENT_RESULT_OK: Consent granted for Gen=$generation. Registering FGS_READY listener and starting MediaCaptureService for SessionID=$activeSessionId")
         val intentGrant = resultData
         val capturedSessionId = activeSessionId
         val capturedGen = generation
