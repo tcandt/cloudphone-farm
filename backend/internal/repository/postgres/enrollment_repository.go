@@ -368,12 +368,14 @@ func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID,
 	}
 
 	if len(keyProtectionJSON) > 0 {
-		updateSQL := `
-			UPDATE device_agents SET key_protection = $3::jsonb WHERE organization_id = $1 AND device_id = $2;
-			UPDATE devices SET key_protection = $3::jsonb WHERE organization_id = $1 AND id = $2;
-		`
-		if _, err := r.pool.Exec(ctx, updateSQL, orgID, deviceID, keyProtectionJSON); err != nil {
-			return fmt.Errorf("failed to update key_protection in PostgreSQL: %w", err)
+		updateDA := `UPDATE device_agents SET key_protection = $3::jsonb WHERE organization_id = $1 AND device_id = $2`
+		if _, err := r.pool.Exec(ctx, updateDA, orgID, deviceID, keyProtectionJSON); err != nil {
+			return fmt.Errorf("failed to update device_agents key_protection in PostgreSQL: %w", err)
+		}
+
+		updateDev := `UPDATE devices SET key_protection = $3::jsonb WHERE organization_id = $1 AND device_id = $2`
+		if _, err := r.pool.Exec(ctx, updateDev, orgID, deviceID, keyProtectionJSON); err != nil {
+			return fmt.Errorf("failed to update devices key_protection in PostgreSQL: %w", err)
 		}
 	}
 
