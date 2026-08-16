@@ -54,49 +54,52 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 		"000008_nullable_physical_telemetry_and_security_metadata.up.sql",
 	}
 
-	// Ensure pcp_schema_migrations table exists
-	var schemaExists bool
-	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'devices')").Scan(&schemaExists)
+	_, _ = pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
+			version BIGINT PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			checksum VARCHAR(64) NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
 
-	if !schemaExists {
-		_, _ = pool.Exec(ctx, `
-			CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
-				version BIGINT PRIMARY KEY,
-				name VARCHAR(255) NOT NULL,
-				checksum VARCHAR(64) NOT NULL,
-				applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-			);
-		`)
-
-		migrationsDir := filepath.Join("..", "..", "..", "db", "migrations")
-		for _, mFile := range migrations {
-			mPath := filepath.Join(migrationsDir, mFile)
-			sqlBytes, readErr := os.ReadFile(mPath)
-			if readErr != nil {
-				t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
-			}
-
-			var version int64
-			if parts := strings.Split(mFile, "_"); len(parts) > 0 {
-				_, _ = fmt.Sscanf(parts[0], "%d", &version)
-			}
-
-			hash := sha256.Sum256(sqlBytes)
-			checksumHex := hex.EncodeToString(hash[:])
-
-			tx, txErr := pool.Begin(ctx)
-			if txErr != nil {
-				t.Fatalf("failed to begin migration transaction for %s: %v", mFile, txErr)
-			}
-			if _, execErr := tx.Exec(ctx, string(sqlBytes)); execErr != nil {
-				_ = tx.Rollback(ctx)
-				t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
-			}
-			if version > 0 {
-				_, _ = tx.Exec(ctx, "INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", version, mFile, checksumHex)
-			}
-			_ = tx.Commit(ctx)
+	migrationsDir := filepath.Join("..", "..", "..", "db", "migrations")
+	for _, mFile := range migrations {
+		var version int64
+		if parts := strings.Split(mFile, "_"); len(parts) > 0 {
+			_, _ = fmt.Sscanf(parts[0], "%d", &version)
 		}
+
+		if version > 0 {
+			var recordedVersion int64
+			err := pool.QueryRow(ctx, "SELECT version FROM pcp_schema_migrations WHERE version = $1", version).Scan(&recordedVersion)
+			if err == nil {
+				// Migration version already recorded in database
+				continue
+			}
+		}
+
+		mPath := filepath.Join(migrationsDir, mFile)
+		sqlBytes, readErr := os.ReadFile(mPath)
+		if readErr != nil {
+			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
+		}
+
+		hash := sha256.Sum256(sqlBytes)
+		checksumHex := hex.EncodeToString(hash[:])
+
+		tx, txErr := pool.Begin(ctx)
+		if txErr != nil {
+			t.Fatalf("failed to begin migration transaction for %s: %v", mFile, txErr)
+		}
+		if _, execErr := tx.Exec(ctx, string(sqlBytes)); execErr != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
+		}
+		if version > 0 {
+			_, _ = tx.Exec(ctx, "INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", version, mFile, checksumHex)
+		}
+		_ = tx.Commit(ctx)
 	}
 
 	orgID := "org_test_hb_sql"

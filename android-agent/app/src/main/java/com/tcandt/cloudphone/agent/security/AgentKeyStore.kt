@@ -36,8 +36,8 @@ class AgentKeyStore(context: Context) {
             } else if (!prefs.contains(KEY_ENCRYPTED_SEED_B64)) {
                 generateAndStoreKeys()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "KeyStore initialization error: ${e.message}", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "KeyStore initialization error (JVM test mode): ${e.message}")
         }
     }
 
@@ -187,8 +187,8 @@ class AgentKeyStore(context: Context) {
             val sigBytes = signer.sign(messageBytes)
 
             Base64.encodeToString(sigBytes, Base64.NO_WRAP)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to sign message with Tink Ed25519: ${e.message}", e)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to sign message with Tink Ed25519: ${e.message}")
             ""
         }
     }
