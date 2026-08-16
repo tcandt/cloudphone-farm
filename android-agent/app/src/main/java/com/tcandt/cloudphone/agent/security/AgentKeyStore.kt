@@ -26,6 +26,11 @@ class AgentKeyStore(context: Context) {
         private const val KEY_OLD_LEGACY_RAW_SEED_B64 = "agent_private_raw_b64"
     }
 
+    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+    private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
+
     init {
         try {
             ensureKeystoreKey()
@@ -37,7 +42,7 @@ class AgentKeyStore(context: Context) {
                 generateAndStoreKeys()
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "KeyStore initialization error (JVM test mode): ${e.message}")
+            logE(TAG, "KeyStore initialization error (JVM test mode): ${e.message}")
         }
     }
 
@@ -56,7 +61,7 @@ class AgentKeyStore(context: Context) {
                 .build()
             keyGenerator.init(keySpec)
             keyGenerator.generateKey()
-            Log.i(TAG, "Generated new Android KeyStore AES-256-GCM key: $KEY_ALIAS_AES")
+            logI(TAG, "Generated new Android KeyStore AES-256-GCM key: $KEY_ALIAS_AES")
         }
     }
 
@@ -91,7 +96,7 @@ class AgentKeyStore(context: Context) {
         val rawSeed = Base64.decode(legacyB64, Base64.NO_WRAP)
 
         if (rawSeed.size != 32) {
-            Log.e(TAG, "Legacy seed size invalid: ${rawSeed.size} bytes (expected 32)")
+            logE(TAG, "Legacy seed size invalid: ${rawSeed.size} bytes (expected 32)")
             throw IllegalStateException("Legacy raw seed size invalid: ${rawSeed.size}")
         }
 
@@ -99,7 +104,7 @@ class AgentKeyStore(context: Context) {
         val existingFingerprint = prefs.getString(KEY_FINGERPRINT, null)
 
         if (existingPublicKey.isNullOrEmpty() || existingFingerprint.isNullOrEmpty()) {
-            Log.e(TAG, "Cannot migrate seed: missing existing public key or fingerprint")
+            logE(TAG, "Cannot migrate seed: missing existing public key or fingerprint")
             throw IllegalStateException("Cannot migrate seed: missing existing public key or fingerprint")
         }
 
@@ -112,7 +117,7 @@ class AgentKeyStore(context: Context) {
             .remove(KEY_OLD_LEGACY_RAW_SEED_B64)
             .commit()
 
-        Log.i(TAG, "Successfully migrated legacy seed to KeyStore AES-GCM. Machine identity preserved: $existingFingerprint")
+        logI(TAG, "Successfully migrated legacy seed to KeyStore AES-GCM. Machine identity preserved: $existingFingerprint")
     }
 
     private fun generateAndStoreKeys() {
@@ -135,9 +140,9 @@ class AgentKeyStore(context: Context) {
                 .putString(KEY_FINGERPRINT, fpHex)
                 .apply()
 
-            Log.i(TAG, "Generated and Android Keystore AES-GCM encrypted Ed25519 seed. Fingerprint: $fpHex")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to generate encrypted Ed25519 keypair: ${e.message}", e)
+            logI(TAG, "Generated and Android Keystore AES-GCM encrypted Ed25519 seed. Fingerprint: $fpHex")
+        } catch (e: Throwable) {
+            logE(TAG, "Failed to generate encrypted Ed25519 keypair: ${e.message}", e)
         }
     }
 
@@ -163,7 +168,7 @@ class AgentKeyStore(context: Context) {
             } else {
                 if (keyInfo.isInsideSecureHardware) "TRUSTED_ENVIRONMENT" else "SOFTWARE"
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             "UNKNOWN"
         }
     }
@@ -188,8 +193,9 @@ class AgentKeyStore(context: Context) {
 
             Base64.encodeToString(sigBytes, Base64.NO_WRAP)
         } catch (e: Throwable) {
-            Log.e(TAG, "Failed to sign message with Tink Ed25519: ${e.message}")
+            logE(TAG, "Failed to sign message with Tink Ed25519: ${e.message}")
             ""
         }
     }
+}
 }
