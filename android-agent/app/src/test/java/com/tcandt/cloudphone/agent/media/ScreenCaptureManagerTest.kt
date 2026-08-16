@@ -8,7 +8,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mockito.Mockito.mock
+import org.mockito.Mockito
 
 class ScreenCaptureManagerTest {
 
@@ -26,7 +26,7 @@ class ScreenCaptureManagerTest {
         failedCount = 0
         lastSessionId = ""
         lastReason = ""
-        dummyContext = mock(Context::class.java)
+        dummyContext = Mockito.mock(Context::class.java, Mockito.RETURNS_DEEP_STUBS)
 
         ScreenCaptureManager.terminateMediaSession(null, ScreenCaptureManager.SessionOutcome.STOPPED, "setup_reset")
         ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {

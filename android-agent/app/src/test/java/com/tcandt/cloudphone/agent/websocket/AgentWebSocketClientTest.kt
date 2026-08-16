@@ -6,7 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
-import org.mockito.Mockito.mock
+import org.mockito.Mockito
 
 class AgentWebSocketClientTest {
 
@@ -15,7 +15,7 @@ class AgentWebSocketClientTest {
 
     @Before
     fun setUp() {
-        dummyContext = mock(Context::class.java)
+        dummyContext = Mockito.mock(Context::class.java, Mockito.RETURNS_DEEP_STUBS)
         client = AgentWebSocketClient(dummyContext, "wss://localhost:8443", "agent_unit_01")
     }
 
