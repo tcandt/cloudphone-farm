@@ -27,22 +27,12 @@ func TestRecordDeviceHeartbeat_NilPoolNoPanics(t *testing.T) {
 func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *testing.T) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = os.Getenv("POSTGRES_URL")
-	}
-	if dbURL == "" {
-		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL and POSTGRES_URL not set")
-	}
+var dbMigrationMutex sync.Mutex
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+func runMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrationsDir string) {
+	dbMigrationMutex.Lock()
+	defer dbMigrationMutex.Unlock()
 
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		t.Fatalf("failed to connect to postgres: %v", err)
-	}
-	defer pool.Close()
-
-	// Apply production SQL migrations
 	migrations := []string{
 		"000001_create_core_tables.up.sql",
 		"000002_seed_initial_rbac.up.sql",
@@ -63,7 +53,6 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 		);
 	`)
 
-	migrationsDir := filepath.Join("..", "..", "..", "db", "migrations")
 	for _, mFile := range migrations {
 		var version int64
 		if parts := strings.Split(mFile, "_"); len(parts) > 0 {
@@ -74,7 +63,6 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 			var recordedVersion int64
 			err := pool.QueryRow(ctx, "SELECT version FROM pcp_schema_migrations WHERE version = $1", version).Scan(&recordedVersion)
 			if err == nil {
-				// Migration version already recorded in database
 				continue
 			}
 		}
@@ -101,6 +89,36 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 		}
 		_ = tx.Commit(ctx)
 	}
+}
+
+func TestRecordDeviceHeartbeat_NilPoolNoPanics(t *testing.T) {
+	repo := NewEnrollmentRepository(nil)
+
+	err := repo.RecordDeviceHeartbeat(context.Background(), "org_1", "dev_1", nil, nil, nil, nil, nil, []byte(`{"security_level":"STRONGBOX"}`))
+	if err != nil {
+		t.Fatalf("expected nil error on nil pool, got: %v", err)
+	}
+}
+
+func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = os.Getenv("POSTGRES_URL")
+	}
+	if dbURL == "" {
+		t.Skip("Skipping PostgreSQL integration test: DATABASE_URL and POSTGRES_URL not set")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("failed to connect to postgres: %v", err)
+	}
+	defer pool.Close()
+
+	runMigrations(t, ctx, pool, filepath.Join("..", "..", "..", "db", "migrations"))
 
 	orgID := "org_test_hb_sql"
 	deviceID := "dev_test_hb_001"

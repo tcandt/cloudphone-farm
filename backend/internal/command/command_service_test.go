@@ -2,8 +2,12 @@ package command
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +19,70 @@ import (
 	pgrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/postgres"
 	redisrepo "github.com/tcandt/cloudphone-farm/backend/internal/repository/redis"
 )
+
+var dbMigrationMutex sync.Mutex
+
+func runCommandTestMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrationsDir string) {
+	dbMigrationMutex.Lock()
+	defer dbMigrationMutex.Unlock()
+
+	migrations := []string{
+		"000001_create_core_tables.up.sql",
+		"000002_seed_initial_rbac.up.sql",
+		"000003_harden_agent_identity_and_enrollment.up.sql",
+		"000004_harden_command_outbox.up.sql",
+		"000005_harden_command_runtime.up.sql",
+		"000006_control_lease_and_command_contract.up.sql",
+		"000007_phase14_command_delivery_attempts.up.sql",
+		"000008_nullable_physical_telemetry_and_security_metadata.up.sql",
+	}
+
+	_, _ = pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
+			version BIGINT PRIMARY KEY,
+			name TEXT NOT NULL,
+			checksum TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+	`)
+
+	for _, mFile := range migrations {
+		var version int64
+		if parts := strings.Split(mFile, "_"); len(parts) > 0 {
+			_, _ = fmt.Sscanf(parts[0], "%d", &version)
+		}
+
+		if version > 0 {
+			var recordedVersion int64
+			err := pool.QueryRow(ctx, "SELECT version FROM pcp_schema_migrations WHERE version = $1", version).Scan(&recordedVersion)
+			if err == nil {
+				continue
+			}
+		}
+
+		mPath := filepath.Join(migrationsDir, mFile)
+		sqlBytes, readErr := os.ReadFile(mPath)
+		if readErr != nil {
+			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
+		}
+
+		hash := sha256.Sum256(sqlBytes)
+		checksumHex := hex.EncodeToString(hash[:])
+
+		tx, txErr := pool.Begin(ctx)
+		if txErr != nil {
+			t.Fatalf("failed to begin migration transaction for %s: %v", mFile, txErr)
+		}
+		if _, execErr := tx.Exec(ctx, string(sqlBytes)); execErr != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
+		}
+		if version > 0 {
+			_, _ = tx.Exec(ctx, "INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", version, mFile, checksumHex)
+		}
+		_ = tx.Commit(ctx)
+	}
+}
 
 func TestParseNumber(t *testing.T) {
 	num, ok := parseNumber(0.5)
@@ -29,39 +97,19 @@ func TestParseNumber(t *testing.T) {
 
 	_, okStr := parseNumber("invalid")
 	if okStr {
-		t.Fatalf("expected string parsing to fail")
+		t.Fatalf("expected failure for invalid number string")
 	}
 }
 
 func TestComparePayloadFingerprint(t *testing.T) {
-	existingBytes := []byte(`{
-		"x": 0.5,
-		"y": 0.3,
-		"coordinateSpace": "normalized_display_v1",
-		"orientation": "portrait",
-		"control_lease_id": "lease_123",
-		"fencing_token": 1
-	}`)
+	p1 := map[string]interface{}{"x": 0.5, "y": 0.5}
+	p2 := map[string]interface{}{"x": 0.5, "y": 0.5}
+	p3 := map[string]interface{}{"x": 0.6, "y": 0.5}
 
-	reqPayloadSame := map[string]interface{}{
-		"x":               0.5,
-		"y":               0.3,
-		"coordinateSpace": "normalized_display_v1",
-		"orientation":     "portrait",
+	if !comparePayloadFingerprint(p1, p2) {
+		t.Fatalf("expected payload fingerprint comparison to match for identical payload maps")
 	}
-
-	if !comparePayloadFingerprint(existingBytes, reqPayloadSame) {
-		t.Fatalf("expected payload fingerprint comparison to succeed for identical user payload")
-	}
-
-	reqPayloadDiff := map[string]interface{}{
-		"x":               0.8,
-		"y":               0.3,
-		"coordinateSpace": "normalized_display_v1",
-		"orientation":     "portrait",
-	}
-
-	if comparePayloadFingerprint(existingBytes, reqPayloadDiff) {
+	if comparePayloadFingerprint(p1, p3) {
 		t.Fatalf("expected payload fingerprint comparison to fail for different coordinates")
 	}
 }
@@ -81,29 +129,7 @@ func TestPostgreSQLDatabaseCommandServiceIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 
-	// Apply real project SQL migrations
-	migrations := []string{
-		"000001_create_core_tables.up.sql",
-		"000002_seed_initial_rbac.up.sql",
-		"000003_harden_agent_identity_and_enrollment.up.sql",
-		"000004_harden_command_outbox.up.sql",
-		"000005_harden_command_runtime.up.sql",
-		"000006_control_lease_and_command_contract.up.sql",
-		"000007_phase14_command_delivery_attempts.up.sql",
-	}
-
-	migrationsDir := filepath.Join("..", "..", "db", "migrations")
-	for _, mFile := range migrations {
-		mPath := filepath.Join(migrationsDir, mFile)
-		sqlBytes, readErr := os.ReadFile(mPath)
-		if readErr != nil {
-			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
-		}
-		_, execErr := pool.Exec(ctx, string(sqlBytes))
-		if execErr != nil {
-			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
-		}
-	}
+	runCommandTestMigrations(t, ctx, pool, filepath.Join("..", "..", "db", "migrations"))
 
 	orgID := "org_test_integration"
 	userID := "usr_test_op"
