@@ -24,15 +24,15 @@ import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
 
+private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
+
 class WebRtcPeerConnectionManager(
     private val context: Context,
     private val signalPublisher: (type: String, payload: JSONObject) -> Unit
 ) {
-    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
-    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
-    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
-    private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
-
     private val rootEglBase: EglBase? by lazy {
         try {
             EglBase.create()

@@ -22,6 +22,11 @@ func runMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrat
 	dbMigrationMutex.Lock()
 	defer dbMigrationMutex.Unlock()
 
+	_, _ = pool.Exec(ctx, "SELECT pg_advisory_lock(987654321);")
+	defer func() {
+		_, _ = pool.Exec(ctx, "SELECT pg_advisory_unlock(987654321);")
+	}()
+
 	migrations := []string{
 		"000001_create_core_tables.up.sql",
 		"000002_seed_initial_rbac.up.sql",
