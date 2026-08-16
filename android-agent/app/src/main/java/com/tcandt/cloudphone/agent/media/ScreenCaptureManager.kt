@@ -213,12 +213,12 @@ object ScreenCaptureManager {
         terminateMediaSession(null, SessionOutcome.FAILED, errorMsg)
     }
 
-    fun onProjectionStoppedBySystem(context: Context) {
+    fun onProjectionStoppedBySystem(context: Context? = null) {
         Log.w(TAG, "Projection stopped by system/user for SessionID=$activeSessionId")
         terminateMediaSession(context, SessionOutcome.STOPPED, "system_projection_stopped")
     }
 
-    fun stopCapture(context: Context) {
+    fun stopCapture(context: Context? = null) {
         terminateMediaSession(context, SessionOutcome.STOPPED, "operator_requested")
     }
 
