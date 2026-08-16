@@ -12,20 +12,16 @@ class AgentWebSocketClientTest {
         var socketEpoch = 0L
         var callbackExecCount = 0
 
-        // Attempt 1
         val attempt1Epoch = ++socketEpoch
         val listenerEpoch1 = attempt1Epoch
 
-        // Attempt 2 supersedes Attempt 1
         val attempt2Epoch = ++socketEpoch
         val listenerEpoch2 = attempt2Epoch
 
-        // Callback from Attempt 1 fires (stale epoch)
         if (listenerEpoch1 == socketEpoch) {
             callbackExecCount++
         }
 
-        // Callback from Attempt 2 fires (current epoch)
         if (listenerEpoch2 == socketEpoch) {
             callbackExecCount++
         }
@@ -35,13 +31,9 @@ class AgentWebSocketClientTest {
 
     @Test
     fun testExplicitDisconnectPreventsReconnect() {
-        var isExplicitlyStopped = false
+        val isExplicitlyStopped = true
         var isReconnecting = false
 
-        // User calls disconnect()
-        isExplicitlyStopped = true
-
-        // Reconnect scheduled
         if (!isExplicitlyStopped) {
             isReconnecting = true
         }

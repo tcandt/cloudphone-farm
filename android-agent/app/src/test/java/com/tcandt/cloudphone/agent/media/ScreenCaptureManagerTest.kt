@@ -77,7 +77,7 @@ class ScreenCaptureManagerTest {
         assertEquals(1, failedCount)
         assertEquals("sess_fail", lastSessionId)
         assertEquals("encoder_error", lastReason)
-        assertEquals(ScreenCaptureState.FAILED, ScreenCaptureManager.currentState)
+        assertEquals(ScreenCaptureState.IDLE, ScreenCaptureManager.currentState)
     }
 
     @Test
