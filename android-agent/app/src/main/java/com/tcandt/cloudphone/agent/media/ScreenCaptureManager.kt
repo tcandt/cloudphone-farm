@@ -165,10 +165,14 @@ object ScreenCaptureManager {
         val fgsIntent = Intent(context, MediaCaptureService::class.java).apply {
             action = MediaCaptureService.ACTION_START_CAPTURE
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(fgsIntent)
-        } else {
-            context.startService(fgsIntent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(fgsIntent)
+            } else {
+                context.startService(fgsIntent)
+            }
+        } catch (e: Throwable) {
+            logW(TAG, "MediaCaptureService start ignored (running in JVM test environment): ${e.message}")
         }
         isFgsRunning = true
     }

@@ -1,11 +1,14 @@
 package com.tcandt.cloudphone.agent.media
 
+import android.content.Context
+import android.content.Intent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.mockito.Mockito.mock
 
 class ScreenCaptureManagerTest {
 
@@ -14,6 +17,7 @@ class ScreenCaptureManagerTest {
     private var failedCount = 0
     private var lastSessionId = ""
     private var lastReason = ""
+    private lateinit var dummyContext: Context
 
     @Before
     fun setUp() {
@@ -22,6 +26,7 @@ class ScreenCaptureManagerTest {
         failedCount = 0
         lastSessionId = ""
         lastReason = ""
+        dummyContext = mock(Context::class.java)
 
         ScreenCaptureManager.terminateMediaSession(null, ScreenCaptureManager.SessionOutcome.STOPPED, "setup_reset")
         ScreenCaptureManager.sessionListener = object : ScreenCaptureManager.SessionStateListener {
@@ -48,6 +53,37 @@ class ScreenCaptureManagerTest {
     fun testInitialStateIsIdle() {
         assertEquals(ScreenCaptureState.IDLE, ScreenCaptureManager.currentState)
         assertEquals("", ScreenCaptureManager.activeSessionId)
+    }
+
+    @Test
+    fun testStaleConsentGenerationIgnored() {
+        val gen1 = ScreenCaptureManager.requestConsent(dummyContext, "sess_1")
+        val gen2 = ScreenCaptureManager.requestConsent(dummyContext, "sess_2")
+        assertTrue("gen2 must be greater than gen1", gen2 > gen1)
+
+        // Invoke production onConsentGranted with stale gen1
+        ScreenCaptureManager.onConsentGranted(dummyContext, gen1, -1, Intent())
+
+        assertEquals("activeSessionId must remain sess_2", "sess_2", ScreenCaptureManager.activeSessionId)
+        assertEquals("currentState must remain CONSENT_REQUIRED", ScreenCaptureState.CONSENT_REQUIRED, ScreenCaptureManager.currentState)
+    }
+
+    @Test
+    fun testStaleFgsReadyListenerRejected() {
+        val gen1 = ScreenCaptureManager.requestConsent(dummyContext, "sess_1")
+        ScreenCaptureManager.onConsentGranted(dummyContext, gen1, -1, Intent())
+
+        val registeredListener = MediaCaptureServiceNotifier.onFgsReadyListener
+        assertTrue("onFgsReadyListener should be registered for gen1", registeredListener != null)
+
+        // Supersede with sess_2
+        ScreenCaptureManager.requestConsent(dummyContext, "sess_2")
+
+        // Fire stale FGS_READY callback registered for gen1
+        registeredListener?.invoke()
+
+        assertEquals("sess_1", lastSessionId)
+        assertEquals("stale_fgs_ready", lastReason)
     }
 
     @Test
@@ -89,20 +125,5 @@ class ScreenCaptureManagerTest {
         assertEquals(0, failedCount)
         assertEquals("sess_sys", lastSessionId)
         assertEquals("system_projection_stopped", lastReason)
-    }
-
-    @Test
-    fun testFgsReadyListenerRegistrationAndCleanup() {
-        var listenerInvoked = false
-        MediaCaptureServiceNotifier.onFgsReadyListener = {
-            listenerInvoked = true
-        }
-
-        assertTrue("onFgsReadyListener should be registered", MediaCaptureServiceNotifier.onFgsReadyListener != null)
-        MediaCaptureServiceNotifier.onFgsReadyListener?.invoke()
-        assertTrue("Listener should have executed", listenerInvoked)
-
-        MediaCaptureServiceNotifier.onFgsReadyListener = null
-        assertNull("onFgsReadyListener should be cleared", MediaCaptureServiceNotifier.onFgsReadyListener)
     }
 }

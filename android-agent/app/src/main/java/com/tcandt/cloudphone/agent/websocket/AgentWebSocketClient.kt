@@ -51,7 +51,14 @@ class AgentWebSocketClient(
         private const val EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
 
-    private var isExplicitlyStopped = false
+    var currentSocketEpoch: Long = 0L
+        private set
+
+    val isStopped: Boolean get() = isExplicitlyStopped
+
+    fun isSocketStale(targetEpoch: Long): Boolean = synchronized(this) {
+        isExplicitlyStopped || targetEpoch != socketEpoch
+    }
 
     init {
         commandProcessor = CommandProcessor(context) { commandId, status, error, sequence ->
@@ -123,7 +130,11 @@ class AgentWebSocketClient(
             return
         }
 
-        val attemptEpoch = synchronized(this) { ++socketEpoch }
+        val attemptEpoch = synchronized(this) {
+            socketEpoch++
+            currentSocketEpoch = socketEpoch
+            socketEpoch
+        }
         Log.i(TAG, "Initiating WSS connection attempt (Epoch=$attemptEpoch)...")
 
         val timestamp = (System.currentTimeMillis() / 1000).toString()
@@ -415,7 +426,11 @@ class AgentWebSocketClient(
     }
 
     fun disconnect() {
-        isExplicitlyStopped = true
+        synchronized(this) {
+            isExplicitlyStopped = true
+            socketEpoch++
+            currentSocketEpoch = socketEpoch
+        }
         reconnectJob?.cancel()
         reconnectJob = null
         stopHeartbeat()

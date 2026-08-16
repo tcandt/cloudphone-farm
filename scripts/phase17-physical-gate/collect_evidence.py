@@ -21,13 +21,21 @@ def get_git_sha():
     return sha if sha else "unknown"
 
 def compute_sha256(filepath):
-    if not os.path.exists(filepath) or os.path.getsize(filepath) == 0:
+    if not os.path.exists(filepath) or not os.path.isfile(filepath):
         return None
     h = hashlib.sha256()
     with open(filepath, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+def is_safe_relative_path(base_dir, target_path):
+    """Verifies target_path does not escape base_dir via ../ or absolute paths outside base_dir"""
+    if not target_path:
+        return False
+    abs_base = os.path.abspath(base_dir)
+    abs_target = os.path.abspath(os.path.join(base_dir, target_path)) if not os.path.isabs(target_path) else os.path.abspath(target_path)
+    return abs_target.startswith(abs_base) and os.path.exists(abs_target) and os.path.isfile(abs_target)
 
 def collect_adb_device_metadata():
     devices_out = run_cmd("adb devices -l", check=False)
@@ -47,55 +55,60 @@ def collect_adb_device_metadata():
             api_level = run_cmd(f"adb -s {serial} shell getprop ro.build.version.sdk", check=False) or "Unknown"
             wm_size = run_cmd(f"adb -s {serial} shell wm size", check=False) or "Unknown"
             
-            # Read authentic KeyStore protection metadata from enrolled device state/API if available
-            key_prot = None
-            
             devices.append({
                 "serial": serial,
                 "model": model,
                 "android_version": android_ver,
                 "api_level": api_level,
                 "display_geometry": wm_size,
-                "key_protection": key_prot
+                "key_protection": None
             })
     return devices
 
 def evaluate_gate_a(devices, evidence_dir):
-    """Gate A: Physical Fleet Lifecycle - Requires >= 3 physical devices with verified Tink/KeyStore security and lifecycle proof"""
+    """Gate A: Physical Fleet Lifecycle - Derived directly from raw correlated device events, timestamps, and generation numbers"""
     if not devices:
         return "NOT_RUN"
     if len(devices) < 3:
         return "FAIL"
     
     fleet_info_path = os.path.join(evidence_dir, "fleet_lifecycle_evidence.json")
-    if not os.path.exists(fleet_info_path):
+    if not is_safe_relative_path(evidence_dir, "fleet_lifecycle_evidence.json"):
         return "FAIL"
     
     try:
         with open(fleet_info_path, "r", encoding="utf-8") as f:
             ev = json.load(f)
         
-        if (ev.get("enrollment_verified") is True and
-            ev.get("key_protection_verified") is True and
-            ev.get("reboot_reconnect_verified") is True and
-            ev.get("no_auto_projection_verified") is True and
-            ev.get("wifi_reconnect_verified") is True and
-            ev.get("generation_increment_verified") is True and
-            ev.get("heartbeat_cadence_verified") is True and
-            ev.get("presence_ttl_verified") is True and
-            ev.get("device_count", 0) >= 3):
-            return "PASS"
-        return "FAIL"
+        # Derive conclusions from raw device metrics & timestamps
+        devices_data = ev.get("devices", [])
+        if len(devices_data) < 3:
+            return "FAIL"
+            
+        for dev in devices_data:
+            enroll_ts = dev.get("enrollment_timestamp", 0)
+            reboot_ts = dev.get("reboot_timestamp", 0)
+            reconn_ts = dev.get("reconnect_timestamp", 0)
+            gen1 = dev.get("generation_initial", 0)
+            gen2 = dev.get("generation_post_reboot", 0)
+            last_hb = dev.get("last_heartbeat_ts", 0)
+            expiry_ts = dev.get("presence_ttl_expired_ts", 0)
+            hb_interval = dev.get("max_heartbeat_interval_sec", 999)
+            
+            if not (enroll_ts > 0 and reconn_ts > reboot_ts > 0 and gen2 > gen1 and hb_interval <= 15 and expiry_ts > last_hb + 15):
+                return "FAIL"
+        
+        return "PASS"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_b(devices, evidence_dir):
-    """Gate B: Physical Control - Requires per-command lifecycle (accepted, dispatched, ack_at, executing_at, succeeded_at, browser event, screenshot/video hash verification)"""
+    """Gate B: Physical Control - Requires per-command lifecycle and strict file existence + SHA256 match for ALL reported artifacts"""
     if not devices:
         return "NOT_RUN"
     
     journal_path = os.path.join(evidence_dir, "command_journal.json")
-    if not os.path.exists(journal_path):
+    if not is_safe_relative_path(evidence_dir, "command_journal.json"):
         return "FAIL"
     
     try:
@@ -113,30 +126,39 @@ def evaluate_gate_b(devices, evidence_dir):
                 cmd.get("succeeded_at", 0) > 0 and
                 cmd.get("browser_event_logged") is True):
                 
-                # Machine verification of screenshot/video artifact existence & SHA256 hash match
-                artifact_hash_verified = False
                 sc_path = cmd.get("screenshot_path")
                 sc_hash = cmd.get("screenshot_hash")
                 vid_path = cmd.get("video_path")
                 vid_hash = cmd.get("video_hash")
                 
-                if sc_path and sc_hash:
-                    full_path = os.path.join(evidence_dir, sc_path) if not os.path.isabs(sc_path) else sc_path
-                    if os.path.exists(full_path):
-                        actual_hash = compute_sha256(full_path)
-                        if actual_hash == sc_hash:
-                            artifact_hash_verified = True
-                elif vid_path and vid_hash:
-                    full_path = os.path.join(evidence_dir, vid_path) if not os.path.isabs(vid_path) else vid_path
-                    if os.path.exists(full_path):
-                        actual_hash = compute_sha256(full_path)
-                        if actual_hash == vid_hash:
-                            artifact_hash_verified = True
-                elif sc_hash or vid_hash:
-                    # Hash provided without explicit path: assume valid if string non-empty
-                    artifact_hash_verified = True
+                # Strict Rule:
+                # 1. path-without-hash -> FAIL
+                # 2. hash-without-path -> FAIL
+                # 3. missing file -> FAIL
+                # 4. SHA mismatch -> FAIL
+                # 5. path escaping evidence_dir -> FAIL
+                artifact_ok = True
+                has_artifact = False
+                
+                if sc_hash or sc_path:
+                    has_artifact = True
+                    if not sc_path or not sc_hash or not is_safe_relative_path(evidence_dir, sc_path):
+                        artifact_ok = False
+                    else:
+                        full_path = os.path.abspath(os.path.join(evidence_dir, sc_path))
+                        if compute_sha256(full_path) != sc_hash:
+                            artifact_ok = False
+                            
+                if vid_hash or vid_path:
+                    has_artifact = True
+                    if not vid_path or not vid_hash or not is_safe_relative_path(evidence_dir, vid_path):
+                        artifact_ok = False
+                    else:
+                        full_path = os.path.abspath(os.path.join(evidence_dir, vid_path))
+                        if compute_sha256(full_path) != vid_hash:
+                            artifact_ok = False
 
-                if artifact_hash_verified:
+                if artifact_ok and has_artifact:
                     seen_actions.add(cmd.get("action"))
         
         if required_actions.issubset(seen_actions):
@@ -151,7 +173,7 @@ def evaluate_gate_c(devices, evidence_dir):
         return "NOT_RUN"
     
     stats_path = os.path.join(evidence_dir, "webrtc_stats.json")
-    if not os.path.exists(stats_path):
+    if not is_safe_relative_path(evidence_dir, "webrtc_stats.json"):
         return "FAIL"
     
     try:
@@ -159,9 +181,6 @@ def evaluate_gate_c(devices, evidence_dir):
             stats = json.load(f)
         
         samples = stats.get("samples", [])
-        if not samples:
-            samples = [stats]
-        
         if len(samples) < 2:
             return "FAIL"
         
@@ -176,7 +195,6 @@ def evaluate_gate_c(devices, evidence_dir):
         rendered = last.get("first_frame_rendered") is True
         
         if ((mime == "video/H264" or "H264" in mime.upper()) and
-            frames_last > 0 and
             frames_last > frames_first and
             bytes_last > bytes_first and
             rendered):
@@ -185,14 +203,53 @@ def evaluate_gate_c(devices, evidence_dir):
     except Exception:
         return "FAIL"
 
+def resolve_selected_candidate_type(stats_data):
+    """Traverses WebRTC stats report graph to resolve selected candidate pair -> local candidate -> candidateType"""
+    samples = stats_data.get("samples", [stats_data])
+    last_sample = samples[-1] if isinstance(samples, list) and samples else stats_data
+    
+    reports = last_sample.get("reports", {})
+    if not isinstance(reports, dict):
+        reports = {}
+
+    selected_pair_id = None
+    for rep_id, rep in reports.items():
+        rep_type = rep.get("type", "")
+        if rep_type == "transport" and rep.get("selectedCandidatePairId"):
+            selected_pair_id = rep.get("selectedCandidatePairId")
+            break
+        elif rep_type == "candidate-pair" and (rep.get("selected") is True or rep.get("state") in ["succeeded", "in-use"]):
+            selected_pair_id = rep_id
+            break
+
+    if not selected_pair_id:
+        selected_pair_id = last_sample.get("selectedCandidatePairId")
+
+    if not selected_pair_id:
+        return None
+
+    pair_rep = reports.get(selected_pair_id, {})
+    local_cand_id = pair_rep.get("localCandidateId") or last_sample.get("localCandidateId")
+    remote_cand_id = pair_rep.get("remoteCandidateId") or last_sample.get("remoteCandidateId")
+
+    local_rep = reports.get(local_cand_id, {})
+    cand_type = local_rep.get("candidateType") or last_sample.get("localCandidateType")
+    
+    if not cand_type:
+        remote_rep = reports.get(remote_cand_id, {})
+        cand_type = remote_rep.get("candidateType") or last_sample.get("remoteCandidateType")
+
+    return cand_type
+
 def evaluate_gate_d(devices, evidence_dir):
-    """Gate D: Coturn TURN Relay Verification - Requires separate verified Direct P2P sample and Forced TURN sample with selected candidate pair and progression"""
+    """Gate D: Coturn TURN Relay Verification - Strict WebRTC candidate-pair graph resolution & multi-sample t2 > t1 progression"""
     if not devices:
         return "NOT_RUN"
     
     direct_path = os.path.join(evidence_dir, "webrtc_stats.json")
     turn_path = os.path.join(evidence_dir, "webrtc_turn_stats.json")
-    if not os.path.exists(direct_path) or not os.path.exists(turn_path):
+    
+    if not is_safe_relative_path(evidence_dir, "webrtc_stats.json") or not is_safe_relative_path(evidence_dir, "webrtc_turn_stats.json"):
         return "FAIL"
     
     try:
@@ -201,22 +258,25 @@ def evaluate_gate_d(devices, evidence_dir):
         with open(turn_path, "r", encoding="utf-8") as f:
             turn_stats = json.load(f)
         
-        direct_cand = direct_stats.get("candidateType", "") or direct_stats.get("localCandidateType", "")
-        turn_cand = turn_stats.get("candidateType", "") or turn_stats.get("localCandidateType", "") or turn_stats.get("remoteCandidateType", "")
+        direct_cand = resolve_selected_candidate_type(direct_stats)
+        turn_cand = resolve_selected_candidate_type(turn_stats)
         
-        direct_bytes = direct_stats.get("bytesReceived", 0)
-        turn_bytes = turn_stats.get("bytesReceived", 0)
-        turn_frames = turn_stats.get("framesDecoded", 0)
+        direct_samples = direct_stats.get("samples", [])
+        turn_samples = turn_stats.get("samples", [])
         
-        # Check selected candidate pair progression if multi-sample
-        direct_samples = direct_stats.get("samples", [direct_stats])
-        turn_samples = turn_stats.get("samples", [turn_stats])
+        # Enforce multi-sample t2 > t1 progression (NO single snapshot fallback)
+        if len(direct_samples) < 2 or len(turn_samples) < 2:
+            return "FAIL"
         
-        direct_progression = (len(direct_samples) >= 2 and direct_samples[-1].get("bytesReceived", 0) > direct_samples[0].get("bytesReceived", 0)) or (direct_bytes > 0)
-        turn_progression = (len(turn_samples) >= 2 and turn_samples[-1].get("bytesReceived", 0) > turn_samples[0].get("bytesReceived", 0)) or (turn_bytes > 0)
+        direct_bytes_p = direct_samples[-1].get("bytesReceived", 0) > direct_samples[0].get("bytesReceived", 0)
+        direct_frames_p = direct_stats.get("samples", [])[-1].get("framesDecoded", 0) > direct_stats.get("samples", [])[0].get("framesDecoded", 0)
         
-        direct_pass = (direct_cand in ["direct", "host", "srflx"] and direct_progression)
-        turn_pass = (turn_cand == "relay" and turn_progression and turn_frames > 0)
+        turn_bytes_p = turn_samples[-1].get("bytesReceived", 0) > turn_samples[0].get("bytesReceived", 0)
+        turn_frames_p = turn_samples[-1].get("framesDecoded", 0) > turn_samples[0].get("framesDecoded", 0)
+        
+        # Strict candidate type assertions: "direct" synthetic string is REJECTED
+        direct_pass = (direct_cand in ["host", "srflx", "prflx"] and direct_bytes_p and direct_frames_p)
+        turn_pass = (turn_cand == "relay" and turn_bytes_p and turn_frames_p)
         
         if direct_pass and turn_pass:
             return "PASS"
@@ -224,57 +284,106 @@ def evaluate_gate_d(devices, evidence_dir):
     except Exception:
         return "FAIL"
 
+def verify_black_pixels_luminance(image_path):
+    """Performs luminance analysis on black frame image file: >= 99% pixels must be below dark threshold"""
+    if not os.path.exists(image_path) or os.path.getsize(image_path) == 0:
+        return False
+    try:
+        # If Pillow (PIL) is installed, decode image and check luminance
+        from PIL import Image
+        with Image.open(image_path) as img:
+            img_rgb = img.convert("RGB")
+            pixels = list(img_rgb.getdata())
+            if not pixels:
+                return False
+            black_count = sum(1 for r, g, b in pixels if (0.299*r + 0.587*g + 0.114*b) < 20.0)
+            return (black_count / float(len(pixels))) >= 0.99
+    except Exception:
+        # Fallback for minimal python env without PIL: verify raw dark byte ratio on image stream
+        with open(image_path, "rb") as f:
+            data = f.read()
+        if len(data) < 64:
+            return False
+        # Crude dark byte density check on raw payload bytes
+        dark_bytes = sum(1 for b in data if b < 30)
+        return (dark_bytes / float(len(data))) >= 0.50
+
 def evaluate_gate_e(devices, evidence_dir):
-    """Gate E: Security & Consent - Requires raw security evidence containing consent prompt logs, FLAG_SECURE black-stream proof, and stale agent fencing"""
+    """Gate E: Security & Consent - Requires raw logcat consent prompt, FLAG_SECURE black frame file existence, SHA256 match, and luminance black pixel analysis"""
     if not devices:
         return "NOT_RUN"
     
     sec_path = os.path.join(evidence_dir, "security_evidence.json")
-    if not os.path.exists(sec_path):
+    if not is_safe_relative_path(evidence_dir, "security_evidence.json"):
         return "FAIL"
     
     try:
         with open(sec_path, "r", encoding="utf-8") as f:
             sec = json.load(f)
         
-        if (sec.get("consent_prompt_granted") is True and
-            sec.get("flag_secure_respected") is True and
-            sec.get("stale_agent_fenced") is True and
-            sec.get("consent_log_timestamp") and
-            sec.get("flag_secure_black_frame_hash")):
+        black_path = sec.get("black_frame_path")
+        black_hash = sec.get("flag_secure_black_frame_hash")
+        
+        if not black_path or not black_hash or not is_safe_relative_path(evidence_dir, black_path):
+            return "FAIL"
+            
+        full_black_path = os.path.abspath(os.path.join(evidence_dir, black_path))
+        if compute_sha256(full_black_path) != black_hash:
+            return "FAIL"
+            
+        if not verify_black_pixels_luminance(full_black_path):
+            return "FAIL"
+
+        consent_ts = sec.get("consent_log_timestamp", 0)
+        socket_fenced_ts = sec.get("socket_fenced_timestamp", 0)
+        
+        if consent_ts > 0 and socket_fenced_ts > 0:
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_f(devices, evidence_dir):
-    """Gate F: Scale & Isolation - Requires raw scale evidence verifying >= 3 physical devices streaming concurrently without cross-device leakage"""
+    """Gate F: Scale & Isolation - Derived from raw concurrent session lists (>=3 distinct physical devices), 1:1 session-device isolation, and viewer limit logs"""
     if not devices or len(devices) < 3:
         return "NOT_RUN" if not devices else "FAIL"
     
     scale_path = os.path.join(evidence_dir, "scale_evidence.json")
-    if not os.path.exists(scale_path):
+    if not is_safe_relative_path(evidence_dir, "scale_evidence.json"):
         return "FAIL"
     
     try:
         with open(scale_path, "r", encoding="utf-8") as f:
             scale = json.load(f)
         
-        if (scale.get("concurrent_device_count", 0) >= 3 and
-            scale.get("viewer_limit_enforced") is True and
-            scale.get("cross_device_leakage") is False and
-            len(scale.get("active_session_ids", [])) >= 3):
+        sessions = scale.get("active_sessions", [])
+        if len(sessions) < 3:
+            return "FAIL"
+            
+        device_ids = set()
+        session_ids = set()
+        for sess in sessions:
+            d_id = sess.get("device_id")
+            s_id = sess.get("session_id")
+            if d_id and s_id:
+                device_ids.add(d_id)
+                session_ids.add(s_id)
+                
+        # Enforce distinct 1:1 session-device mapping and viewer limit enforcement log
+        viewer_quota_ts = scale.get("viewer_quota_enforced_ts", 0)
+        
+        if len(device_ids) >= 3 and len(session_ids) >= 3 and len(device_ids) == len(sessions) and viewer_quota_ts > 0:
             return "PASS"
         return "FAIL"
     except Exception:
         return "FAIL"
 
 def evaluate_gate_g(devices, evidence_dir):
-    """Gate G: Automated Evidence Package - PASS ONLY if complete required artifact set exists, file_hashes.json is valid, and SHA256 hashes verify"""
+    """Gate G: Automated Evidence Package - Mandatory raw files, per-device logcats, media files, path security, and complete file_hashes.json SHA256 verification"""
     if not devices:
         return "NOT_RUN"
     
-    required_files = [
+    mandatory_files = [
         "manifest.json",
         "PHASE-1.7-ACCEPTANCE.md",
         "file_hashes.json",
@@ -285,23 +394,50 @@ def evaluate_gate_g(devices, evidence_dir):
         "security_evidence.json",
         "scale_evidence.json"
     ]
-    for fn in required_files:
-        fp = os.path.join(evidence_dir, fn)
-        if not os.path.exists(fp) or os.path.getsize(fp) == 0:
+    
+    # 1. Require per-device logcat files
+    for dev in devices:
+        serial = dev.get("serial")
+        if serial:
+            mandatory_files.append(f"logcat_{serial}.log")
+            
+    # 2. Require all command media files referenced by command journal
+    journal_path = os.path.join(evidence_dir, "command_journal.json")
+    if os.path.exists(journal_path):
+        try:
+            with open(journal_path, "r", encoding="utf-8") as f:
+                journal = json.load(f)
+            for cmd in journal.get("commands", []):
+                if cmd.get("screenshot_path"):
+                    mandatory_files.append(cmd["screenshot_path"])
+                if cmd.get("video_path"):
+                    mandatory_files.append(cmd["video_path"])
+        except Exception:
+            pass
+
+    for fn in mandatory_files:
+        if not is_safe_relative_path(evidence_dir, fn):
             return "FAIL"
     
-    # Machine-verify file_hashes.json SHA256 entries
+    # 3. Machine-verify file_hashes.json SHA256 entries for all listed raw artifacts
     hashes_path = os.path.join(evidence_dir, "file_hashes.json")
     try:
         with open(hashes_path, "r", encoding="utf-8") as f:
             hashes = json.load(f)
         
+        # Ensure mandatory raw files are covered by file_hashes.json
+        for fn in mandatory_files:
+            if fn in ["manifest.json", "PHASE-1.7-ACCEPTANCE.md", "file_hashes.json"]:
+                continue
+            if fn not in hashes:
+                return "FAIL"
+        
         for fn, expected_hash in hashes.items():
             if fn in ["manifest.json", "PHASE-1.7-ACCEPTANCE.md", "file_hashes.json"]:
                 continue
-            fp = os.path.join(evidence_dir, fn)
-            if not os.path.exists(fp):
+            if not is_safe_relative_path(evidence_dir, fn):
                 return "FAIL"
+            fp = os.path.abspath(os.path.join(evidence_dir, fn))
             actual_hash = compute_sha256(fp)
             if actual_hash != expected_hash:
                 return "FAIL"
@@ -311,12 +447,15 @@ def evaluate_gate_g(devices, evidence_dir):
 
 def generate_file_hashes(evidence_dir):
     hashes = {}
-    for fname in os.listdir(evidence_dir):
-        fp = os.path.join(evidence_dir, fname)
-        if os.path.isfile(fp):
+    for root, _, files in os.walk(evidence_dir):
+        for fname in files:
+            fp = os.path.join(root, fname)
+            rel_path = os.path.relpath(fp, evidence_dir).replace("\\", "/")
+            if rel_path in ["manifest.json", "PHASE-1.7-ACCEPTANCE.md", "file_hashes.json"]:
+                continue
             h = compute_sha256(fp)
             if h:
-                hashes[fname] = h
+                hashes[rel_path] = h
     
     hashes_path = os.path.join(evidence_dir, "file_hashes.json")
     with open(hashes_path, "w", encoding="utf-8") as f:
