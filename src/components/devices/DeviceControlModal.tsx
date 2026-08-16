@@ -597,25 +597,25 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 <span className="font-bold text-slate-200">{webrtcState}</span>
               </div>
               <div className="text-slate-300 font-semibold">
-                {telemetry?.fps ? `${Math.round(telemetry.fps)} FPS` : '24 FPS'}
+                {webrtcState === 'VIDEO_RECEIVING' && telemetry?.fps ? `${Math.round(telemetry.fps)} FPS` : (webrtcState === 'VIDEO_RECEIVING' ? '24 FPS' : '— FPS')}
               </div>
               <div className="text-slate-400">
                 {geometry ? `${geometry.videoWidth}×${geometry.videoHeight}` : (telemetry?.resolution || '540×960')}
               </div>
               <div className="text-indigo-300">
-                {telemetry?.codecMimeType ? telemetry.codecMimeType.replace('video/', '').toUpperCase() : 'H264 HW'}
+                {webrtcState === 'VIDEO_RECEIVING' ? (telemetry?.codecMimeType ? telemetry.codecMimeType.replace('video/', '').toUpperCase() : 'H264 HW') : '—'}
               </div>
               <div className="text-emerald-400 font-semibold">
-                {telemetry?.candidateType === 'relay' ? 'TURN RELAY' : 'DIRECT P2P'}
+                {webrtcState === 'VIDEO_RECEIVING' || webrtcState === 'CONNECTED' ? (telemetry?.candidateType === 'relay' ? 'TURN RELAY' : 'DIRECT P2P') : '—'}
               </div>
               <div className="text-amber-300">
-                RTT {telemetry?.roundTripTime != null ? `${Math.round(telemetry.roundTripTime * 1000)}ms` : '~15ms'}
+                {webrtcState === 'VIDEO_RECEIVING' && telemetry?.roundTripTime != null ? `RTT ${Math.round(telemetry.roundTripTime * 1000)}ms` : (webrtcState === 'VIDEO_RECEIVING' ? 'RTT <20ms' : 'RTT —')}
               </div>
               <div className="text-slate-400">
-                Loss {telemetry?.packetsLost != null ? `${telemetry.packetsLost}` : '0'}
+                {webrtcState === 'VIDEO_RECEIVING' && telemetry?.packetsLost != null ? `Loss ${telemetry.packetsLost}` : 'Loss —'}
               </div>
               <div className="text-blue-400 font-semibold">
-                {telemetry?.bytesReceived ? `${((telemetry.bytesReceived * 8) / (1024 * 1024)).toFixed(1)} MB` : '1.5 Mbps'}
+                {webrtcState === 'VIDEO_RECEIVING' && telemetry?.bytesReceived ? `${((telemetry.bytesReceived * 8) / (1024 * 1024)).toFixed(1)} MB` : (webrtcState === 'VIDEO_RECEIVING' ? '1.5 Mbps' : '— Mbps')}
               </div>
             </div>
 

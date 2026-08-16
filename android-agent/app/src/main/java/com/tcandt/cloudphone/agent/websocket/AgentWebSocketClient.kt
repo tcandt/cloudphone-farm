@@ -76,7 +76,8 @@ class AgentWebSocketClient(
             sendWSEnvelope(type, payload)
         }
 
-        ScreenCaptureManager.onConsentGrantedHandler = { sessionId, projectionIntent ->
+        ScreenCaptureManager.bindMediaSessionStarter { sessionId, projectionIntent ->
+            logI(TAG, "WEBRTC_START_DELEGATED: Calling WebRtcPeerConnectionManager.startSession for SessionID=$sessionId")
             webRtcManager?.startSession(sessionId, projectionIntent, pendingIceServersJson)
         }
 

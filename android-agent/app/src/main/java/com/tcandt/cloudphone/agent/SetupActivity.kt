@@ -263,23 +263,54 @@ class SetupActivity : AppCompatActivity() {
 
         // 2. Screen Capture Capability State
         when (ScreenCaptureManager.currentState) {
-            ScreenCaptureState.CAPTURING, ScreenCaptureState.CONNECTED -> {
-                tvScreenCaptureState.text = "🟢 Đang ghi màn hình"
-                tvScreenCaptureState.setTextColor(0xFF059669.toInt())
-                readinessScore += 30
-            }
-            ScreenCaptureState.CONSENT_REQUIRED, ScreenCaptureState.NEGOTIATING -> {
-                tvScreenCaptureState.text = "🟠 Đang chờ xác nhận"
-                tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
-            }
-            ScreenCaptureState.FAILED -> {
-                tvScreenCaptureState.text = "🔴 Thất bại / Từ chối"
-                tvScreenCaptureState.setTextColor(0xFFDC2626.toInt())
-            }
-            else -> {
+            ScreenCaptureState.IDLE -> {
                 tvScreenCaptureState.text = "○ Chưa có phiên"
                 tvScreenCaptureState.setTextColor(0xFF64748B.toInt())
             }
+            ScreenCaptureState.CONSENT_REQUIRED -> {
+                tvScreenCaptureState.text = "🟠 Đang chờ xác nhận"
+                tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
+            }
+            ScreenCaptureState.READY -> {
+                tvScreenCaptureState.text = "🔵 Đã cấp quyền — đang khởi tạo WebRTC"
+                tvScreenCaptureState.setTextColor(0xFF2563EB.toInt())
+                readinessScore += 20
+            }
+            ScreenCaptureState.NEGOTIATING -> {
+                tvScreenCaptureState.text = "🔵 Đang thương lượng WebRTC"
+                tvScreenCaptureState.setTextColor(0xFF2563EB.toInt())
+                readinessScore += 25
+            }
+            ScreenCaptureState.CONNECTED -> {
+                tvScreenCaptureState.text = "🟢 WebRTC đã kết nối"
+                tvScreenCaptureState.setTextColor(0xFF059669.toInt())
+                readinessScore += 30
+            }
+            ScreenCaptureState.CAPTURING -> {
+                tvScreenCaptureState.text = "🟢 ĐANG STREAM MÀN HÌNH"
+                tvScreenCaptureState.setTextColor(0xFF059669.toInt())
+                readinessScore += 30
+            }
+            ScreenCaptureState.STOPPING -> {
+                tvScreenCaptureState.text = "🟡 Đang dừng phiên"
+                tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
+            }
+            ScreenCaptureState.FAILED -> {
+                tvScreenCaptureState.text = "🔴 Stream thất bại"
+                tvScreenCaptureState.setTextColor(0xFFDC2626.toInt())
+            }
+        }
+
+        // Foreground Service State
+        if (ScreenCaptureManager.isFgsRunning) {
+            tvFgsStatus.text = "Foreground Service: 🟢 Running"
+            tvFgsStatus.setTextColor(0xFF059669.toInt())
+        } else if (ScreenCaptureManager.currentState == ScreenCaptureState.CONSENT_REQUIRED) {
+            tvFgsStatus.text = "Foreground Service: 🟡 Starting"
+            tvFgsStatus.setTextColor(0xFFD97706.toInt())
+        } else {
+            tvFgsStatus.text = "Foreground Service: ○ Stopped"
+            tvFgsStatus.setTextColor(0xFF64748B.toInt())
         }
 
         // 3. Accessibility Service State

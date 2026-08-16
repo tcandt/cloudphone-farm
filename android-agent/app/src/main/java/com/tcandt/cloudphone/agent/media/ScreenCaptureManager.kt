@@ -62,7 +62,17 @@ object ScreenCaptureManager {
     }
 
     var sessionListener: SessionStateListener? = null
-    var onConsentGrantedHandler: ((sessionId: String, projectionIntent: Intent) -> Unit)? = null
+    private var mediaSessionStarter: ((String, Intent) -> Unit)? = null
+
+    fun bindMediaSessionStarter(handler: (String, Intent) -> Unit) {
+        mediaSessionStarter = handler
+        logI(TAG, "Bound persistent WebRTC mediaSessionStarter")
+    }
+
+    fun unbindMediaSessionStarter() {
+        mediaSessionStarter = null
+        logI(TAG, "Unbound WebRTC mediaSessionStarter")
+    }
 
     private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
     private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
@@ -215,13 +225,23 @@ object ScreenCaptureManager {
                 logW(TAG, "FGS_READY callback rejected: stale session or generation (Gen=$capturedGen vs currentGen=$sessionRequestGeneration, state=$currentState). Stopping orphan FGS.")
                 terminateMediaSession(context, SessionOutcome.STOPPED, "stale_fgs_ready", capturedSessionId)
             } else {
+                isFgsRunning = true
                 logI(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
                 clearPermissionGrantOnly()
                 currentState = ScreenCaptureState.READY
-                try {
-                    onConsentGrantedHandler?.invoke(capturedSessionId, intentGrant)
-                } catch (e: Throwable) {
-                    logW(TAG, "onConsentGrantedHandler invocation exception (JVM test mode or WebRTC setup error): ${e.message}")
+
+                val starter = mediaSessionStarter
+                if (starter == null) {
+                    logE(TAG, "MEDIA_STARTER_MISSING: Consent granted but WebRTC starter is not bound for SessionID=$capturedSessionId")
+                    terminateMediaSession(context, SessionOutcome.FAILED, "media_session_starter_missing")
+                } else {
+                    logI(TAG, "WEBRTC_START_REQUESTED: Invoking WebRTC mediaSessionStarter for SessionID=$capturedSessionId")
+                    try {
+                        starter.invoke(capturedSessionId, intentGrant)
+                    } catch (e: Throwable) {
+                        logE(TAG, "Error in mediaSessionStarter invocation: ${e.message}")
+                        terminateMediaSession(context, SessionOutcome.FAILED, "webrtc_starter_error: ${e.message}")
+                    }
                 }
             }
         }
@@ -238,7 +258,6 @@ object ScreenCaptureManager {
         } catch (e: Throwable) {
             logW(TAG, "MediaCaptureService start ignored (running in JVM test environment): ${e.message}")
         }
-        isFgsRunning = true
     }
 
     fun onConsentDenied(context: Context, generation: Long) {
@@ -362,7 +381,6 @@ object ScreenCaptureManager {
         projectionResultData = null
         activeSessionId = ""
         currentState = ScreenCaptureState.IDLE
-        onConsentGrantedHandler = null
         logD(TAG, "Cleared all MediaProjection session state and activeSessionId")
     }
 }
