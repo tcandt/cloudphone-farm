@@ -51,9 +51,14 @@ object ScreenCaptureManager {
     var sessionListener: SessionStateListener? = null
     var onConsentGrantedHandler: ((sessionId: String, projectionIntent: Intent) -> Unit)? = null
 
+    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+    private fun logE(tag: String, msg: String) { try { Log.e(tag, msg) } catch (_: Throwable) {} }
+
     fun requestConsent(context: Context, sessionId: String): Long {
         if (currentState != ScreenCaptureState.IDLE) {
-            Log.w(TAG, "New requestConsent for SessionID=$sessionId superseding existing state=$currentState (SessionID=$activeSessionId). Resetting state.")
+            logW(TAG, "New requestConsent for SessionID=$sessionId superseding existing state=$currentState (SessionID=$activeSessionId). Resetting state.")
             terminateMediaSession(context, SessionOutcome.STOPPED, "superseded_by_new_session")
         }
 
@@ -61,7 +66,7 @@ object ScreenCaptureManager {
         activeSessionId = sessionId
         currentState = ScreenCaptureState.CONSENT_REQUIRED
 
-        Log.i(TAG, "Requesting MediaProjection consent for SessionID=$sessionId (Gen=$sessionRequestGeneration)")
+        logI(TAG, "Requesting MediaProjection consent for SessionID=$sessionId (Gen=$sessionRequestGeneration)")
         showConsentNotification(context, sessionRequestGeneration)
         return sessionRequestGeneration
     }
@@ -114,7 +119,7 @@ object ScreenCaptureManager {
             val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             notificationManager.cancel(CONSENT_NOTIFICATION_ID)
         } catch (e: Exception) {
-            Log.w(TAG, "Failed to dismiss consent notification: ${e.message}")
+            logW(TAG, "Failed to dismiss consent notification: ${e.message}")
         }
     }
 
@@ -122,11 +127,11 @@ object ScreenCaptureManager {
         dismissConsentNotification(context)
 
         if (generation != sessionRequestGeneration || currentState != ScreenCaptureState.CONSENT_REQUIRED) {
-            Log.w(TAG, "Stale or canceled MediaProjection consent received (Gen=$generation, currentGen=$sessionRequestGeneration, state=$currentState). Ignoring.")
+            logW(TAG, "Stale or canceled MediaProjection consent received (Gen=$generation, currentGen=$sessionRequestGeneration, state=$currentState). Ignoring.")
             return
         }
 
-        Log.i(TAG, "Consent granted for Gen=$generation. Registering FGS_READY listener and starting MediaCaptureService for SessionID=$activeSessionId")
+        logI(TAG, "Consent granted for Gen=$generation. Registering FGS_READY listener and starting MediaCaptureService for SessionID=$activeSessionId")
         val intentGrant = resultData
         val capturedSessionId = activeSessionId
         val capturedGen = generation
@@ -135,7 +140,7 @@ object ScreenCaptureManager {
         val timeoutRunnable = Runnable {
             if (MediaCaptureServiceNotifier.onFgsReadyListener != null) {
                 MediaCaptureServiceNotifier.onFgsReadyListener = null
-                Log.e(TAG, "FGS_READY timeout after 10s for SessionID=$capturedSessionId (Gen=$capturedGen). Stopping capture.")
+                logE(TAG, "FGS_READY timeout after 10s for SessionID=$capturedSessionId (Gen=$capturedGen). Stopping capture.")
                 terminateMediaSession(context, SessionOutcome.FAILED, "FGS_READY timeout after 10s")
             }
         }
@@ -147,10 +152,10 @@ object ScreenCaptureManager {
             MediaCaptureServiceNotifier.onFgsReadyListener = null
 
             if (capturedGen != sessionRequestGeneration || activeSessionId != capturedSessionId || currentState != ScreenCaptureState.CONSENT_REQUIRED) {
-                Log.w(TAG, "FGS_READY callback rejected: stale session or generation (Gen=$capturedGen vs currentGen=$sessionRequestGeneration, state=$currentState). Stopping orphan FGS.")
+                logW(TAG, "FGS_READY callback rejected: stale session or generation (Gen=$capturedGen vs currentGen=$sessionRequestGeneration, state=$currentState). Stopping orphan FGS.")
                 terminateMediaSession(context, SessionOutcome.STOPPED, "stale_fgs_ready")
             } else {
-                Log.i(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
+                logI(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
                 clearPermissionGrantOnly()
                 currentState = ScreenCaptureState.READY
                 onConsentGrantedHandler?.invoke(capturedSessionId, intentGrant)
@@ -173,7 +178,7 @@ object ScreenCaptureManager {
 
         if (generation != sessionRequestGeneration) return
 
-        Log.w(TAG, "Consent denied by user for Gen=$generation")
+        logW(TAG, "Consent denied by user for Gen=$generation")
         terminateMediaSession(context, SessionOutcome.FAILED, "MediaProjection consent denied by user")
     }
 
@@ -181,21 +186,21 @@ object ScreenCaptureManager {
         if (activeSessionId == sessionId || activeSessionId.isEmpty()) {
             activeSessionId = sessionId
             currentState = ScreenCaptureState.READY
-            Log.i(TAG, "ScreenCaptureState -> READY (SessionID=$sessionId)")
+            logI(TAG, "ScreenCaptureState -> READY (SessionID=$sessionId)")
         }
     }
 
     fun markNegotiating(sessionId: String) {
         if (activeSessionId == sessionId) {
             currentState = ScreenCaptureState.NEGOTIATING
-            Log.i(TAG, "ScreenCaptureState -> NEGOTIATING (SessionID=$sessionId)")
+            logI(TAG, "ScreenCaptureState -> NEGOTIATING (SessionID=$sessionId)")
         }
     }
 
     fun markConnected(sessionId: String) {
         if (activeSessionId == sessionId) {
             currentState = ScreenCaptureState.CONNECTED
-            Log.i(TAG, "ScreenCaptureState -> CONNECTED (SessionID=$sessionId)")
+            logI(TAG, "ScreenCaptureState -> CONNECTED (SessionID=$sessionId)")
             sessionListener?.onSessionStarted(sessionId)
         }
     }
@@ -203,18 +208,18 @@ object ScreenCaptureManager {
     fun onEncoderFormatConfirmed() {
         if (currentState == ScreenCaptureState.READY || currentState == ScreenCaptureState.NEGOTIATING) {
             currentState = ScreenCaptureState.CAPTURING
-            Log.i(TAG, "Transitioning state -> CAPTURING (SessionID=$activeSessionId)")
+            logI(TAG, "Transitioning state -> CAPTURING (SessionID=$activeSessionId)")
             sessionListener?.onSessionStarted(activeSessionId)
         }
     }
 
     fun onEncoderFailed(errorMsg: String) {
-        Log.e(TAG, "Encoder setup failed: $errorMsg")
+        logE(TAG, "Encoder setup failed: $errorMsg")
         terminateMediaSession(null, SessionOutcome.FAILED, errorMsg)
     }
 
     fun onProjectionStoppedBySystem(context: Context? = null) {
-        Log.w(TAG, "Projection stopped by system/user for SessionID=$activeSessionId")
+        logW(TAG, "Projection stopped by system/user for SessionID=$activeSessionId")
         terminateMediaSession(context, SessionOutcome.STOPPED, "system_projection_stopped")
     }
 
@@ -223,7 +228,7 @@ object ScreenCaptureManager {
     }
 
     fun terminateMediaSession(context: Context?, outcome: SessionOutcome, reason: String) {
-        Log.i(TAG, "terminateMediaSession called (outcome=$outcome, reason=$reason, SessionID=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
+        logI(TAG, "terminateMediaSession called (outcome=$outcome, reason=$reason, SessionID=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
 
         sessionRequestGeneration++
         MediaCaptureServiceNotifier.onFgsReadyListener = null
@@ -237,10 +242,10 @@ object ScreenCaptureManager {
                     }
                     context.stopService(stopIntent)
                 } catch (e: Exception) {
-                    Log.w(TAG, "Error stopping MediaCaptureService: ${e.message}")
+                    logW(TAG, "Error stopping MediaCaptureService: ${e.message}")
                 }
                 isFgsRunning = false
-                Log.i(TAG, "MediaCaptureService FGS stopped unconditionally by ScreenCaptureManager")
+                logI(TAG, "MediaCaptureService FGS stopped unconditionally by ScreenCaptureManager")
             }
         } else {
             isFgsRunning = false
@@ -272,7 +277,7 @@ object ScreenCaptureManager {
     private fun clearPermissionGrantOnly() {
         projectionResultCode = 0
         projectionResultData = null
-        Log.d(TAG, "Cleared MediaProjection permission grant Intent (consumed per targetSdk 34 rules)")
+        logD(TAG, "Cleared MediaProjection permission grant Intent (consumed per targetSdk 34 rules)")
     }
 
     private fun clearAllSessionState() {
@@ -280,6 +285,6 @@ object ScreenCaptureManager {
         projectionResultData = null
         activeSessionId = ""
         currentState = ScreenCaptureState.IDLE
-        Log.d(TAG, "Cleared all MediaProjection session state and activeSessionId")
+        logD(TAG, "Cleared all MediaProjection session state and activeSessionId")
     }
 }
