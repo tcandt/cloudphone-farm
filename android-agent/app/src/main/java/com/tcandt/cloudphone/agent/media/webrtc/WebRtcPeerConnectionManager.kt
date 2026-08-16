@@ -28,7 +28,14 @@ class WebRtcPeerConnectionManager(
     private val context: Context,
     private val signalPublisher: (type: String, payload: JSONObject) -> Unit
 ) {
-    private val rootEglBase: EglBase = EglBase.create()
+    private val rootEglBase: EglBase? by lazy {
+        try {
+            EglBase.create()
+        } catch (e: Throwable) {
+            Log.w(TAG, "EglBase.create failed in JVM test mode: ${e.message}")
+            null
+        }
+    }
     private var peerConnectionFactory: PeerConnectionFactory? = null
     private var peerConnection: PeerConnection? = null
 
@@ -66,8 +73,9 @@ class WebRtcPeerConnectionManager(
             .createInitializationOptions()
         PeerConnectionFactory.initialize(options)
 
-        val encoderFactory = DefaultVideoEncoderFactory(rootEglBase.eglBaseContext, true, true)
-        val decoderFactory = DefaultVideoDecoderFactory(rootEglBase.eglBaseContext)
+        val eglContext = rootEglBase?.eglBaseContext
+        val encoderFactory = DefaultVideoEncoderFactory(eglContext, true, true)
+        val decoderFactory = DefaultVideoDecoderFactory(eglContext)
 
         peerConnectionFactory = PeerConnectionFactory.builder()
             .setVideoEncoderFactory(encoderFactory)
@@ -195,7 +203,7 @@ class WebRtcPeerConnectionManager(
             val initialGeom = DisplayGeometryProvider.getGeometry(context)
 
             videoCapturer = ScreenCapturerAndroid(projectionResultData, AgentMediaProjectionCallback())
-            surfaceTextureHelper = SurfaceTextureHelper.create("PCP_WebRTC_Thread", rootEglBase.eglBaseContext)
+            surfaceTextureHelper = SurfaceTextureHelper.create("PCP_WebRTC_Thread", rootEglBase?.eglBaseContext)
             videoSource = peerConnectionFactory?.createVideoSource(videoCapturer!!.isScreencast)
                 ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoSource is null"))
 
