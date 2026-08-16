@@ -198,4 +198,3 @@ class AgentKeyStore(context: Context) {
         }
     }
 }
-}
