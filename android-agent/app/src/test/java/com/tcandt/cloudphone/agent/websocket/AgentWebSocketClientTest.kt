@@ -15,7 +15,21 @@ class AgentWebSocketClientTest {
 
     @Before
     fun setUp() {
-        dummyContext = Mockito.mock(Context::class.java, Mockito.RETURNS_DEEP_STUBS)
+        val mockPrefs = Mockito.mock(android.content.SharedPreferences::class.java)
+        val mockEditor = Mockito.mock(android.content.SharedPreferences.Editor::class.java)
+        Mockito.`when`(mockPrefs.getString(Mockito.anyString(), Mockito.anyString())).thenAnswer { invocation ->
+            invocation.arguments[1] as? String ?: ""
+        }
+        Mockito.`when`(mockPrefs.edit()).thenReturn(mockEditor)
+        Mockito.`when`(mockEditor.putString(Mockito.anyString(), Mockito.anyString())).thenReturn(mockEditor)
+        Mockito.`when`(mockEditor.putLong(Mockito.anyString(), Mockito.anyLong())).thenReturn(mockEditor)
+        Mockito.`when`(mockEditor.putInt(Mockito.anyString(), Mockito.anyInt())).thenReturn(mockEditor)
+
+        dummyContext = Mockito.mock(Context::class.java)
+        Mockito.`when`(dummyContext.applicationContext).thenReturn(dummyContext)
+        Mockito.`when`(dummyContext.getSharedPreferences(Mockito.anyString(), Mockito.anyInt())).thenReturn(mockPrefs)
+        Mockito.`when`(dummyContext.packageName).thenReturn("com.tcandt.cloudphone.agent")
+
         client = AgentWebSocketClient(dummyContext, "wss://localhost:8443", "agent_unit_01")
     }
 
