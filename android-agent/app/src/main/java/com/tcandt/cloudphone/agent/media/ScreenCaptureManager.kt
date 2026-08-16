@@ -223,8 +223,8 @@ object ScreenCaptureManager {
 
     fun markConnected(sessionId: String) {
         if (activeSessionId == sessionId) {
-            currentState = ScreenCaptureState.STREAMING
-            logI(TAG, "ScreenCaptureState -> STREAMING (SessionID=$sessionId)")
+            currentState = ScreenCaptureState.CONNECTED
+            logI(TAG, "ScreenCaptureState -> CONNECTED (SessionID=$sessionId)")
         }
     }
 
