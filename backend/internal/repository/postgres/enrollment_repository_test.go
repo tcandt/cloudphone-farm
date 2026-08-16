@@ -47,6 +47,7 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 		"000005_harden_command_runtime.up.sql",
 		"000006_control_lease_and_command_contract.up.sql",
 		"000007_phase14_command_delivery_attempts.up.sql",
+		"000008_nullable_physical_telemetry_and_security_metadata.up.sql",
 	}
 
 	migrationsDir := filepath.Join("..", "..", "..", "db", "migrations")
