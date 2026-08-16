@@ -182,10 +182,10 @@ object ScreenCaptureManager {
             }
         }
 
-        val fgsIntent = Intent(context, MediaCaptureService::class.java).apply {
-            action = MediaCaptureService.ACTION_START_CAPTURE
-        }
         try {
+            val fgsIntent = Intent(context, MediaCaptureService::class.java).apply {
+                action = MediaCaptureService.ACTION_START_CAPTURE
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(fgsIntent)
             } else {

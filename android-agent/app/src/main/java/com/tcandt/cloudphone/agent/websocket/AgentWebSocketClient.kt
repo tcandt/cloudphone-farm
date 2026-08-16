@@ -29,6 +29,11 @@ class AgentWebSocketClient(
     private val wssUrl: String,
     private val agentId: String
 ) {
+    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+    private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
@@ -87,7 +92,7 @@ class AgentWebSocketClient(
                     put("payload", respPayload)
                 }
                 webSocket?.send(envelope.toString())
-                Log.i(TAG, "Sent media.session.started WSS envelope (SessionID=$sessionId)")
+                logI(TAG, "Sent media.session.started WSS envelope (SessionID=$sessionId)")
             }
 
             override fun onSessionStopped(sessionId: String, reason: String) {
@@ -103,7 +108,7 @@ class AgentWebSocketClient(
                     put("payload", respPayload)
                 }
                 webSocket?.send(envelope.toString())
-                Log.i(TAG, "Sent media.session.stopped WSS envelope (SessionID=$sessionId, reason=$reason)")
+                logI(TAG, "Sent media.session.stopped WSS envelope (SessionID=$sessionId, reason=$reason)")
             }
 
             override fun onSessionFailed(sessionId: String, error: String) {
@@ -119,7 +124,7 @@ class AgentWebSocketClient(
                     put("payload", respPayload)
                 }
                 webSocket?.send(envelope.toString())
-                Log.w(TAG, "Sent media.session.started [failed] WSS envelope (SessionID=$sessionId, error=$error)")
+                logW(TAG, "Sent media.session.started [failed] WSS envelope (SessionID=$sessionId, error=$error)")
             }
         }
     }
@@ -128,7 +133,7 @@ class AgentWebSocketClient(
 
     fun connect() {
         if (isExplicitlyStopped) {
-            Log.d(TAG, "connect() ignored: AgentWebSocketClient is explicitly stopped")
+            logD(TAG, "connect() ignored: AgentWebSocketClient is explicitly stopped")
             return
         }
 
@@ -137,7 +142,7 @@ class AgentWebSocketClient(
             currentSocketEpoch = socketEpoch
             socketEpoch
         }
-        Log.i(TAG, "Initiating WSS connection attempt (Epoch=$attemptEpoch)...")
+        logI(TAG, "Initiating WSS connection attempt (Epoch=$attemptEpoch)...")
 
         try {
             val timestamp = (System.currentTimeMillis() / 1000).toString()
@@ -164,16 +169,16 @@ class AgentWebSocketClient(
 
                 override fun onOpen(webSocket: WebSocket, response: Response) {
                     if (isStale(webSocket)) {
-                        Log.w(TAG, "Ignoring onOpen from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                        logW(TAG, "Ignoring onOpen from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
                         webSocket.close(1000, "Stale Socket Connection")
                         return
                     }
-                    Log.i(TAG, "Connected to Phone Control Platform WSS (Epoch=$attemptEpoch): $wssUrl")
+                    logI(TAG, "Connected to Phone Control Platform WSS (Epoch=$attemptEpoch): $wssUrl")
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     if (isStale(webSocket)) {
-                        Log.w(TAG, "Ignoring onMessage from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                        logW(TAG, "Ignoring onMessage from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
                         return
                     }
                     try {
@@ -204,36 +209,36 @@ class AgentWebSocketClient(
                                 handleMediaSignalCandidate(payload)
                             }
                             else -> {
-                                Log.d(TAG, "Received frame of type: $type")
+                                logD(TAG, "Received frame of type: $type")
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse incoming WS message: ${e.message}", e)
+                    } catch (e: Throwable) {
+                        logE(TAG, "Failed to parse incoming WS message: ${e.message}", e)
                     }
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     if (isStale(webSocket)) {
-                        Log.w(TAG, "Ignoring onFailure from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                        logW(TAG, "Ignoring onFailure from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
                         return
                     }
-                    Log.e(TAG, "WebSocket error (Epoch=$attemptEpoch): ${t.message}", t)
+                    logE(TAG, "WebSocket error (Epoch=$attemptEpoch): ${t.message}", t)
                     stopHeartbeat()
                     scheduleReconnect()
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     if (isStale(webSocket)) {
-                        Log.w(TAG, "Ignoring onClosed from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                        logW(TAG, "Ignoring onClosed from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
                         return
                     }
-                    Log.w(TAG, "WebSocket connection closed (Epoch=$attemptEpoch): $reason ($code)")
+                    logW(TAG, "WebSocket connection closed (Epoch=$attemptEpoch): $reason ($code)")
                     stopHeartbeat()
                     scheduleReconnect()
                 }
             })
         } catch (e: Throwable) {
-            Log.w(TAG, "WebSocket connection creation skipped (JVM test mode or network error): ${e.message}")
+            logW(TAG, "WebSocket connection creation skipped (JVM test mode or network error): ${e.message}")
         }
     }
 
@@ -254,14 +259,14 @@ class AgentWebSocketClient(
         }
 
         webSocket.send(envelope.toString())
-        Log.i(TAG, "Sent agent.challenge_response to server")
+        logI(TAG, "Sent agent.challenge_response to server")
     }
 
     private fun handleConnectionReady(payload: JSONObject) {
         connectionId = payload.optString("connection_id")
         generation = payload.optLong("generation", 0L)
         reconnectAttempt = 0
-        Log.i(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
+        logI(TAG, "Connection Ready! ConnectionID=$connectionId Generation=$generation")
 
         startSignedHttpHeartbeat()
     }
@@ -275,16 +280,16 @@ class AgentWebSocketClient(
 
         pendingIceServersJson = payload.optJSONArray("ice_servers")
 
-        Log.i(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
+        logI(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
         ScreenCaptureManager.requestConsent(context, sessionId)
     }
 
     private fun handleMediaSessionStop(payload: JSONObject) {
         val sessionId = payload.optString("session_id")
-        Log.i(TAG, "Received media.session.stop request for SessionID=$sessionId")
+        logI(TAG, "Received media.session.stop request for SessionID=$sessionId")
 
         if (sessionId.isNotEmpty() && ScreenCaptureManager.activeSessionId.isNotEmpty() && sessionId != ScreenCaptureManager.activeSessionId) {
-            Log.w(TAG, "Ignoring stale media.session.stop request ($sessionId vs active ${ScreenCaptureManager.activeSessionId})")
+            logW(TAG, "Ignoring stale media.session.stop request ($sessionId vs active ${ScreenCaptureManager.activeSessionId})")
             return
         }
 
@@ -296,7 +301,7 @@ class AgentWebSocketClient(
     private fun handleMediaSignalOffer(payload: JSONObject) {
         val sessionId = payload.optString("session_id")
         val sdp = payload.optString("sdp")
-        Log.i(TAG, "Received media.signal.offer from server/web for SessionID=$sessionId")
+        logI(TAG, "Received media.signal.offer from server/web for SessionID=$sessionId")
         webRtcManager?.handleRemoteOffer(sessionId, sdp)
     }
 
@@ -324,8 +329,8 @@ class AgentWebSocketClient(
                 delay(10000) // 10s signed HTTP heartbeat for Redis presence TTL renewal
                 try {
                     sendSignedHttpHeartbeat()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Signed HTTP heartbeat failed: ${e.message}")
+                } catch (e: Throwable) {
+                    logE(TAG, "Signed HTTP heartbeat failed: ${e.message}")
                 }
             }
         }
@@ -364,9 +369,9 @@ class AgentWebSocketClient(
 
         client.newCall(request).execute().use { response ->
             if (response.isSuccessful) {
-                Log.d(TAG, "10s Signed HTTP Heartbeat successful! (HTTP ${response.code})")
+                logD(TAG, "10s Signed HTTP Heartbeat successful! (HTTP ${response.code})")
             } else {
-                Log.w(TAG, "Signed HTTP Heartbeat status: ${response.code}")
+                logW(TAG, "Signed HTTP Heartbeat status: ${response.code}")
             }
         }
     }
@@ -394,7 +399,7 @@ class AgentWebSocketClient(
         }
 
         webSocket?.send(envelope.toString())
-        Log.i(TAG, "Sent command.status envelope to server (status=$status, seq=$sequence)")
+        logI(TAG, "Sent command.status envelope to server (status=$status, seq=$sequence)")
     }
 
     private var isReconnecting = false
@@ -403,7 +408,7 @@ class AgentWebSocketClient(
 
     private fun scheduleReconnect() {
         if (isExplicitlyStopped) {
-            Log.d(TAG, "scheduleReconnect() ignored: AgentWebSocketClient is explicitly stopped")
+            logD(TAG, "scheduleReconnect() ignored: AgentWebSocketClient is explicitly stopped")
             return
         }
 
@@ -418,7 +423,7 @@ class AgentWebSocketClient(
             val jitter = (0..1000).random().toLong()
             val delayMs = baseDelay + jitter
 
-            Log.i(TAG, "Scheduling WSS supervised reconnect (attempt #${reconnectAttempt + 1}) in ${delayMs}ms...")
+            logI(TAG, "Scheduling WSS supervised reconnect (attempt #${reconnectAttempt + 1}) in ${delayMs}ms...")
             delay(delayMs)
 
             reconnectAttempt++

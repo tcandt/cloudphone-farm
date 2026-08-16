@@ -21,6 +21,11 @@ class CommandProcessor(
     private val context: Context,
     private val statusPublisher: (commandId: String, status: String, error: String?, sequence: Int) -> Unit
 ) {
+    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+    private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
+
     private val configStore by lazy { AgentConfigStore(context) }
     private val fencingStore by lazy { FencingStore(context) }
     private val journal by lazy { CommandJournal(context) }
@@ -52,20 +57,20 @@ class CommandProcessor(
         val payload = commandDispatch.optJSONObject("payload") ?: JSONObject()
 
         if (commandId.isEmpty()) {
-            Log.e(TAG, "Received command dispatch without command_id")
+            logE(TAG, "Received command dispatch without command_id")
             return
         }
 
         // 1. Strict Target Device ID Validation
         val myDeviceId = configStore.getDeviceId()
         if (deviceId.isEmpty() || myDeviceId.isEmpty() || deviceId != myDeviceId) {
-            Log.w(TAG, "Command $commandId target device $deviceId mismatch with local device $myDeviceId")
+            logW(TAG, "Command $commandId target device $deviceId mismatch with local device $myDeviceId")
             return
         }
 
         // 2. Strict Fail-Closed Expiration Validation
         if (expiresAtStr.isBlank()) {
-            Log.w(TAG, "Rejecting command $commandId: missing required expires_at TTL")
+            logW(TAG, "Rejecting command $commandId: missing required expires_at TTL")
             journal.saveRecord(commandId, fencingToken, "failed", "Missing required expires_at TTL")
             statusPublisher(commandId, "failed", "Missing required expires_at TTL", 3)
             return
@@ -75,20 +80,20 @@ class CommandProcessor(
             val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
             sdf.timeZone = TimeZone.getTimeZone("UTC")
             sdf.parse(expiresAtStr)?.time ?: run {
-                Log.w(TAG, "Rejecting command $commandId: invalid expires_at format $expiresAtStr")
+                logW(TAG, "Rejecting command $commandId: invalid expires_at format $expiresAtStr")
                 journal.saveRecord(commandId, fencingToken, "failed", "Invalid expires_at format")
                 statusPublisher(commandId, "failed", "Invalid expires_at format", 3)
                 return
             }
         } catch (_: Exception) {
-            Log.w(TAG, "Rejecting command $commandId: unparseable expires_at $expiresAtStr")
+            logW(TAG, "Rejecting command $commandId: unparseable expires_at $expiresAtStr")
             journal.saveRecord(commandId, fencingToken, "failed", "Unparseable expires_at format")
             statusPublisher(commandId, "failed", "Unparseable expires_at format", 3)
             return
         }
 
         if (System.currentTimeMillis() > expiresAtMs) {
-            Log.w(TAG, "Command $commandId expired (expires_at=$expiresAtStr). Rejecting execution.")
+            logW(TAG, "Command $commandId expired (expires_at=$expiresAtStr). Rejecting execution.")
             journal.saveRecord(commandId, fencingToken, "expired", "TTL expired before execution")
             statusPublisher(commandId, "expired", "TTL expired before execution", 3)
             return
@@ -99,13 +104,13 @@ class CommandProcessor(
         if (existingRecord != null) {
             if (existingRecord.status == "executing") {
                 val errStr = "Interrupted during process restart"
-                Log.w(TAG, "Command $commandId was interrupted while executing during process restart. Marking failed.")
+                logW(TAG, "Command $commandId was interrupted while executing during process restart. Marking failed.")
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
                 return
             }
             if (existingRecord.status == "succeeded" || existingRecord.status == "failed" || existingRecord.status == "expired") {
-                Log.i(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
+                logI(TAG, "Duplicate command $commandId detected in journal. Resending cached status ${existingRecord.status}")
                 statusPublisher(commandId, existingRecord.status, existingRecord.error, 3)
                 return
             }
@@ -114,7 +119,7 @@ class CommandProcessor(
         // 4. Monotonic Fencing Token check
         if (!fencingStore.validateAndUpdate(fencingToken)) {
             val errStr = "Stale fencing token $fencingToken (highest known: ${fencingStore.getHighestFencingToken()})"
-            Log.w(TAG, "Rejecting command $commandId: $errStr")
+            logW(TAG, "Rejecting command $commandId: $errStr")
             journal.saveRecord(commandId, fencingToken, "failed", errStr)
             statusPublisher(commandId, "failed", errStr, 3)
             return
@@ -125,7 +130,7 @@ class CommandProcessor(
             val space = payload.optString("coordinateSpace", "")
             if (space != "normalized_display_v1") {
                 val errStr = "Invalid coordinateSpace '$space': required 'normalized_display_v1'"
-                Log.w(TAG, "Rejecting command $commandId: $errStr")
+                logW(TAG, "Rejecting command $commandId: $errStr")
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
                 return
@@ -142,7 +147,7 @@ class CommandProcessor(
         val service = DeviceControlService.instance
         if (service == null) {
             val errStr = "DeviceControlService AccessibilityService is not enabled or connected"
-            Log.e(TAG, errStr)
+            logE(TAG, errStr)
             journal.saveRecord(commandId, fencingToken, "failed", errStr)
             statusPublisher(commandId, "failed", errStr, 3)
             return
@@ -153,7 +158,7 @@ class CommandProcessor(
             DisplayGeometryProvider.getGeometry(context)
         } catch (e: IllegalStateException) {
             val errStr = e.message ?: "Failed to retrieve physical display geometry"
-            Log.e(TAG, "Rejecting command $commandId: $errStr")
+            logE(TAG, "Rejecting command $commandId: $errStr")
             journal.saveRecord(commandId, fencingToken, "failed", errStr)
             statusPublisher(commandId, "failed", errStr, 3)
             return
@@ -165,7 +170,7 @@ class CommandProcessor(
             val currentOrientStr = if (geometry.orientation == DisplayOrientation.LANDSCAPE) "landscape" else "portrait"
             if (targetOrientation != currentOrientStr) {
                 val errStr = "ORIENTATION_MISMATCH: command expected $targetOrientation but screen is $currentOrientStr"
-                Log.w(TAG, errStr)
+                logW(TAG, errStr)
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
                 return
@@ -182,13 +187,13 @@ class CommandProcessor(
                     NormalizedCoordinateMapper.map(normX, normY, geometry.widthPx, geometry.heightPx)
                 } catch (e: IllegalArgumentException) {
                     val errStr = e.message ?: "Invalid touch coordinates"
-                    Log.e(TAG, errStr)
+                    logE(TAG, errStr)
                     journal.saveRecord(commandId, fencingToken, "failed", errStr)
                     statusPublisher(commandId, "failed", errStr, 3)
                     return
                 }
 
-                Log.i(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
+                logI(TAG, "Touch normalized ($normX, $normY) -> Physical Px (${point.x}, ${point.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
 
                 val deferred = CompletableDeferred<Boolean>()
                 service.performTouch(point.x, point.y) { success ->
@@ -214,13 +219,13 @@ class CommandProcessor(
                     )
                 } catch (e: IllegalArgumentException) {
                     val errStr = e.message ?: "Invalid swipe coordinates"
-                    Log.e(TAG, errStr)
+                    logE(TAG, errStr)
                     journal.saveRecord(commandId, fencingToken, "failed", errStr)
                     statusPublisher(commandId, "failed", errStr, 3)
                     return
                 }
 
-                Log.d(TAG, "Swipe normalized ($startNormX, $startNormY)->($endNormX, $endNormY) -> Physical Px (${startPt.x}, ${startPt.y})->(${endPt.x}, ${endPt.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
+                logD(TAG, "Swipe normalized ($startNormX, $startNormY)->($endNormX, $endNormY) -> Physical Px (${startPt.x}, ${startPt.y})->(${endPt.x}, ${endPt.y}) on screen ${geometry.widthPx}x${geometry.heightPx}")
 
                 val deferred = CompletableDeferred<Boolean>()
                 service.performSwipe(startPt.x, startPt.y, endPt.x, endPt.y, durationMs) { success ->
@@ -249,7 +254,7 @@ class CommandProcessor(
             }
             else -> {
                 val errStr = "Unsupported command_type: $commandType"
-                Log.e(TAG, errStr)
+                logE(TAG, errStr)
                 journal.saveRecord(commandId, fencingToken, "failed", errStr)
                 statusPublisher(commandId, "failed", errStr, 3)
             }

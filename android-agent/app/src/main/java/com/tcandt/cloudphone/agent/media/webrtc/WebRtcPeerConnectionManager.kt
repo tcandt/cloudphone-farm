@@ -28,11 +28,16 @@ class WebRtcPeerConnectionManager(
     private val context: Context,
     private val signalPublisher: (type: String, payload: JSONObject) -> Unit
 ) {
+    private fun logD(tag: String, msg: String) { try { Log.d(tag, msg) } catch (_: Throwable) {} }
+    private fun logI(tag: String, msg: String) { try { Log.i(tag, msg) } catch (_: Throwable) {} }
+    private fun logW(tag: String, msg: String) { try { Log.w(tag, msg) } catch (_: Throwable) {} }
+    private fun logE(tag: String, msg: String, t: Throwable? = null) { try { if (t != null) Log.e(tag, msg, t) else Log.e(tag, msg) } catch (_: Throwable) {} }
+
     private val rootEglBase: EglBase? by lazy {
         try {
             EglBase.create()
         } catch (e: Throwable) {
-            Log.w(TAG, "EglBase.create failed in JVM test mode: ${e.message}")
+            logW(TAG, "EglBase.create failed in JVM test mode: ${e.message}")
             null
         }
     }
@@ -63,7 +68,7 @@ class WebRtcPeerConnectionManager(
         try {
             initFactory()
         } catch (e: Throwable) {
-            Log.w(TAG, "WebRTC PeerConnectionFactory initialization skipped (JVM test mode): ${e.message}")
+            logW(TAG, "WebRTC PeerConnectionFactory initialization skipped (JVM test mode): ${e.message}")
         }
     }
 
@@ -82,7 +87,7 @@ class WebRtcPeerConnectionManager(
             .setVideoDecoderFactory(decoderFactory)
             .createPeerConnectionFactory()
 
-        Log.i(TAG, "Initialized Native WebRTC PeerConnectionFactory cleanly")
+        logI(TAG, "Initialized Native WebRTC PeerConnectionFactory cleanly")
     }
 
     fun startSession(sessionId: String, projectionResultData: Intent, iceServersJson: JSONArray? = null) {
@@ -123,11 +128,11 @@ class WebRtcPeerConnectionManager(
 
         peerConnection = peerConnectionFactory?.createPeerConnection(rtcConfig, object : PeerConnection.Observer {
             override fun onSignalingChange(state: PeerConnection.SignalingState?) {
-                Log.d(TAG, "WebRTC SignalingState changed: $state")
+                logD(TAG, "WebRTC SignalingState changed: $state")
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
-                Log.i(TAG, "WebRTC IceConnectionState changed: $state (SessionID=$activeSessionId)")
+                logI(TAG, "WebRTC IceConnectionState changed: $state (SessionID=$activeSessionId)")
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
                     ScreenCaptureManager.markConnected(activeSessionId)
 
@@ -149,7 +154,7 @@ class WebRtcPeerConnectionManager(
             override fun onIceConnectionReceivingChange(receiving: Boolean) {}
 
             override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-                Log.d(TAG, "WebRTC IceGatheringState changed: $state")
+                logD(TAG, "WebRTC IceGatheringState changed: $state")
             }
 
             override fun onIceCandidate(candidate: IceCandidate?) {
@@ -176,7 +181,7 @@ class WebRtcPeerConnectionManager(
         val attachResult = attachScreenCapturer(projectionResultData)
         if (attachResult.isFailure) {
             val err = attachResult.exceptionOrNull()?.message ?: "Screen capture startup failed"
-            Log.e(TAG, "Rejecting media session initialization for SessionID=$activeSessionId: $err")
+            logE(TAG, "Rejecting media session initialization for SessionID=$activeSessionId: $err")
 
             val stopPayload = JSONObject().apply {
                 put("session_id", activeSessionId)
@@ -195,7 +200,7 @@ class WebRtcPeerConnectionManager(
             put("status", "ready")
         }
         signalPublisher("media.session.ready", readyPayload)
-        Log.i(TAG, "WebRTC PeerConnection and ScreenCapturer initialized for SessionID=$activeSessionId. Sent media.session.ready")
+        logI(TAG, "WebRTC PeerConnection and ScreenCapturer initialized for SessionID=$activeSessionId. Sent media.session.ready")
     }
 
     private fun attachScreenCapturer(projectionResultData: Intent): Result<Unit> {
@@ -225,13 +230,13 @@ class WebRtcPeerConnectionManager(
 
             peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
                 ?: return Result.failure(IllegalStateException("Failed to add video track to PeerConnection"))
-            Log.i(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH}) to WebRTC PeerConnection successfully")
+            logI(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH}) to WebRTC PeerConnection successfully")
 
             // Register DisplayListener for orientation change handling
             registerDisplayListener()
             Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error attaching ScreenCapturerAndroid: ${e.message}", e)
+        } catch (e: Throwable) {
+            logE(TAG, "Error attaching ScreenCapturerAndroid: ${e.message}", e)
             cleanupCapturerResources()
             Result.failure(e)
         }
@@ -249,8 +254,8 @@ class WebRtcPeerConnectionManager(
             videoSource = null
             surfaceTextureHelper?.dispose()
             surfaceTextureHelper = null
-        } catch (e: Exception) {
-            Log.w(TAG, "Error during capturer cleanup: ${e.message}")
+        } catch (e: Throwable) {
+            logW(TAG, "Error during capturer cleanup: ${e.message}")
         }
     }
 
@@ -264,7 +269,7 @@ class WebRtcPeerConnectionManager(
                     try {
                         val currentGeom = DisplayGeometryProvider.getGeometry(context)
                         if (currentGeom.orientation != lastOrientation) {
-                            Log.i(TAG, "Display orientation changed: $lastOrientation -> ${currentGeom.orientation}")
+                            logI(TAG, "Display orientation changed: $lastOrientation -> ${currentGeom.orientation}")
                             lastOrientation = currentGeom.orientation
                             val (newW, newH) = if (currentGeom.orientation == DisplayOrientation.LANDSCAPE) {
                                 Pair(1280, 720)
@@ -275,18 +280,18 @@ class WebRtcPeerConnectionManager(
                                 lastCaptureWidth = newW
                                 lastCaptureHeight = newH
                                 videoCapturer?.changeCaptureFormat(newW, newH, 30)
-                                Log.i(TAG, "Changed capture format to ${newW}x${newH}@30fps")
+                                logI(TAG, "Changed capture format to ${newW}x${newH}@30fps")
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "DisplayGeometryProvider error during onDisplayChanged: ${e.message}")
+                    } catch (e: Throwable) {
+                        logW(TAG, "DisplayGeometryProvider error during onDisplayChanged: ${e.message}")
                     }
                 }
             }
             displayManager?.registerDisplayListener(displayListener, null)
-            Log.i(TAG, "Registered DisplayManager.DisplayListener for orientation changes")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register DisplayListener: ${e.message}")
+            logI(TAG, "Registered DisplayManager.DisplayListener for orientation changes")
+        } catch (e: Throwable) {
+            logE(TAG, "Failed to register DisplayListener: ${e.message}")
         }
     }
 
@@ -294,10 +299,10 @@ class WebRtcPeerConnectionManager(
         try {
             if (displayManager != null && displayListener != null) {
                 displayManager?.unregisterDisplayListener(displayListener)
-                Log.i(TAG, "Unregistered DisplayManager.DisplayListener cleanly")
+                logI(TAG, "Unregistered DisplayManager.DisplayListener cleanly")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error unregistering DisplayListener: ${e.message}")
+        } catch (e: Throwable) {
+            logE(TAG, "Error unregistering DisplayListener: ${e.message}")
         } finally {
             displayListener = null
             displayManager = null
@@ -306,27 +311,27 @@ class WebRtcPeerConnectionManager(
 
     fun updateCaptureFormat(width: Int, height: Int, fps: Int = 30) {
         if (width == lastCaptureWidth && height == lastCaptureHeight) {
-            Log.d(TAG, "Ignoring duplicate changeCaptureFormat call (${width}x${height})")
+            logD(TAG, "Ignoring duplicate changeCaptureFormat call (${width}x${height})")
             return
         }
         try {
             videoCapturer?.changeCaptureFormat(width, height, fps)
             lastCaptureWidth = width
             lastCaptureHeight = height
-            Log.i(TAG, "Changed WebRTC ScreenCapturer format to ${width}x${height}@${fps}fps")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to change WebRTC capture format: ${e.message}")
+            logI(TAG, "Changed WebRTC ScreenCapturer format to ${width}x${height}@${fps}fps")
+        } catch (e: Throwable) {
+            logE(TAG, "Failed to change WebRTC capture format: ${e.message}")
         }
     }
 
     fun handleRemoteOffer(sessionId: String, offerSdpText: String) {
         if (sessionId.isNotEmpty() && activeSessionId.isNotEmpty() && sessionId != activeSessionId) {
-            Log.w(TAG, "SessionID mismatch in handleRemoteOffer ($sessionId vs $activeSessionId)")
+            logW(TAG, "SessionID mismatch in handleRemoteOffer ($sessionId vs $activeSessionId)")
             return
         }
 
         if (peerConnection == null) {
-            Log.e(TAG, "Cannot handleRemoteOffer: PeerConnection is null")
+            logE(TAG, "Cannot handleRemoteOffer: PeerConnection is null")
             return
         }
 
@@ -336,7 +341,7 @@ class WebRtcPeerConnectionManager(
         peerConnection?.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
                 isRemoteDescriptionSet = true
-                Log.i(TAG, "Set WebRTC Remote Description (OFFER) successfully")
+                logI(TAG, "Set WebRTC Remote Description (OFFER) successfully")
 
                 // Drain queued pending ICE candidates
                 drainPendingIceCandidates()
@@ -362,7 +367,7 @@ class WebRtcPeerConnectionManager(
                         put("type", "answer")
                     }
                     signalPublisher("media.signal.answer", answerPayload)
-                    Log.i(TAG, "Created and sent WebRTC Local Description (ANSWER) for SessionID=$activeSessionId")
+                    logI(TAG, "Created and sent WebRTC Local Description (ANSWER) for SessionID=$activeSessionId")
                 }
             }
         }, mediaConstraints)
@@ -376,10 +381,10 @@ class WebRtcPeerConnectionManager(
         val candidate = IceCandidate(sdpMid, sdpMLineIndex, candidateSdp)
         if (isRemoteDescriptionSet && peerConnection != null) {
             peerConnection?.addIceCandidate(candidate)
-            Log.d(TAG, "Added remote ICE candidate: $sdpMid [$sdpMLineIndex]")
+            logD(TAG, "Added remote ICE candidate: $sdpMid [$sdpMLineIndex]")
         } else {
             pendingIceCandidates.add(candidate)
-            Log.d(TAG, "Queued remote ICE candidate prior to RemoteDescription set")
+            logD(TAG, "Queued remote ICE candidate prior to RemoteDescription set")
         }
     }
 
@@ -397,37 +402,37 @@ class WebRtcPeerConnectionManager(
             try {
                 videoCapturer?.stopCapture()
                 videoCapturer?.dispose()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disposing videoCapturer: ${e.message}")
+            } catch (e: Throwable) {
+                logW(TAG, "Error disposing videoCapturer: ${e.message}")
             }
             videoCapturer = null
 
             try {
                 videoTrack?.dispose()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disposing videoTrack: ${e.message}")
+            } catch (e: Throwable) {
+                logW(TAG, "Error disposing videoTrack: ${e.message}")
             }
             videoTrack = null
 
             try {
                 videoSource?.dispose()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disposing videoSource: ${e.message}")
+            } catch (e: Throwable) {
+                logW(TAG, "Error disposing videoSource: ${e.message}")
             }
             videoSource = null
 
             try {
                 surfaceTextureHelper?.dispose()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error disposing surfaceTextureHelper: ${e.message}")
+            } catch (e: Throwable) {
+                logW(TAG, "Error disposing surfaceTextureHelper: ${e.message}")
             }
             surfaceTextureHelper = null
 
             try {
                 peerConnection?.close()
                 peerConnection?.dispose()
-            } catch (e: Exception) {
-                Log.w(TAG, "Error closing peerConnection: ${e.message}")
+            } catch (e: Throwable) {
+                logW(TAG, "Error closing peerConnection: ${e.message}")
             }
             peerConnection = null
 
@@ -436,16 +441,16 @@ class WebRtcPeerConnectionManager(
 
             ScreenCaptureManager.stopCapture(context)
 
-            Log.i(TAG, "Closed WebRTC PeerConnection session and FGS cleanly for SessionID=$activeSessionId")
+            logI(TAG, "Closed WebRTC PeerConnection session and FGS cleanly for SessionID=$activeSessionId")
             activeSessionId = ""
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing WebRTC session: ${e.message}")
+        } catch (e: Throwable) {
+            logE(TAG, "Error closing WebRTC session: ${e.message}")
         }
     }
 
     inner class AgentMediaProjectionCallback : android.media.projection.MediaProjection.Callback() {
         override fun onStop() {
-            Log.w(TAG, "MediaProjectionCallback.onStop triggered by system for SessionID=$activeSessionId")
+            logW(TAG, "MediaProjectionCallback.onStop triggered by system for SessionID=$activeSessionId")
             ScreenCaptureManager.onProjectionStoppedBySystem(context)
             closeSession()
         }
@@ -455,10 +460,10 @@ class WebRtcPeerConnectionManager(
         override fun onCreateSuccess(desc: SessionDescription?) {}
         override fun onSetSuccess() {}
         override fun onCreateFailure(reason: String?) {
-            Log.e(TAG, "SDP Observer onCreateFailure: $reason")
+            logE(TAG, "SDP Observer onCreateFailure: $reason")
         }
         override fun onSetFailure(reason: String?) {
-            Log.e(TAG, "SDP Observer onSetFailure: $reason")
+            logE(TAG, "SDP Observer onSetFailure: $reason")
         }
     }
 }
