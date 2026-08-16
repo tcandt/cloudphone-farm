@@ -2,6 +2,8 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -64,10 +66,19 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 
 	migrationsDir := filepath.Join("..", "..", "..", "db", "migrations")
 	for _, mFile := range migrations {
+		mPath := filepath.Join(migrationsDir, mFile)
+		sqlBytes, readErr := os.ReadFile(mPath)
+		if readErr != nil {
+			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
+		}
+
 		var version int64
 		if parts := strings.Split(mFile, "_"); len(parts) > 0 {
 			_, _ = fmt.Sscanf(parts[0], "%d", &version)
 		}
+
+		hash := sha256.Sum256(sqlBytes)
+		checksumHex := hex.EncodeToString(hash[:])
 
 		if version > 0 {
 			var recordedChecksum string
@@ -76,12 +87,6 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 				// Already applied by production migrator or prior step
 				continue
 			}
-		}
-
-		mPath := filepath.Join(migrationsDir, mFile)
-		sqlBytes, readErr := os.ReadFile(mPath)
-		if readErr != nil {
-			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
 		}
 
 		tx, txErr := pool.Begin(ctx)
@@ -93,7 +98,7 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
 		}
 		if version > 0 {
-			_, _ = tx.Exec(ctx, "INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES ($1, $2, 'test_checksum') ON CONFLICT DO NOTHING", version, mFile)
+			_, _ = tx.Exec(ctx, "INSERT INTO pcp_schema_migrations (version, name, checksum) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", version, mFile, checksumHex)
 		}
 		_ = tx.Commit(ctx)
 	}
