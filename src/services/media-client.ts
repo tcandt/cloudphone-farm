@@ -237,6 +237,7 @@ export class MockMediaClient implements MediaClient {
 interface MediaClientEntry {
   client: MediaClient;
   refCount: number;
+  disposalTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export class DefaultMediaClientRegistry {
@@ -248,8 +249,12 @@ export class DefaultMediaClientRegistry {
       const isTestEnv = typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE === 'test';
       const isMockMode = isTestEnv || getApiMode() === 'mock';
       const client = isMockMode ? new MockMediaClient(sessionId) : new ProductionWebRtcMediaClient(sessionId);
-      entry = { client, refCount: 0 };
+      entry = { client, refCount: 0, disposalTimer: null };
       this.instances.set(sessionId, entry);
+    }
+    if (entry.disposalTimer) {
+      clearTimeout(entry.disposalTimer);
+      entry.disposalTimer = null;
     }
     entry.refCount += 1;
     return entry.client;
@@ -261,13 +266,24 @@ export class DefaultMediaClientRegistry {
 
     entry.refCount -= 1;
     if (entry.refCount <= 0) {
-      await entry.client.stop();
-      this.instances.delete(sessionId);
+      if (entry.disposalTimer) {
+        clearTimeout(entry.disposalTimer);
+      }
+      entry.disposalTimer = setTimeout(async () => {
+        if (entry.refCount <= 0) {
+          await entry.client.stop();
+          this.instances.delete(sessionId);
+        }
+      }, 1500);
     }
   }
 
   async closeAll(): Promise<void> {
     for (const entry of this.instances.values()) {
+      if (entry.disposalTimer) {
+        clearTimeout(entry.disposalTimer);
+        entry.disposalTimer = null;
+      }
       await entry.client.stop();
     }
     this.instances.clear();

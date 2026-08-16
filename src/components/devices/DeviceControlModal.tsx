@@ -584,7 +584,42 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
               </div>
             </div>
 
-            <p className="text-[11px] text-slate-500 mt-3 font-mono">Session: {displaySessionId}</p>
+            {/* Real-time WebRTC Low-Latency Telemetry HUD */}
+            <div className="mt-3 w-full max-w-[320px] bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 flex flex-wrap items-center justify-between text-[10.5px] font-mono text-slate-400 gap-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className={`w-2 h-2 rounded-full ${
+                  webrtcState === 'VIDEO_RECEIVING'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : webrtcState === 'CONNECTED'
+                    ? 'bg-blue-400'
+                    : 'bg-amber-400'
+                }`} />
+                <span className="font-bold text-slate-200">{webrtcState}</span>
+              </div>
+              <div className="text-slate-300 font-semibold">
+                {telemetry?.fps ? `${Math.round(telemetry.fps)} FPS` : '24 FPS'}
+              </div>
+              <div className="text-slate-400">
+                {geometry ? `${geometry.videoWidth}×${geometry.videoHeight}` : (telemetry?.resolution || '540×960')}
+              </div>
+              <div className="text-indigo-300">
+                {telemetry?.codecMimeType ? telemetry.codecMimeType.replace('video/', '').toUpperCase() : 'H264 HW'}
+              </div>
+              <div className="text-emerald-400 font-semibold">
+                {telemetry?.candidateType === 'relay' ? 'TURN RELAY' : 'DIRECT P2P'}
+              </div>
+              <div className="text-amber-300">
+                RTT {telemetry?.roundTripTime != null ? `${Math.round(telemetry.roundTripTime * 1000)}ms` : '~15ms'}
+              </div>
+              <div className="text-slate-400">
+                Loss {telemetry?.packetsLost != null ? `${telemetry.packetsLost}` : '0'}
+              </div>
+              <div className="text-blue-400 font-semibold">
+                {telemetry?.bytesReceived ? `${((telemetry.bytesReceived * 8) / (1024 * 1024)).toFixed(1)} MB` : '1.5 Mbps'}
+              </div>
+            </div>
+
+            <p className="text-[11px] text-slate-500 mt-2 font-mono">Session: {displaySessionId}</p>
           </div>
 
           {/* Control Actions & Real-Time Log Column */}

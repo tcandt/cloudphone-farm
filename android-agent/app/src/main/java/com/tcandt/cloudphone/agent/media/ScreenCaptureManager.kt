@@ -39,6 +39,19 @@ object ScreenCaptureManager {
 
     var isFgsRunning: Boolean = false
 
+    var profileWidth: Int = 540
+    var profileHeight: Int = 960
+    var profileFps: Int = 24
+    var profileBitrateBps: Int = 1_500_000
+
+    fun setProfile(width: Int, height: Int, fps: Int, bitrateBps: Int) {
+        profileWidth = if (width > 0) width else 540
+        profileHeight = if (height > 0) height else 960
+        profileFps = if (fps > 0) fps else 24
+        profileBitrateBps = if (bitrateBps > 0) bitrateBps else 1_500_000
+        logI(TAG, "ScreenCapture profile set to ${profileWidth}x${profileHeight} @ ${profileFps}fps ($profileBitrateBps bps)")
+    }
+
     private var projectionResultCode: Int = 0
     private var projectionResultData: Intent? = null
 

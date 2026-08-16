@@ -273,14 +273,15 @@ class AgentWebSocketClient(
 
     private fun handleMediaSessionStart(payload: JSONObject) {
         val sessionId = payload.optString("session_id")
-        val width = payload.optInt("width", 720)
-        val height = payload.optInt("height", 1280)
-        val bitrate = payload.optInt("bitrate", 2_500_000)
-        val fps = payload.optInt("fps", 30)
+        val width = payload.optInt("width", 540)
+        val height = payload.optInt("height", 960)
+        val bitrate = payload.optInt("bitrate", 1_500_000)
+        val fps = payload.optInt("fps", 24)
 
         pendingIceServersJson = payload.optJSONArray("ice_servers")
 
         logI(TAG, "Received media.session.start request for SessionID=$sessionId (${width}x${height} @ ${fps}fps)")
+        ScreenCaptureManager.setProfile(width, height, fps, bitrate)
         ScreenCaptureManager.requestConsent(context, sessionId)
     }
 

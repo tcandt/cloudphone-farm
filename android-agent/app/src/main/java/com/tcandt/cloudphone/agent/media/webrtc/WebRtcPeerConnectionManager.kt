@@ -213,24 +213,45 @@ class WebRtcPeerConnectionManager(
                 ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoSource is null"))
 
             lastOrientation = initialGeom.orientation
+            val pWidth = ScreenCaptureManager.profileWidth
+            val pHeight = ScreenCaptureManager.profileHeight
+            val pFps = ScreenCaptureManager.profileFps
+            val pBitrate = ScreenCaptureManager.profileBitrateBps
+
             val (targetW, targetH) = if (initialGeom.orientation == DisplayOrientation.LANDSCAPE) {
-                Pair(1280, 720)
+                Pair(maxOf(pWidth, pHeight), minOf(pWidth, pHeight))
             } else {
-                Pair(720, 1280)
+                Pair(minOf(pWidth, pHeight), maxOf(pWidth, pHeight))
             }
             lastCaptureWidth = targetW
             lastCaptureHeight = targetH
 
             videoCapturer?.initialize(surfaceTextureHelper, context, videoSource?.capturerObserver)
-            videoCapturer?.startCapture(targetW, targetH, 30)
+            videoCapturer?.startCapture(targetW, targetH, pFps)
 
             videoTrack = peerConnectionFactory?.createVideoTrack("video_track_0", videoSource)
                 ?: return Result.failure(IllegalStateException("PeerConnectionFactory videoTrack is null"))
             videoTrack?.setEnabled(true)
 
-            peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
+            val rtpSender = peerConnection?.addTrack(videoTrack, listOf("pcp_media_stream_0"))
                 ?: return Result.failure(IllegalStateException("Failed to add video track to PeerConnection"))
-            logI(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH}) to WebRTC PeerConnection successfully")
+
+            // Apply bitrate & framerate limits to RtpSender
+            try {
+                val params = rtpSender.parameters
+                if (params != null && params.encodings.isNotEmpty()) {
+                    for (encoding in params.encodings) {
+                        encoding.maxBitrateBps = pBitrate
+                        encoding.maxFramerate = pFps
+                    }
+                    rtpSender.parameters = params
+                    logI(TAG, "Applied RtpSender bitrate limit (${pBitrate} bps) & framerate (${pFps} fps)")
+                }
+            } catch (e: Throwable) {
+                logW(TAG, "RtpSender parameters tuning skipped: ${e.message}")
+            }
+
+            logI(TAG, "Attached MediaProjection VideoTrack (${targetW}x${targetH} @ ${pFps}fps, max ${pBitrate}bps) to WebRTC PeerConnection successfully")
 
             // Register DisplayListener for orientation change handling
             registerDisplayListener()

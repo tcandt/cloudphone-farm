@@ -280,10 +280,10 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// 8. Dispatch media.session.start to Device Agent Node via ClusterRouter or local Hub
 	startPayload := map[string]interface{}{
 		"session_id":  sessionID,
-		"width":       720,
-		"height":      1280,
-		"bitrate":      2500000,
-		"fps":         30,
+		"width":       540,
+		"height":      960,
+		"bitrate":     1500000,
+		"fps":         24,
 		"ice_servers": iceServers,
 	}
 	startEnv, _ := agentws.NewWSEnvelope(agentws.MessageTypeMediaSessionStart, "msg_start_01", startPayload)
