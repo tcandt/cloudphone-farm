@@ -103,6 +103,7 @@ class SetupActivity : AppCompatActivity() {
                 put("protocol_version", "v1")
                 put("device_serial_number", Build.SERIAL ?: "sn_android_01")
                 put("device_display_name", Build.MODEL)
+                put("key_protection", keyStore.getKeyProtectionMetadata())
             }
 
             val client = OkHttpClient()

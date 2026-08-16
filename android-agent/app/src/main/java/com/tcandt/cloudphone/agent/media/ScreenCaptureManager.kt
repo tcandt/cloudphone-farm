@@ -26,6 +26,8 @@ object ScreenCaptureManager {
     private const val CONSENT_NOTIFICATION_ID = 2002
     private const val CHANNEL_ID = "pcp_consent_channel"
 
+    enum class SessionOutcome { STOPPED, FAILED }
+
     var currentState: ScreenCaptureState = ScreenCaptureState.IDLE
         private set
 
@@ -52,7 +54,7 @@ object ScreenCaptureManager {
     fun requestConsent(context: Context, sessionId: String): Long {
         if (currentState != ScreenCaptureState.IDLE) {
             Log.w(TAG, "New requestConsent for SessionID=$sessionId superseding existing state=$currentState (SessionID=$activeSessionId). Resetting state.")
-            stopCapture(context)
+            terminateMediaSession(context, SessionOutcome.STOPPED, "superseded_by_new_session")
         }
 
         sessionRequestGeneration++
@@ -108,8 +110,12 @@ object ScreenCaptureManager {
     }
 
     private fun dismissConsentNotification(context: Context) {
-        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        notificationManager.cancel(CONSENT_NOTIFICATION_ID)
+        try {
+            val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.cancel(CONSENT_NOTIFICATION_ID)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to dismiss consent notification: ${e.message}")
+        }
     }
 
     fun onConsentGranted(context: Context, generation: Long, resultCode: Int, resultData: Intent) {
@@ -130,8 +136,7 @@ object ScreenCaptureManager {
             if (MediaCaptureServiceNotifier.onFgsReadyListener != null) {
                 MediaCaptureServiceNotifier.onFgsReadyListener = null
                 Log.e(TAG, "FGS_READY timeout after 10s for SessionID=$capturedSessionId (Gen=$capturedGen). Stopping capture.")
-                stopCapture(context)
-                sessionListener?.onSessionFailed(capturedSessionId, "FGS_READY timeout after 10s")
+                terminateMediaSession(context, SessionOutcome.FAILED, "FGS_READY timeout after 10s")
             }
         }
         mainHandler.postDelayed(timeoutRunnable, 10000L)
@@ -143,7 +148,7 @@ object ScreenCaptureManager {
 
             if (capturedGen != sessionRequestGeneration || activeSessionId != capturedSessionId || currentState != ScreenCaptureState.CONSENT_REQUIRED) {
                 Log.w(TAG, "FGS_READY callback rejected: stale session or generation (Gen=$capturedGen vs currentGen=$sessionRequestGeneration, state=$currentState). Stopping orphan FGS.")
-                stopCapture(context)
+                terminateMediaSession(context, SessionOutcome.STOPPED, "stale_fgs_ready")
             } else {
                 Log.i(TAG, "MediaCaptureService FGS_READY signal received. Consuming MediaProjection token for SessionID=$capturedSessionId")
                 clearPermissionGrantOnly()
@@ -169,9 +174,7 @@ object ScreenCaptureManager {
         if (generation != sessionRequestGeneration) return
 
         Log.w(TAG, "Consent denied by user for Gen=$generation")
-        currentState = ScreenCaptureState.FAILED
-        sessionListener?.onSessionFailed(activeSessionId, "MediaProjection consent denied by user")
-        clearAllSessionState()
+        terminateMediaSession(context, SessionOutcome.FAILED, "MediaProjection consent denied by user")
     }
 
     fun markReady(sessionId: String) {
@@ -207,40 +210,57 @@ object ScreenCaptureManager {
 
     fun onEncoderFailed(errorMsg: String) {
         Log.e(TAG, "Encoder setup failed: $errorMsg")
-        currentState = ScreenCaptureState.FAILED
-        sessionListener?.onSessionFailed(activeSessionId, errorMsg)
-        clearAllSessionState()
+        terminateMediaSession(null, SessionOutcome.FAILED, errorMsg)
     }
 
     fun onProjectionStoppedBySystem(context: Context) {
         Log.w(TAG, "Projection stopped by system/user for SessionID=$activeSessionId")
-        stopCapture(context)
+        terminateMediaSession(context, SessionOutcome.STOPPED, "system_projection_stopped")
     }
 
     fun stopCapture(context: Context) {
-        Log.i(TAG, "stopCapture called (SessionID=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
+        terminateMediaSession(context, SessionOutcome.STOPPED, "operator_requested")
+    }
 
-        // Invalidate generation and clear pending listener
+    fun terminateMediaSession(context: Context?, outcome: SessionOutcome, reason: String) {
+        Log.i(TAG, "terminateMediaSession called (outcome=$outcome, reason=$reason, SessionID=$activeSessionId, isFgsRunning=$isFgsRunning, state=$currentState)")
+
         sessionRequestGeneration++
         MediaCaptureServiceNotifier.onFgsReadyListener = null
-        dismissConsentNotification(context)
 
-        // UNCONDITIONAL FGS CLEANUP: Always stop MediaCaptureService if it was ever started
-        if (isFgsRunning) {
-            val stopIntent = Intent(context, MediaCaptureService::class.java).apply {
-                action = MediaCaptureService.ACTION_STOP_CAPTURE
+        if (context != null) {
+            dismissConsentNotification(context)
+            if (isFgsRunning) {
+                try {
+                    val stopIntent = Intent(context, MediaCaptureService::class.java).apply {
+                        action = MediaCaptureService.ACTION_STOP_CAPTURE
+                    }
+                    context.stopService(stopIntent)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error stopping MediaCaptureService: ${e.message}")
+                }
+                isFgsRunning = false
+                Log.i(TAG, "MediaCaptureService FGS stopped unconditionally by ScreenCaptureManager")
             }
-            context.stopService(stopIntent)
+        } else {
             isFgsRunning = false
-            Log.i(TAG, "MediaCaptureService FGS stopped unconditionally by ScreenCaptureManager")
         }
 
-        if (currentState == ScreenCaptureState.IDLE) return
-
-        currentState = ScreenCaptureState.STOPPING
         val sessId = activeSessionId
+        if (currentState == ScreenCaptureState.IDLE && sessId.isEmpty()) {
+            return
+        }
+
+        val isFailed = (outcome == SessionOutcome.FAILED)
         clearAllSessionState()
-        sessionListener?.onSessionStopped(sessId, "operator_requested")
+
+        if (sessId.isNotEmpty()) {
+            if (isFailed) {
+                sessionListener?.onSessionFailed(sessId, reason)
+            } else {
+                sessionListener?.onSessionStopped(sessId, reason)
+            }
+        }
     }
 
     fun onServiceStoppedFully(sessionId: String, reason: String) {

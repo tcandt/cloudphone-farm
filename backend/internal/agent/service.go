@@ -268,7 +268,11 @@ func (s *AgentService) ProcessHeartbeat(ctx context.Context, agent *domain.Devic
 	}
 
 	if shouldPersist {
-		if err := s.enrollRepo.RecordDeviceHeartbeat(ctx, agent.OrganizationID, agent.DeviceID, req.CPUUsage, req.RAMUsage, req.TemperatureC, req.Battery, req.Network); err != nil {
+		var keyProtJSON []byte
+		if req.KeyProtection != nil {
+			keyProtJSON, _ = json.Marshal(req.KeyProtection)
+		}
+		if err := s.enrollRepo.RecordDeviceHeartbeat(ctx, agent.OrganizationID, agent.DeviceID, req.CPUUsage, req.RAMUsage, req.TemperatureC, req.Battery, req.Network, keyProtJSON); err != nil {
 			slog.Error("Failed to record PostgreSQL device heartbeat telemetry", "error", err, "device_id", agent.DeviceID)
 		}
 	}

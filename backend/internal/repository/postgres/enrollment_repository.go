@@ -352,8 +352,8 @@ func (r *EnrollmentRepository) RevokeAgentCredential(ctx context.Context, orgID,
 	return deviceID, nil
 }
 
-// RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table
-func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp *float64, battery *int, network *string) error {
+// RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table and updates key_protection if provided
+func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp *float64, battery *int, network *string, keyProtectionJSON []byte) error {
 	if r.pool == nil {
 		return nil
 	}
@@ -365,6 +365,14 @@ func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID,
 	_, err := r.pool.Exec(ctx, query, orgID, deviceID, cpu, ram, battery, temp, network)
 	if err != nil {
 		return fmt.Errorf("failed to record device heartbeat telemetry in PostgreSQL: %w", err)
+	}
+
+	if len(keyProtectionJSON) > 0 {
+		updateSQL := `
+			UPDATE device_agents SET key_protection = $3::jsonb WHERE organization_id = $1 AND device_id = $2;
+			UPDATE devices SET key_protection = $3::jsonb WHERE organization_id = $1 AND id = $2;
+		`
+		_, _ = r.pool.Exec(ctx, updateSQL, orgID, deviceID, keyProtectionJSON)
 	}
 
 	return nil

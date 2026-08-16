@@ -5,7 +5,8 @@ import json
 import unittest
 from collect_evidence import (
     evaluate_gate_a, evaluate_gate_b, evaluate_gate_c,
-    evaluate_gate_d, evaluate_gate_e, evaluate_gate_f, evaluate_gate_g
+    evaluate_gate_d, evaluate_gate_e, evaluate_gate_f, evaluate_gate_g,
+    generate_file_hashes
 )
 
 class TestFalsePassPrevention(unittest.TestCase):
@@ -29,14 +30,13 @@ class TestFalsePassPrevention(unittest.TestCase):
 
     def test_devices_present_without_evidence_returns_fail(self):
         devices = [{"serial": "dev1", "model": "Pixel 6", "android_version": "14", "api_level": "34"}]
-        # Devices attached alone MUST NEVER return PASS
-        self.assertEqual(evaluate_gate_a(devices, self.test_dir), "FAIL") # Requires 3 devices
-        self.assertEqual(evaluate_gate_b(devices, self.test_dir), "FAIL") # Missing command_journal.json
-        self.assertEqual(evaluate_gate_c(devices, self.test_dir), "FAIL") # Missing webrtc_stats.json
-        self.assertEqual(evaluate_gate_d(devices, self.test_dir), "FAIL") # Missing webrtc_stats.json & turn stats
-        self.assertEqual(evaluate_gate_e(devices, self.test_dir), "FAIL") # Missing security_evidence.json
-        self.assertEqual(evaluate_gate_f(devices, self.test_dir), "FAIL") # Requires 3 devices + scale_evidence.json
-        self.assertEqual(evaluate_gate_g(devices, self.test_dir), "FAIL") # Missing required artifact package
+        self.assertEqual(evaluate_gate_a(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_b(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_c(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_d(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_e(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_f(devices, self.test_dir), "FAIL")
+        self.assertEqual(evaluate_gate_g(devices, self.test_dir), "FAIL")
 
     def test_valid_webrtc_h264_multi_sample_passes_gate_c(self):
         devices = [{"serial": "dev1"}]
@@ -61,7 +61,7 @@ class TestFalsePassPrevention(unittest.TestCase):
         with open(os.path.join(self.test_dir, "webrtc_stats.json"), "w") as f:
             json.dump(stats_data, f)
 
-        self.assertEqual(evaluate_gate_c(devices, self.test_dir), "FAIL") # Requires >= 2 time samples with progression
+        self.assertEqual(evaluate_gate_c(devices, self.test_dir), "FAIL")
 
     def test_valid_dual_sample_passes_gate_d(self):
         devices = [{"serial": "dev1"}]
@@ -74,6 +74,39 @@ class TestFalsePassPrevention(unittest.TestCase):
             json.dump(turn_data, f)
 
         self.assertEqual(evaluate_gate_d(devices, self.test_dir), "PASS")
+
+    def test_gate_g_passes_with_valid_hash_package(self):
+        devices = [{"serial": "dev1"}]
+        files = [
+            "manifest.json", "PHASE-1.7-ACCEPTANCE.md", "webrtc_stats.json",
+            "webrtc_turn_stats.json", "command_journal.json", "fleet_lifecycle_evidence.json",
+            "security_evidence.json", "scale_evidence.json"
+        ]
+        for fn in files:
+            with open(os.path.join(self.test_dir, fn), "w") as f:
+                f.write('{"test": true}')
+
+        generate_file_hashes(self.test_dir)
+        self.assertEqual(evaluate_gate_g(devices, self.test_dir), "PASS")
+
+    def test_gate_g_fails_on_corrupt_file_hash(self):
+        devices = [{"serial": "dev1"}]
+        files = [
+            "manifest.json", "PHASE-1.7-ACCEPTANCE.md", "webrtc_stats.json",
+            "webrtc_turn_stats.json", "command_journal.json", "fleet_lifecycle_evidence.json",
+            "security_evidence.json", "scale_evidence.json"
+        ]
+        for fn in files:
+            with open(os.path.join(self.test_dir, fn), "w") as f:
+                f.write('{"test": true}')
+
+        generate_file_hashes(self.test_dir)
+
+        # Corrupt one evidence file after hash generation
+        with open(os.path.join(self.test_dir, "security_evidence.json"), "w") as f:
+            f.write('{"tampered": true}')
+
+        self.assertEqual(evaluate_gate_g(devices, self.test_dir), "FAIL")
 
 if __name__ == "__main__":
     unittest.main()
