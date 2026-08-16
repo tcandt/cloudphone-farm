@@ -51,6 +51,8 @@ class AgentWebSocketClient(
         private const val EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
 
+    private var isExplicitlyStopped = false
+
     var currentSocketEpoch: Long = 0L
         private set
 
