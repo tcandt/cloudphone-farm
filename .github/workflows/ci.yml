@@ -212,6 +212,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Android Source Provenance against Locked Baseline
+        run: |
+          git diff --exit-code v0.1.7-phase1.7-software-locked..HEAD -- android-agent/
 
       - name: Setup Java JDK 17
         uses: actions/setup-java@v4
@@ -227,3 +233,50 @@ jobs:
       - name: Verify Android Agent (lint, test, assemble)
         working-directory: android-agent
         run: gradle lintDebug testDebugUnitTest assembleDebug --no-daemon
+
+      - name: Generate APK Metadata & Checksum
+        working-directory: android-agent/app/build/outputs/apk/debug
+        run: |
+          APK_FILE="app-debug.apk"
+          if [ ! -f "$APK_FILE" ]; then
+            echo "ERROR: $APK_FILE not found!" >&2
+            exit 1
+          fi
+          
+          APK_SHA256=$(sha256sum "$APK_FILE" | awk '{print $1}')
+          echo "$APK_SHA256  $APK_FILE" > "${APK_FILE}.sha256"
+          
+          BUILD_TIMESTAMP_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          
+          cat <<EOF > build_metadata.json
+          {
+            "repository": "${{ github.repository }}",
+            "baseline_tag": "v0.1.7-phase1.7-software-locked",
+            "baseline_sha": "5b577483fc32a9b5a0115fccb0ab732dbeeb2796",
+            "build_commit_sha": "${{ github.sha }}",
+            "branch": "${{ github.ref_name }}",
+            "application_id": "com.tcandt.cloudphone.agent",
+            "variant": "debug",
+            "version_code": 1,
+            "version_name": "1.0.0",
+            "build_timestamp_utc": "$BUILD_TIMESTAMP_UTC",
+            "apk_filename": "$APK_FILE",
+            "apk_sha256": "$APK_SHA256",
+            "github_run_id": "${{ github.run_id }}",
+            "github_run_attempt": "${{ github.run_attempt }}"
+          }
+          EOF
+          
+          echo "Generated build_metadata.json:"
+          cat build_metadata.json
+
+      - name: Upload Android Agent APK & Metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-agent-apk-${{ github.sha }}
+          path: |
+            android-agent/app/build/outputs/apk/debug/app-debug.apk
+            android-agent/app/build/outputs/apk/debug/app-debug.apk.sha256
+            android-agent/app/build/outputs/apk/debug/build_metadata.json
+          if-no-files-found: error
+          retention-days: 90
