@@ -18,6 +18,7 @@ import {
   Layers,
   Send,
   Lock,
+  Eye,
   CheckCircle,
   AlertTriangle,
 } from 'lucide-react';
@@ -567,32 +568,20 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                 className="absolute inset-0 w-full h-full cursor-crosshair object-contain touch-none select-none"
               />
 
-              {/* Interactive Control Lock Overlay */}
-              {!lease && (
-                <div
-                  className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px] flex flex-col items-center justify-center p-4 text-center space-y-3 cursor-pointer z-10"
-                  onClick={(e) => acquireLease(e)}
-                >
-                  <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
-                    <Lock size={24} />
+              {/* Unobtrusive Top HUD Badge */}
+              <div className="absolute top-3 left-3 z-10">
+                {lease ? (
+                  <div className="bg-blue-900/80 backdrop-blur-md px-3 py-1 rounded-full text-[11px] font-bold text-blue-200 border border-blue-500/40 flex items-center gap-1.5 shadow-md">
+                    <Lock size={12} className="text-amber-400" />
+                    <span>ĐIỀU KHIỂN (#{lease.fencing_token})</span>
                   </div>
-                  <div>
-                    <h4 className="font-extrabold text-sm text-white">Interactive Control Lock</h4>
-                    <p className="text-xs text-slate-300 mt-1 max-w-[200px]">
-                      Yêu cầu lấy Control Lease từ backend trước khi điều khiển màn hình điện thoại.
-                    </p>
+                ) : (
+                  <div className="bg-slate-900/80 backdrop-blur-md px-3 py-1 rounded-full text-[11px] font-bold text-slate-300 border border-slate-700/60 flex items-center gap-1.5 shadow-md">
+                    <Eye size={12} className="text-emerald-400" />
+                    <span>XEM TRỰC TIẾP</span>
                   </div>
-                  <PermissionGuard permission="device.control.acquire">
-                    <button
-                      onClick={(e) => acquireLease(e)}
-                      disabled={isAcquiringLease}
-                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-xs shadow-lg hover:from-blue-500 hover:to-indigo-500 active:scale-95 transition-all disabled:opacity-50"
-                    >
-                      {isAcquiringLease ? 'Đang lấy quyền...' : 'Lấy Quyền (Lease)'}
-                    </button>
-                  </PermissionGuard>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             <p className="text-[11px] text-slate-500 mt-3 font-mono">Session: {displaySessionId}</p>
@@ -603,7 +592,7 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
             {/* Lease Ownership Banner */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Trạng thái Quyền Điều Khiển</span>
+                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Chế Độ Tương Tác</span>
                 {lease ? (
                   <span className={`px-2.5 py-1 rounded-full font-bold text-xs border flex items-center gap-1.5 ${
                     leaseSecondsLeft <= 10
@@ -611,11 +600,11 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                       : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
                   }`}>
                     <span className={`w-2 h-2 rounded-full ${leaseSecondsLeft <= 10 ? 'bg-amber-400 animate-ping' : 'bg-emerald-400 animate-pulse'}`} />
-                    {leaseSecondsLeft <= 10 ? 'CONTROL EXPIRING' : 'CONTROL ACTIVE'} ({leaseSecondsLeft}s còn lại • Token #{lease.fencing_token})
+                    {leaseSecondsLeft <= 10 ? 'SẮP HẾT HẠN' : 'ĐANG ĐIỀU KHIỂN'} ({leaseSecondsLeft}s • Token #{lease.fencing_token})
                   </span>
                 ) : (
-                  <span className="px-2.5 py-1 rounded-full bg-slate-800 text-slate-400 font-bold text-xs border border-slate-700">
-                    LIVE • VIEW ONLY
+                  <span className="px-2.5 py-1 rounded-full bg-slate-800 text-emerald-400 font-bold text-xs border border-slate-700 flex items-center gap-1.5">
+                    <Eye size={12} /> ĐANG XEM TRỰC TIẾP
                   </span>
                 )}
               </div>
@@ -626,17 +615,19 @@ export const DeviceControlModal: React.FC<DeviceControlModalProps> = ({ device, 
                     <button
                       onClick={(e) => acquireLease(e)}
                       disabled={isAcquiringLease}
-                      className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50"
+                      className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs shadow-md transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                     >
-                      {isAcquiringLease ? 'Đang xử lý...' : 'Xin quyền điều khiển (Acquire Lease)'}
+                      <Lock size={14} />
+                      <span>{isAcquiringLease ? 'Đang lấy quyền...' : 'Bật điều khiển (Acquire Control Lease)'}</span>
                     </button>
                   </PermissionGuard>
                 ) : (
                   <button
                     onClick={releaseLease}
-                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs border border-slate-700 transition-all"
+                    className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs border border-slate-700 transition-all flex items-center justify-center gap-2"
                   >
-                    Release Lease
+                    <X size={14} />
+                    <span>Trả quyền điều khiển (Release Lease)</span>
                   </button>
                 )}
               </div>

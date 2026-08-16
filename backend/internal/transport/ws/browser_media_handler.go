@@ -138,13 +138,13 @@ func (h *BrowserMediaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// 3. Distributed Viewer Quota Lease Check (MAX_DIRECT_P2P_VIEWERS_PER_DEVICE = 1)
 	sessionID := fmt.Sprintf("sess_%s", uuid.New().String()[:8])
 	if h.viewerRepo != nil {
-		if err := h.viewerRepo.AcquireViewerLease(ctx, orgID, deviceID, sessionID, 15*time.Minute); err != nil {
+		if err := h.viewerRepo.AcquireViewerLease(ctx, orgID, deviceID, principal.UserID, 15*time.Minute); err != nil {
 			slog.Warn("Viewer quota exceeded for device stream", "device_id", deviceID, "org_id", orgID, "error", err)
 			http.Error(w, "Maximum viewer stream limit reached for device (max 1)", http.StatusTooManyRequests)
 			return
 		}
 		defer func() {
-			_ = h.viewerRepo.ReleaseViewerLease(context.Background(), orgID, deviceID, sessionID)
+			_ = h.viewerRepo.ReleaseViewerLease(context.Background(), orgID, deviceID, principal.UserID)
 		}()
 	}
 

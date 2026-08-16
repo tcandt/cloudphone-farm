@@ -25,6 +25,20 @@ func NewLeaseService(fenceRepo *pgrepo.FenceRepository, leaseRepo *redisrepo.Lea
 }
 
 func (s *LeaseService) AcquireLease(ctx context.Context, orgID, deviceID, userID, userDisplayName string) (*domain.ControlLease, error) {
+	// 0. Check if active lease already belongs to the same user (Idempotent acquisition)
+	existing, err := s.leaseRepo.GetLease(ctx, orgID, deviceID)
+	if err == nil && existing != nil {
+		if existing.UserID == userID {
+			// Same operator already holds valid lease; renew and return existing lease
+			if renewed, renewErr := s.RenewLease(ctx, orgID, deviceID, existing.ControlLeaseID, userID); renewErr == nil {
+				return renewed, nil
+			}
+			return existing, nil
+		}
+		// Another operator holds active lease
+		return nil, domain.ErrControlAlreadyLeased
+	}
+
 	// 1. Monotonic atomic increment of fencing token in PostgreSQL
 	fencingToken, err := s.fenceRepo.IncrementFencingToken(ctx, orgID, deviceID)
 	if err != nil {
