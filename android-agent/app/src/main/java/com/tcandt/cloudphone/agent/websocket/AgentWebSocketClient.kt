@@ -219,8 +219,8 @@ class AgentWebSocketClient(
                 }
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    if (isStale(webSocket)) {
-                        logW(TAG, "Ignoring onFailure from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                    if (isExplicitlyStopped || isStale(webSocket)) {
+                        logW(TAG, "Ignoring onFailure from explicitly stopped or stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch, stopped=$isExplicitlyStopped)")
                         return
                     }
                     logE(TAG, "WebSocket error (Epoch=$attemptEpoch): ${t.message}", t)
@@ -229,8 +229,8 @@ class AgentWebSocketClient(
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    if (isStale(webSocket)) {
-                        logW(TAG, "Ignoring onClosed from stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch)")
+                    if (isExplicitlyStopped || isStale(webSocket)) {
+                        logW(TAG, "Ignoring onClosed from explicitly stopped or stale socket (Epoch=$attemptEpoch, activeEpoch=$socketEpoch, stopped=$isExplicitlyStopped)")
                         return
                     }
                     logW(TAG, "WebSocket connection closed (Epoch=$attemptEpoch): $reason ($code)")
@@ -450,4 +450,22 @@ class AgentWebSocketClient(
         webRtcManager?.closeSession()
         webSocket?.close(1000, "App Service Stopped")
     }
+
+    fun decommissionAndDisconnect() {
+        synchronized(this) {
+            isExplicitlyStopped = true
+            socketEpoch++
+            currentSocketEpoch = socketEpoch
+        }
+        reconnectJob?.cancel()
+        reconnectJob = null
+        stopHeartbeat()
+        webRtcManager?.closeSession()
+        try {
+            webSocket?.close(1000, "Agent Decommissioned")
+        } catch (_: Throwable) {}
+        webSocket = null
+        logI(TAG, "AgentWebSocketClient decommissioned and disconnected permanently.")
+    }
 }
+

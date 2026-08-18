@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -346,3 +347,111 @@ func (h *AgentHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ack"})
 }
+
+func (h *AgentHandler) Decommission(w http.ResponseWriter, r *http.Request) {
+	agentObj := r.Context().Value(custommw.AgentContextKey)
+	if agentObj == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "AGENT_UNAUTHENTICATED",
+			"message":   "Agent cryptographic identity missing from context",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	deviceAgent, ok := agentObj.(*domain.DeviceAgent)
+	if !ok || deviceAgent == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "AGENT_UNAUTHENTICATED",
+			"message":   "Invalid agent context payload",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	targetAgentID := chi.URLParam(r, "agentId")
+	if targetAgentID != "" && targetAgentID != deviceAgent.AgentID {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "FORBIDDEN",
+			"message":   "Cannot decommission another agent identity",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	res, err := h.agentService.DecommissionAgent(r.Context(), deviceAgent.OrganizationID, deviceAgent.AgentID, deviceAgent.AgentID, r.Header.Get("X-Request-ID"))
+	if err != nil {
+		slog.Error("DecommissionAgent handler error", "error", err, "agent_id", deviceAgent.AgentID, "org_id", deviceAgent.OrganizationID)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "INTERNAL_SERVER_ERROR",
+			"message":   err.Error(),
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":                "decommissioned",
+		"agent_id":              deviceAgent.AgentID,
+		"device_id":             res.DeviceID,
+		"already_decommissioned": res.AlreadyDecommissioned,
+	})
+}
+
+func (h *AgentHandler) DecommissionByUser(w http.ResponseWriter, r *http.Request) {
+	principal, err := auth.GetPrincipal(r.Context())
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "UNAUTHENTICATED",
+			"message":   "Authentication required",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	targetAgentID := chi.URLParam(r, "agentId")
+	if targetAgentID == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "INVALID_ARGUMENT",
+			"message":   "agentId path parameter is required",
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	res, err := h.agentService.DecommissionAgent(r.Context(), principal.OrganizationID, targetAgentID, principal.UserID, r.Header.Get("X-Request-ID"))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"code":      "INTERNAL_SERVER_ERROR",
+			"message":   err.Error(),
+			"timestamp": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":                "decommissioned",
+		"agent_id":              targetAgentID,
+		"device_id":             res.DeviceID,
+		"already_decommissioned": res.AlreadyDecommissioned,
+	})
+}
+

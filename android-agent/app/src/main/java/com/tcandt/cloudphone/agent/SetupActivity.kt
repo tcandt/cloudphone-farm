@@ -180,27 +180,17 @@ class SetupActivity : AppCompatActivity() {
         }
 
         btnResetEnrollment.setOnClickListener {
-            configStore.resetEnrollment()
-            logStore.log("WARN", "ENROLLMENT", "RESET_TRIGGERED", "Agent enrollment reset by user")
-            Toast.makeText(this, "Đã reset thông tin đăng ký. Vui lòng nhập token mới.", Toast.LENGTH_LONG).show()
-            refreshUiState()
+            showDecommissionMenuDialog()
         }
 
         btnGrantScreenCapture.setOnClickListener {
-            when (ScreenCaptureManager.currentState) {
-                ScreenCaptureState.IDLE -> {
-                    Toast.makeText(this, "Chưa có yêu cầu xem trực tiếp. Hãy bấm [Xem trực tiếp] trên website.", Toast.LENGTH_SHORT).show()
-                }
-                ScreenCaptureState.CONSENT_REQUIRED -> {
-                    logStore.log("INFO", "MEDIA", "CONSENT_UI_OPENED", "Opening pending consent UI for session ${ScreenCaptureManager.activeSessionId} (Gen=${ScreenCaptureManager.sessionRequestGeneration})")
-                    ScreenCaptureManager.openPendingConsentPrompt(this)
-                }
-                ScreenCaptureState.CAPTURING, ScreenCaptureState.READY, ScreenCaptureState.NEGOTIATING, ScreenCaptureState.CONNECTED -> {
-                    Toast.makeText(this, "Đang ghi màn hình cho phiên xem trực tiếp.", Toast.LENGTH_SHORT).show()
-                }
-                ScreenCaptureState.FAILED, ScreenCaptureState.STOPPING -> {
-                    Toast.makeText(this, "Phiên trước bị dừng hoặc lỗi. Vui lòng bấm [Xem trực tiếp] lại trên website.", Toast.LENGTH_SHORT).show()
-                }
+            if (ScreenCaptureManager.isProjectionSessionActive()) {
+                Toast.makeText(this, "Stream đang hoạt động ở chế độ Always Ready (Sẵn sàng phục vụ web viewer).", Toast.LENGTH_SHORT).show()
+            } else {
+                logStore.log("INFO", "MEDIA", "PERSISTENT_PROJECTION_START", "Starting persistent ProjectionSession from SetupActivity")
+                val sessionId = "proj_persistent_${System.currentTimeMillis()}"
+                ScreenCaptureManager.requestConsent(this, sessionId)
+                ScreenCaptureManager.openPendingConsentPrompt(this)
             }
         }
 
@@ -259,45 +249,33 @@ class SetupActivity : AppCompatActivity() {
         tvDashWssStatus.text = "WebSocket: ✓ Connected (${configStore.getServerUrl()})"
         tvDashHeartbeatStatus.text = "Heartbeat: ✓ HTTP 200 OK (Periodic 10s)"
 
-        var readinessScore = 40 // Base score for Network + Agent Service + WSS
+        val readinessScore = com.tcandt.cloudphone.agent.provisioning.PermissionProvisioningManager.getReadinessScore(this)
 
         // 2. Screen Capture Capability State
-        when (ScreenCaptureManager.currentState) {
-            ScreenCaptureState.IDLE -> {
-                tvScreenCaptureState.text = "○ Chưa có phiên"
-                tvScreenCaptureState.setTextColor(0xFF64748B.toInt())
-            }
-            ScreenCaptureState.CONSENT_REQUIRED -> {
-                tvScreenCaptureState.text = "🟠 Đang chờ xác nhận"
-                tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
-            }
-            ScreenCaptureState.READY -> {
-                tvScreenCaptureState.text = "🔵 Đã cấp quyền — đang khởi tạo WebRTC"
-                tvScreenCaptureState.setTextColor(0xFF2563EB.toInt())
-                readinessScore += 20
-            }
-            ScreenCaptureState.NEGOTIATING -> {
-                tvScreenCaptureState.text = "🔵 Đang thương lượng WebRTC"
-                tvScreenCaptureState.setTextColor(0xFF2563EB.toInt())
-                readinessScore += 25
-            }
-            ScreenCaptureState.CONNECTED -> {
-                tvScreenCaptureState.text = "🟢 WebRTC đã kết nối"
+        if (ScreenCaptureManager.isProjectionSessionActive()) {
+            if (ScreenCaptureManager.activeViewerCount > 0) {
+                tvScreenCaptureState.text = "🟣 ĐANG STREAM (${ScreenCaptureManager.activeViewerCount} viewer • 24 FPS)"
+                tvScreenCaptureState.setTextColor(0xFF9333EA.toInt())
+            } else {
+                tvScreenCaptureState.text = "● Sẵn sàng (Always Ready • Idle 3 FPS)"
                 tvScreenCaptureState.setTextColor(0xFF059669.toInt())
-                readinessScore += 30
             }
-            ScreenCaptureState.CAPTURING -> {
-                tvScreenCaptureState.text = "🟢 ĐANG STREAM MÀN HÌNH"
-                tvScreenCaptureState.setTextColor(0xFF059669.toInt())
-                readinessScore += 30
-            }
-            ScreenCaptureState.STOPPING -> {
-                tvScreenCaptureState.text = "🟡 Đang dừng phiên"
-                tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
-            }
-            ScreenCaptureState.FAILED -> {
-                tvScreenCaptureState.text = "🔴 Stream thất bại"
-                tvScreenCaptureState.setTextColor(0xFFDC2626.toInt())
+            btnGrantScreenCapture.text = "STREAM ĐANG SẴN SÀNG"
+        } else {
+            btnGrantScreenCapture.text = "BẬT STREAM ALWAYS READY"
+            when (ScreenCaptureManager.projectionState) {
+                com.tcandt.cloudphone.agent.media.ProjectionState.CONSENT_REQUIRED -> {
+                    tvScreenCaptureState.text = "🟠 Đang chờ xác nhận quyền"
+                    tvScreenCaptureState.setTextColor(0xFFD97706.toInt())
+                }
+                com.tcandt.cloudphone.agent.media.ProjectionState.FAILED, com.tcandt.cloudphone.agent.media.ProjectionState.REVOKED -> {
+                    tvScreenCaptureState.text = "🔴 Stream chưa kích hoạt"
+                    tvScreenCaptureState.setTextColor(0xFFDC2626.toInt())
+                }
+                else -> {
+                    tvScreenCaptureState.text = "○ Chưa kích hoạt"
+                    tvScreenCaptureState.setTextColor(0xFF64748B.toInt())
+                }
             }
         }
 
@@ -305,7 +283,7 @@ class SetupActivity : AppCompatActivity() {
         if (ScreenCaptureManager.isFgsRunning) {
             tvFgsStatus.text = "Foreground Service: 🟢 Running"
             tvFgsStatus.setTextColor(0xFF059669.toInt())
-        } else if (ScreenCaptureManager.currentState == ScreenCaptureState.CONSENT_REQUIRED) {
+        } else if (ScreenCaptureManager.projectionState == com.tcandt.cloudphone.agent.media.ProjectionState.CONSENT_REQUIRED) {
             tvFgsStatus.text = "Foreground Service: 🟡 Starting"
             tvFgsStatus.setTextColor(0xFFD97706.toInt())
         } else {
@@ -319,7 +297,6 @@ class SetupActivity : AppCompatActivity() {
             tvAccessibilityState.text = "✓ Enabled"
             tvAccessibilityState.setTextColor(0xFF059669.toInt())
             btnEnableAccessibility.visibility = View.GONE
-            readinessScore += 20
         } else {
             tvAccessibilityState.text = "✕ Disabled"
             tvAccessibilityState.setTextColor(0xFFDC2626.toInt())
@@ -332,7 +309,6 @@ class SetupActivity : AppCompatActivity() {
             tvImeState.text = "✓ Active"
             tvImeState.setTextColor(0xFF059669.toInt())
             btnEnableIme.visibility = View.GONE
-            readinessScore += 5
         } else {
             tvImeState.text = "○ Optional"
             tvImeState.setTextColor(0xFF64748B.toInt())
@@ -349,7 +325,6 @@ class SetupActivity : AppCompatActivity() {
             tvInstallApkState.text = "✓ Cho phép"
             tvInstallApkState.setTextColor(0xFF059669.toInt())
             btnAllowInstallApk.visibility = View.GONE
-            readinessScore += 5
         } else {
             tvInstallApkState.text = "✕ Chưa cấp"
             tvInstallApkState.setTextColor(0xFF64748B.toInt())
@@ -481,6 +456,120 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 
+    private fun showDecommissionMenuDialog() {
+        val options = arrayOf(
+            "Tạm ngắt kết nối (Giữ nguyên cấu hình)",
+            "Xóa liên kết thiết bị (Factory Reset Agent)"
+        )
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Tùy chọn quản lý Agent")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> performTemporaryDisconnect()
+                    1 -> showDestructiveConfirmDialog()
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun performTemporaryDisconnect() {
+        AgentService.instance?.decommission(this)
+        logStore.log("WARN", "AGENT", "TEMP_DISCONNECT", "Temporary disconnect triggered by user")
+        Toast.makeText(this, "Đã tạm ngắt kết nối Agent.", Toast.LENGTH_SHORT).show()
+        refreshUiState()
+    }
+
+    private fun showDestructiveConfirmDialog() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Xác nhận xóa liên kết thiết bị")
+            .setMessage("Thiết bị này sẽ bị hủy đăng ký trên máy chủ Phone Control Platform và toàn bộ khóa định danh mật mã cục bộ sẽ bị xóa vĩnh viễn.\n\nBạn có chắc chắn muốn thực hiện?")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton("XÓA LIÊN KẾT") { _, _ ->
+                performDecommission(forceLocal = false)
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun showForceResetConfirmDialog(errorMsg: String) {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Không thể kết nối Server")
+            .setMessage("Gặp lỗi khi gửi yêu cầu hủy đăng ký lên máy chủ ($errorMsg).\n\nBạn có muốn thực hiện Force Local Reset không?\n\nCẢNH BÁO: Khóa mật mã cục bộ sẽ bị xóa nhưng đăng ký trên server có thể vẫn còn tồn tại.")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton("FORCE LOCAL RESET") { _, _ ->
+                performDecommission(forceLocal = true)
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun performDecommission(forceLocal: Boolean) {
+        val serverUrl = configStore.getServerUrl()
+        val agentId = configStore.getAgentId()
+
+        if (forceLocal || agentId.isEmpty() || serverUrl.isEmpty()) {
+            executeLocalCleanup()
+            Toast.makeText(this, "Đã xóa liên kết cục bộ (Force Reset).", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        Toast.makeText(this, "Đang gửi yêu cầu hủy đăng ký lên Server...", Toast.LENGTH_SHORT).show()
+
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val timestampStr = (System.currentTimeMillis() / 1000).toString()
+                val nonce = UUID.randomUUID().toString()
+                val path = "/api/v1/agents/$agentId/decommission"
+                val emptyBodyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+                // Canonical format: Method\nPath\nBodyHash\nTimestamp\nNonce
+                val canonicalMessage = "POST\n$path\n$emptyBodyHash\n$timestampStr\n$nonce"
+                val signature = keyStore.signMessage(canonicalMessage)
+
+                val decommissionUrl = "${serverUrl.trimEnd('/')}$path"
+                val emptyBody = "".toRequestBody("application/json".toMediaType())
+
+                val request = Request.Builder()
+                    .url(decommissionUrl)
+                    .post(emptyBody)
+                    .header("X-Agent-ID", agentId)
+                    .header("X-Agent-Fingerprint", keyStore.getFingerprint())
+                    .header("X-Agent-Timestamp", timestampStr)
+                    .header("X-Agent-Nonce", nonce)
+                    .header("X-Agent-Signature", signature)
+                    .build()
+
+                val client = OkHttpClient()
+                val response = client.newCall(request).execute()
+
+                withContext(Dispatchers.Main) {
+                    if (response.isSuccessful) {
+                        executeLocalCleanup()
+                        logStore.log("WARN", "AGENT", "DECOMMISSION_SUCCESS", "Agent decommissioned successfully on backend and local keys cleared")
+                        Toast.makeText(this@SetupActivity, "Đã hủy liên kết thiết bị thành công!", Toast.LENGTH_LONG).show()
+                    } else {
+                        val respBody = response.body?.string() ?: ""
+                        logStore.log("ERROR", "AGENT", "DECOMMISSION_SERVER_ERROR", "HTTP ${response.code}: $respBody")
+                        showForceResetConfirmDialog("HTTP ${response.code}")
+                    }
+                }
+            } catch (e: Throwable) {
+                withContext(Dispatchers.Main) {
+                    logStore.log("ERROR", "AGENT", "DECOMMISSION_EXCEPTION", "${e.message}")
+                    showForceResetConfirmDialog(e.message ?: "Lỗi kết nối")
+                }
+            }
+        }
+    }
+
+    private fun executeLocalCleanup() {
+        AgentService.instance?.decommission(this)
+        keyStore.deleteKeys()
+        configStore.resetEnrollment()
+        refreshUiState()
+    }
+
     private fun startAgentService() {
         val intent = Intent(this, AgentService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -490,3 +579,4 @@ class SetupActivity : AppCompatActivity() {
         }
     }
 }
+

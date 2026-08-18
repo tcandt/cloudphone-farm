@@ -217,12 +217,27 @@ func (s *AgentService) RevokeAgentCredential(ctx context.Context, orgID, agentID
 		_ = s.presenceRepo.RemovePresence(ctx, orgID, deviceID)
 	}
 
-	if s.broadcaster != nil {
-		s.broadcaster.BroadcastAgentRevocation(orgID, deviceID, agentID)
-	}
-
 	return nil
 }
+
+func (s *AgentService) DecommissionAgent(ctx context.Context, orgID, agentID, actorID, correlationID string) (*pgrepo.DecommissionResult, error) {
+	res, err := s.enrollRepo.DecommissionAgent(ctx, orgID, agentID, actorID, correlationID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only AFTER DB transaction commits: cleanup Redis presence & broadcast cluster revocation
+	if s.presenceRepo != nil {
+		_ = s.presenceRepo.RemovePresence(ctx, orgID, res.DeviceID)
+	}
+
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastAgentRevocation(orgID, res.DeviceID, agentID)
+	}
+
+	return res, nil
+}
+
 
 func (s *AgentService) EnrollAgent(ctx context.Context, req EnrollRequestDTO) (*pgrepo.EnrollmentResult, error) {
 	if req.TokenCode == "" || len(req.PublicKeyBytes) == 0 {

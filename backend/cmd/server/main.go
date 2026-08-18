@@ -233,10 +233,11 @@ func main() {
 		// Public Agent Enrollment Endpoint (Rate Limited by Enrollment Bucket)
 		r.With(rateLimiter.LimitMiddleware(custommw.ScopeEnrollment, 10, 2)).Post("/agents/enroll", agentHandler.EnrollAgent)
 
-		// Agent Machine Authenticated Heartbeat Endpoint
+		// Agent Machine Authenticated Heartbeat & Decommission Endpoints
 		r.Group(func(r chi.Router) {
 			r.Use(agentAuthMiddleware.Handler)
 			r.Post("/agents/heartbeat", agentHandler.Heartbeat)
+			r.Post("/agents/{agentId}/decommission", agentHandler.Decommission)
 		})
 
 		// Protected User Routes (Browser Session)
@@ -287,6 +288,7 @@ func main() {
 				r.Get("/enrollment-tokens/{id}/readiness", agentHandler.GetTokenReadiness)
 				r.Delete("/enrollment-tokens/{id}", agentHandler.RevokeToken)
 				r.Delete("/agents/{agentId}", agentHandler.RevokeAgentCredential)
+				r.Post("/admin/agents/{agentId}/decommission", agentHandler.DecommissionByUser)
 			})
 
 			r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {

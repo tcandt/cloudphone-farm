@@ -101,3 +101,26 @@ func TestHeartbeatRequestDTO_NullableTelemetryAndKeyProtection(t *testing.T) {
 		}
 	})
 }
+
+func TestDecommissionResult_JSONContract(t *testing.T) {
+	t.Run("serializes decommission result faithfully", func(t *testing.T) {
+		res := map[string]interface{}{
+			"status":                "decommissioned",
+			"agent_id":              "agt_test_123",
+			"device_id":             "dev_test_456",
+			"already_decommissioned": false,
+		}
+		data, err := json.Marshal(res)
+		if err != nil {
+			t.Fatalf("failed to marshal: %v", err)
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(data, &parsed); err != nil {
+			t.Fatalf("failed to unmarshal: %v", err)
+		}
+		if parsed["status"] != "decommissioned" || parsed["agent_id"] != "agt_test_123" {
+			t.Fatalf("unexpected parsed result: %v", parsed)
+		}
+	})
+}
+

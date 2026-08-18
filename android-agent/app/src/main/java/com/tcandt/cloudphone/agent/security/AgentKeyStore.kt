@@ -147,11 +147,21 @@ class AgentKeyStore(context: Context) {
     }
 
     fun getPublicKeyBase64(): String {
-        return prefs.getString(KEY_PUBLIC_RAW_B64, "") ?: ""
+        var key = prefs.getString(KEY_PUBLIC_RAW_B64, "") ?: ""
+        if (key.isEmpty()) {
+            regenerateKeys()
+            key = prefs.getString(KEY_PUBLIC_RAW_B64, "") ?: ""
+        }
+        return key
     }
 
     fun getFingerprint(): String {
-        return prefs.getString(KEY_FINGERPRINT, "") ?: ""
+        var fp = prefs.getString(KEY_FINGERPRINT, "") ?: ""
+        if (fp.isEmpty()) {
+            regenerateKeys()
+            fp = prefs.getString(KEY_FINGERPRINT, "") ?: ""
+        }
+        return fp
     }
 
     fun getKeySecurityLevel(): String {
@@ -197,4 +207,36 @@ class AgentKeyStore(context: Context) {
             ""
         }
     }
+
+    fun deleteKeys() {
+        try {
+            // 1. Delete AES-256 Key from AndroidKeyStore
+            val keyStore = KeyStore.getInstance("AndroidKeyStore")
+            keyStore.load(null)
+            if (keyStore.containsAlias(KEY_ALIAS_AES)) {
+                keyStore.deleteEntry(KEY_ALIAS_AES)
+                logI(TAG, "Deleted Android KeyStore entry: $KEY_ALIAS_AES")
+            }
+        } catch (e: Throwable) {
+            logW(TAG, "Error deleting Android KeyStore entry: ${e.message}")
+        }
+
+        // 2. Surgically remove only identity-related keys from SharedPreferences
+        prefs.edit()
+            .remove(KEY_ENCRYPTED_SEED_B64)
+            .remove(KEY_IV_B64)
+            .remove(KEY_PUBLIC_RAW_B64)
+            .remove(KEY_FINGERPRINT)
+            .remove(KEY_OLD_LEGACY_RAW_SEED_B64)
+            .commit()
+
+        logI(TAG, "Cryptographic identity keys surgically deleted from AgentKeyStore.")
+    }
+
+    fun regenerateKeys() {
+        ensureKeystoreKey()
+        generateAndStoreKeys()
+    }
 }
+
+

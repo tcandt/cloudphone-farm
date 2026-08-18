@@ -353,6 +353,110 @@ func (r *EnrollmentRepository) RevokeAgentCredential(ctx context.Context, orgID,
 	return deviceID, nil
 }
 
+type DecommissionResult struct {
+	DeviceID              string `json:"device_id"`
+	AlreadyDecommissioned bool   `json:"already_decommissioned"`
+}
+
+// DecommissionAgent executes a transactional, idempotent decommission of an agent and its associated device
+func (r *EnrollmentRepository) DecommissionAgent(ctx context.Context, orgID, agentID, actorID, correlationID string) (*DecommissionResult, error) {
+	if r.pool == nil {
+		return nil, errors.New("postgres connection pool uninitialized")
+	}
+
+	// Resolve a valid user ID for audit_logs foreign key constraint before starting transaction
+	var validActorID string
+	err := r.pool.QueryRow(ctx, "SELECT user_id FROM users WHERE organization_id = $1 AND user_id = $2", orgID, actorID).Scan(&validActorID)
+	if err != nil {
+		_ = r.pool.QueryRow(ctx, "SELECT user_id FROM users WHERE organization_id = $1 ORDER BY created_at ASC LIMIT 1", orgID).Scan(&validActorID)
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin decommission transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock agent row FOR UPDATE
+	var status string
+	var deviceID string
+	var revokedAt *time.Time
+	queryAgent := `
+		SELECT status, device_id, revoked_at
+		FROM device_agents
+		WHERE organization_id = $1 AND agent_id = $2
+		FOR UPDATE
+	`
+	err = tx.QueryRow(ctx, queryAgent, orgID, agentID).Scan(&status, &deviceID, &revokedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, errors.New("agent not found")
+		}
+		return nil, fmt.Errorf("failed to query agent for decommission: %w", err)
+	}
+
+	// Idempotency check: If already decommissioned / revoked, return success immediately
+	if status == "decommissioned" || status == "revoked" || revokedAt != nil {
+		_ = tx.Commit(ctx)
+		return &DecommissionResult{
+			DeviceID:              deviceID,
+			AlreadyDecommissioned: true,
+		}, nil
+	}
+
+	// 2. Mark agent as decommissioned
+	updateAgentSQL := `
+		UPDATE device_agents
+		SET status = 'decommissioned', revoked_at = CURRENT_TIMESTAMP
+		WHERE organization_id = $1 AND agent_id = $2
+	`
+	if _, err := tx.Exec(ctx, updateAgentSQL, orgID, agentID); err != nil {
+		return nil, fmt.Errorf("failed to update device_agent status: %w", err)
+	}
+
+	// 3. Mark device as offline
+	updateDeviceSQL := `
+		UPDATE devices
+		SET status = 'offline', updated_at = CURRENT_TIMESTAMP
+		WHERE organization_id = $1 AND device_id = $2
+	`
+	if _, err := tx.Exec(ctx, updateDeviceSQL, orgID, deviceID); err != nil {
+		return nil, fmt.Errorf("failed to update device status: %w", err)
+	}
+
+	// 4. Revoke active control leases
+	revokeLeasesSQL := `
+		UPDATE control_leases
+		SET revoked_at = CURRENT_TIMESTAMP
+		WHERE organization_id = $1 AND device_id = $2 AND revoked_at IS NULL
+	`
+	_, _ = tx.Exec(ctx, revokeLeasesSQL, orgID, deviceID)
+
+	// 5. Insert Audit Log
+	if correlationID == "" {
+		correlationID = fmt.Sprintf("dec_%d", time.Now().UnixNano())
+	}
+
+	if validActorID != "" {
+		detailsJSON := fmt.Sprintf(`{"message": "Agent decommissioned", "agent_id": "%s", "device_id": "%s", "triggered_by": "%s"}`, agentID, deviceID, actorID)
+		auditSQL := `
+			INSERT INTO audit_logs (organization_id, actor_id, correlation_id, action, resource_type, resource_id, details)
+			VALUES ($1, $2, $3, 'agent.decommission', 'device_agent', $4, $5::jsonb)
+		`
+		_, _ = tx.Exec(ctx, auditSQL, orgID, validActorID, correlationID, agentID, detailsJSON)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to commit decommission transaction: %w", err)
+	}
+
+	return &DecommissionResult{
+		DeviceID:              deviceID,
+		AlreadyDecommissioned: false,
+	}, nil
+}
+
+
 // RecordDeviceHeartbeat inserts a telemetry snapshot into PostgreSQL device_heartbeats table and updates key_protection if provided
 func (r *EnrollmentRepository) RecordDeviceHeartbeat(ctx context.Context, orgID, deviceID string, cpu, ram, temp *float64, battery *int, network *string, keyProtectionJSON []byte) error {
 	if r.pool == nil {

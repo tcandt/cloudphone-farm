@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.tcandt.cloudphone.agent.config.AgentConfigStore
+import com.tcandt.cloudphone.agent.media.ScreenCaptureManager
 import com.tcandt.cloudphone.agent.websocket.AgentWebSocketClient
 
 class AgentService : Service() {
@@ -21,10 +22,15 @@ class AgentService : Service() {
         private const val TAG = "AgentService"
         private const val CHANNEL_ID = "pcp_agent_service_channel"
         private const val NOTIFICATION_ID = 1001
+
+        @Volatile
+        var instance: AgentService? = null
+            private set
     }
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         configStore = AgentConfigStore(applicationContext)
 
         createNotificationChannel()
@@ -50,8 +56,29 @@ class AgentService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        if (instance == this) {
+            instance = null
+        }
         wsClient?.disconnect()
         Log.i(TAG, "AgentService destroyed")
+    }
+
+    fun decommission(context: android.content.Context) {
+        try {
+            wsClient?.decommissionAndDisconnect()
+            wsClient = null
+            ScreenCaptureManager.stopCapture(context)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+            stopSelf()
+            Log.i(TAG, "AgentService decommission completed and service stopped")
+        } catch (e: Throwable) {
+            Log.e(TAG, "Error during decommission: ${e.message}", e)
+        }
     }
 
     private fun createNotificationChannel() {
