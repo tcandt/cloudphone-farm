@@ -36,6 +36,7 @@ func runMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrat
 		"000006_control_lease_and_command_contract.up.sql",
 		"000007_phase14_command_delivery_attempts.up.sql",
 		"000008_nullable_physical_telemetry_and_security_metadata.up.sql",
+		"000009_enrollment_tokens_created_at.up.sql",
 	}
 
 	_, _ = pool.Exec(ctx, `

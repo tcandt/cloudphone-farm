@@ -11,8 +11,8 @@ require (
 	github.com/jackc/pgx/v5 v5.6.0
 	github.com/oapi-codegen/runtime v1.1.1
 	github.com/redis/go-redis/v9 v9.6.1
-	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.46.0
+	github.com/stretchr/testify v1.8.4
+	golang.org/x/crypto v0.17.0
 )
 
 require (

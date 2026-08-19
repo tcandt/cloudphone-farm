@@ -37,14 +37,28 @@ func (m *mockRepo) List(ctx context.Context, orgID string) ([]*domain.AgentKey, 
 	return res, nil
 }
 
-func (m *mockRepo) Update(ctx context.Context, orgID, keyID string, name string, maxBindings *int, expiresAt *time.Time) (*domain.AgentKey, error) {
+func (m *mockRepo) Update(
+	ctx context.Context,
+	orgID, keyID string,
+	name *string,
+	maxBindings *int,
+	updateMaxBindings bool,
+	expiresAt *time.Time,
+	updateExpiresAt bool,
+) (*domain.AgentKey, error) {
 	k, ok := m.keys[keyID]
 	if !ok || k.OrganizationID != orgID {
 		return nil, nil // Not found
 	}
-	k.Name = name
-	k.MaxBindings = maxBindings
-	k.ExpiresAt = expiresAt
+	if name != nil {
+		k.Name = *name
+	}
+	if updateMaxBindings {
+		k.MaxBindings = maxBindings
+	}
+	if updateExpiresAt {
+		k.ExpiresAt = expiresAt
+	}
 	k.UpdatedAt = time.Now()
 	return k, nil
 }
@@ -119,7 +133,8 @@ func TestAgentKeyService_TenantIsolation(t *testing.T) {
 	}
 
 	// orgB attempts to update orgA's key
-	_, err = svc.UpdateKey(ctx, orgB, keyA.KeyID, UpdateKeyRequest{Name: "Hacked"})
+	hackedName := "Hacked"
+	_, err = svc.UpdateKey(ctx, orgB, keyA.KeyID, UpdateKeyRequest{Name: &hackedName})
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("orgB should not update orgA key, got %v", err)
 	}

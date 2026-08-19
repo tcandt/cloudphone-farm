@@ -118,44 +118,61 @@ func (h *AgentKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	keyID := chi.URLParam(r, "keyId")
 
-	var rawReq map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&rawReq); err != nil {
+	var rawReq map[string]json.RawMessage
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&rawReq); err != nil {
 		WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
+		return
+	}
+	if decoder.More() {
+		WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "Trailing JSON data not allowed")
 		return
 	}
 
 	svcReq := agentkey.UpdateKeyRequest{}
 	
-	if nameRaw, ok := rawReq["name"]; ok {
-		if nameRaw != nil {
-			if str, isStr := nameRaw.(string); isStr {
-				svcReq.Name = &str
+	for k, v := range rawReq {
+		switch k {
+		case "name":
+			if string(v) == "null" {
+				WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "name cannot be null")
+				return
 			}
-		} else {
-			// explicitly null, which is invalid for name, let service return error
-			empty := ""
-			svcReq.Name = &empty
-		}
-	}
-	
-	if maxBRaw, ok := rawReq["max_bindings"]; ok {
-		svcReq.UpdateMaxBindings = true
-		if maxBRaw != nil {
-			if num, isNum := maxBRaw.(float64); isNum {
-				val := int(num)
-				svcReq.MaxBindings = &val
+			var name string
+			if err := json.Unmarshal(v, &name); err != nil {
+				WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid name format")
+				return
 			}
-		}
-	}
-	
-	if expRaw, ok := rawReq["expires_at"]; ok {
-		svcReq.UpdateExpiresAt = true
-		if expRaw != nil {
-			if str, isStr := expRaw.(string); isStr {
-				if t, err := time.Parse(time.RFC3339, str); err == nil {
-					svcReq.ExpiresAt = &t
+			svcReq.Name = &name
+		case "max_bindings":
+			svcReq.UpdateMaxBindings = true
+			if string(v) != "null" {
+				var max int
+				if err := json.Unmarshal(v, &max); err != nil {
+					WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid max_bindings format")
+					return
 				}
+				svcReq.MaxBindings = &max
 			}
+		case "expires_at":
+			svcReq.UpdateExpiresAt = true
+			if string(v) != "null" {
+				var expStr string
+				if err := json.Unmarshal(v, &expStr); err != nil {
+					WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid expires_at format")
+					return
+				}
+				exp, err := time.Parse(time.RFC3339, expStr)
+				if err != nil {
+					WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "expires_at must be valid RFC3339 timestamp")
+					return
+				}
+				svcReq.ExpiresAt = &exp
+			}
+		default:
+			WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "unrecognized or immutable field: "+k)
+			return
 		}
 	}
 

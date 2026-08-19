@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -148,38 +150,44 @@ func (r *agentKeyRepository) List(ctx context.Context, orgID string) ([]*domain.
 }
 
 func (r *agentKeyRepository) Update(ctx context.Context, orgID, keyID string, name *string, maxBindings *int, updateMaxBindings bool, expiresAt *time.Time, updateExpiresAt bool) (*domain.AgentKey, error) {
-	// First fetch the current key to apply partial updates cleanly
-	key, err := r.GetByID(ctx, orgID, keyID)
-	if err != nil {
-		return nil, err
+	if name == nil && !updateMaxBindings && !updateExpiresAt {
+		return r.GetByID(ctx, orgID, keyID)
 	}
-	if key == nil {
-		return nil, nil // ErrNoRows mapping
-	}
+
+	setFields := []string{"updated_at = NOW()"}
+	args := []interface{}{orgID, keyID}
+	argID := 3
 
 	if name != nil {
-		key.Name = *name
+		setFields = append(setFields, fmt.Sprintf("name = $%d", argID))
+		args = append(args, *name)
+		argID++
 	}
 	if updateMaxBindings {
-		key.MaxBindings = maxBindings
+		setFields = append(setFields, fmt.Sprintf("max_bindings = $%d", argID))
+		args = append(args, maxBindings)
+		argID++
 	}
 	if updateExpiresAt {
-		key.ExpiresAt = expiresAt
+		setFields = append(setFields, fmt.Sprintf("expires_at = $%d", argID))
+		args = append(args, expiresAt)
+		argID++
 	}
 
-	query := `
+	query := fmt.Sprintf(`
 		UPDATE agent_enrollment_keys
-		SET name = $1, max_bindings = $2, expires_at = $3, updated_at = NOW()
-		WHERE organization_id = $4 AND key_id = $5
+		SET %s
+		WHERE organization_id = $1 AND key_id = $2 AND revoked_at IS NULL
 		RETURNING key_id, organization_id, created_by, name, token_hash, token_prefix, max_bindings, expires_at, revoked_at, created_at, updated_at, last_used_at
-	`
-	row := r.db.QueryRow(ctx, query, key.Name, key.MaxBindings, key.ExpiresAt, orgID, keyID)
+	`, strings.Join(setFields, ", "))
+
+	row := r.db.QueryRow(ctx, query, args...)
 	
 	var outKey domain.AgentKey
 	var maxBindingsOut sql.NullInt64
 	var expiresAtOut, revokedAt, lastUsedAt sql.NullTime
 
-	err = row.Scan(
+	err := row.Scan(
 		&outKey.KeyID,
 		&outKey.OrganizationID,
 		&outKey.CreatedBy,

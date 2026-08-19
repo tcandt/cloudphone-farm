@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,6 +52,11 @@ func NewService(repo repository.AgentKeyRepository) AgentKeyService {
 }
 
 func (s *agentKeyService) CreateKey(ctx context.Context, orgID, userID string, req CreateKeyRequest) (*domain.AgentKey, string, error) {
+	req.Name = strings.TrimSpace(req.Name)
+	if len(req.Name) == 0 || len(req.Name) > 128 {
+		return nil, "", ErrInvalidParams
+	}
+
 	if req.MaxBindings != nil && *req.MaxBindings <= 0 {
 		return nil, "", ErrInvalidParams
 	}
@@ -108,8 +114,12 @@ func (s *agentKeyService) UpdateKey(ctx context.Context, orgID, keyID string, re
 	if req.UpdateMaxBindings && req.MaxBindings != nil && *req.MaxBindings <= 0 {
 		return nil, ErrInvalidParams
 	}
-	if req.Name != nil && len(*req.Name) == 0 {
-		return nil, ErrInvalidParams
+	if req.Name != nil {
+		trimmed := strings.TrimSpace(*req.Name)
+		if len(trimmed) == 0 || len(trimmed) > 128 {
+			return nil, ErrInvalidParams
+		}
+		req.Name = &trimmed
 	}
 	
 	key, err := s.repo.Update(ctx, orgID, keyID, req.Name, req.MaxBindings, req.UpdateMaxBindings, req.ExpiresAt, req.UpdateExpiresAt)
