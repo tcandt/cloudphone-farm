@@ -91,6 +91,8 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           GOTOOLCHAIN: local
         run: |
+          go build -o /tmp/migrate ./cmd/migrate
+          POSTGRES_URL="postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable" /tmp/migrate
           go vet ./...
           go test -race -v -p 1 ./... -count=1
 
