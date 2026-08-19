@@ -95,14 +95,15 @@ Khi hiển thị 30–50 thiết bị trên màn hình Dashboard:
    - Mỗi thẻ `<video>` được quản lý độc lập bên trong Component tự quản (Self-contained VideoSurface).
    - Dữ liệu WebRTC Stats (FPS, Bitrate, RTT) được cập nhật qua Direct DOM mutation hoặc Ref, không đưa vào React Root State gây giật lag giao diện.
 
-### 4.2. Bộ Chỉ số Định lượng Nghiệm thu Bức tường 50 Thiết bị (Acceptance Benchmarks):
-- **Tải CPU Trình duyệt (Browser CPU Load):** $< 30\%$ trên vi xử lý Desktop 8-core tiêu chuẩn (Intel Core i7 / AMD Ryzen 7 / Apple M-series).
-- **Bộ nhớ Trình duyệt (Browser RAM Heap):** $< 600\text{ MB}$ sau 1 giờ chạy liên tục (Zero Memory Leak).
-- **Tổng Băng thông Mạng Inbound (Total Inbound Bitrate):** $< 6\text{ Mbps}$ cho toàn bộ 50 máy ở chế độ PREVIEW.
-- **Tỷ lệ Khung hình Rớt (Dropped Frames):** $< 2\%$ trên tổng số frame nhận được.
-- **Thời gian Thực thi Tác vụ Dài (Long Tasks > 50ms):** $< 0.1\%$ trên tổng số khung hình trình duyệt.
-- **Tải CPU Phần cứng Điện thoại (Android Hardware Encoder Load):** $< 15\%$ CPU trên từng máy vật lý nhờ sử dụng chip MediaCodec H.264 phần cứng.
-- **Độ trễ Điều khiển Trực tiếp (Glass-to-Glass Latency):** $< 100\text{ms}$ khi ở chế độ CONTROL.
+### 4.2. Mục tiêu Định lượng Bức tường 50 Thiết bị (TARGET BENCHMARKS NOT GUARANTEED SLA):
+*(Lưu ý: Các chỉ số dưới đây là mục tiêu phấn đấu, KHÔNG PHẢI là cam kết SLA cho đến khi có bằng chứng thực tế ở Phase 7-11).*
+- **Tải CPU Trình duyệt (Browser CPU Load):** Mục tiêu $< 30\%$ trên vi xử lý Desktop 8-core tiêu chuẩn (Intel Core i7 / AMD Ryzen 7 / Apple M-series).
+- **Bộ nhớ Trình duyệt (Browser RAM Heap):** Mục tiêu $< 600\text{ MB}$ sau 1 giờ chạy liên tục (Zero Memory Leak).
+- **Tổng Băng thông Mạng Inbound (Total Inbound Bitrate):** Mục tiêu $< 6\text{ Mbps}$ cho toàn bộ 50 máy ở chế độ PREVIEW.
+- **Tỷ lệ Khung hình Rớt (Dropped Frames):** Mục tiêu $< 2\%$ trên tổng số frame nhận được.
+- **Thời gian Thực thi Tác vụ Dài (Long Tasks > 50ms):** Mục tiêu $< 0.1\%$ trên tổng số khung hình trình duyệt.
+- **Tải CPU Phần cứng Điện thoại (Android Hardware Encoder Load):** Mục tiêu $< 15\%$ CPU trên từng máy vật lý nhờ sử dụng chip MediaCodec H.264 phần cứng.
+- **Độ trễ Điều khiển Trực tiếp (Glass-to-Glass Latency):** Mục tiêu $< 100\text{ms}$ khi ở chế độ CONTROL.
 
 ---
 
@@ -111,4 +112,4 @@ Khi hiển thị 30–50 thiết bị trên màn hình Dashboard:
 - **Nguyên tắc:** Trên ROM gốc Android 14+ (API 34) và 15+ (API 35), hệ điều hành Android **CẤM** khởi chạy Foreground Service loại `mediaProjection` từ các background receivers (như `BOOT_COMPLETED`) mà không có User Consent Token hợp lệ từ người dùng tại thời điểm khởi chạy.
 - **Cam kết Khôi phục:**
   - Sau khi Reboot, hệ thống **KHÔNG CAM KẾT tự động khôi phục luồng stream (No Unattended Stream Guarantee)** trên ROM gốc unmanaged.
-  - Tuy nhiên, kết nối điều khiển WSS (`AGENT_ONLINE`) và dịch vụ Trợ năng (`CONTROL_READY`) sẽ khôi phục 100% tự động, sẵn sàng nhận lệnh mở hộp thoại cấp quyền ghi hình khi kỹ thuật viên / operator yêu cầu.
+  - Sau reboot, Agent sẽ **tiến hành quá trình khôi phục (recovery attempt)** kết nối mạng (`AGENT_ONLINE`) và dịch vụ Trợ năng (`CONTROL_READY`). Nếu khôi phục thành công, Agent mới sẵn sàng nhận lệnh mở hộp thoại cấp quyền ghi hình khi kỹ thuật viên / operator yêu cầu.

@@ -21,7 +21,7 @@ graph TD
     end
 
     subgraph SUPERVISOR_LAYER ["2. Background Supervision & Core Service"]
-        ConnService["AgentConnectionService<br/>(FGS type: connectedDevice|specialUse)"]
+        ConnService["AgentConnectionService<br/>(FGS type: VALIDATE IN PHASE 4)"]
         Supervisor["ConnectionSupervisor<br/>(Quản lý Máy trạng thái kết nối FSM)"]
         NetMonitor["NetworkMonitor<br/>(Lắng nghe ConnectivityManager)"]
         Backoff["BackoffPolicy<br/>(Exponential Backoff + Jitter ±20%)"]
@@ -72,7 +72,9 @@ graph TD
 
 ## 2. CHUẨN MẬT MÃ ĐỊNH DANH THIẾT BỊ (ECDSA P-256 SECURITY)
 
-Để tương thích 100% trên toàn bộ các phiên bản Android từ 8.0 (API 26) đến 15+ (API 35+), Agent V2 sử dụng thuật toán **ECDSA P-256 (`secp256r1`)** với chữ ký **`SHA256withECDSA`** lưu trữ an toàn trong phần cứng bảo mật `AndroidKeyStore`.
+Để tương thích 100% trên toàn bộ các phiên bản Android từ 8.0 (API 26) đến 15+ (API 35+), Agent V2 sử dụng thuật toán **ECDSA P-256 (`secp256r1`)** với chữ ký **`SHA256withECDSA`** lưu trữ an toàn thông qua `AndroidKeyStore`.
+
+*(Lưu ý: Mức độ bảo mật phần cứng Hardware-backed TEE / StrongBox là một capability được đo lường tại runtime (SOFTWARE / TRUSTED_ENVIRONMENT / STRONGBOX / UNKNOWN), KHÔNG PHẢI là giả định mặc định cho toàn bộ thiết bị).*
 
 ### 2.1. Cấu hình Khởi tạo Cặp Khóa trong Kotlin (`AgentKeyStore.kt`)
 ```kotlin
@@ -124,7 +126,7 @@ android-agent/app/src/main/java/com/cloudphonerental/agent/
 │   ├── CredentialStore.kt          # Lưu trữ an toàn agent_id, device_id, base_url
 │   └── ChallengeSigner.kt          # Ký chuỗi Nonce xác thực SHA256withECDSA
 ├── connection/                     # Quản lý kết nối mạng và giám sát trạng thái
-│   ├── AgentConnectionService.kt   # Foreground Service (connectedDevice) chạy độc lập với UI
+│   ├── AgentConnectionService.kt   # Foreground Service (FGS Type: VALIDATE IN PHASE 4)
 │   ├── ConnectionSupervisor.kt     # Trái tim điều phối máy trạng thái kết nối FSM
 │   ├── AgentWebSocket.kt           # OkHttp WebSocket Client
 │   ├── NetworkMonitor.kt           # Theo dõi trạng thái Wi-Fi, Ethernet, Cellular
@@ -175,17 +177,17 @@ sequenceDiagram
     participant MediaSvc as MediaProjectionService (FGS: mediaProjection)
 
     Boot->>Receiver: Phát Intent ACTION_BOOT_COMPLETED
-    Receiver->>ConnSvc: Khởi động AgentConnectionService
-    ConnSvc->>WS: Đọc thông tin từ CredentialStore & Khởi tạo kết nối WSS
+    Receiver->>ConnSvc: Khởi động AgentConnectionService (Recovery Attempt)
+    ConnSvc->>WS: Đọc thông tin từ CredentialStore & Khởi tạo kết nối WSS (nếu có mạng)
     WS->>Server: GET /agent/v1/connect (WSS 101 Upgrade)
     Server-->>WS: server.challenge {nonce}
     WS->>WS: Dùng AndroidKeyStore ECDSA P-256 ký Nonce
     WS-->>Server: agent.challenge_response {signature}
     Server-->>WS: connection.ready {status: online}
-    Note over ConnSvc,Server: Thiết bị đạt trạng thái REGISTERED + AGENT_ONLINE + CONTROL_READY
+    Note over ConnSvc,Server: Đạt AGENT_ONLINE. Đo lường tiếp: Accessibility Bound? -> Có: CONTROL_READY, Không: SERVICE_NOT_READY
     
     Note over MediaSvc: Luồng MediaProjection KHÔNG tự động bật sau Reboot (Do quy định bảo mật Android 14/15)
-    Note over MediaSvc: Sẵn sàng kích hoạt MEDIA_READY khi Operator mở phiên xem và cấp quyền tương tác
+    Note over MediaSvc: MEDIA_READY phải được đo lường độc lập khi Operator mở phiên xem và cấp quyền tương tác
 ```
 
 ---
@@ -219,8 +221,14 @@ sequenceDiagram
 
 ## 6. CHIẾN LƯỢC CHUYỂN ĐỔI APPLICATION ID & PACKAGE (MIGRATION STRATEGY)
 
-- **Giai đoạn Hiện tại (Phase 0 $\rightarrow$ Phase 2):** Tiếp tục sử dụng `applicationId "com.tcandt.cloudphone.agent"` để đảm bảo tính liên tục của các script test E2E và các file build hiện có.
-- **Giai đoạn Phase 3 (APK Agent Foundation):**
-  - Xây dựng cấu trúc module mới với namespace `com.cloudphonerental.agent`.
-  - Cung cấp tài liệu hướng dẫn gỡ bỏ APK cũ hoặc cấu hình Flavor chuyển tiếp mượt mà.
-  - Tuyệt đối không thay đổi mã nguồn trước khi có quyết định phê duyệt tại Owner Gate Phase 3.
+Việc thay đổi `applicationId` được phân định rõ là một quá trình **BREAKING REPLACEMENT**, không phải là in-place APK upgrade. Hệ điều hành Android coi đây là hai ứng dụng hoàn toàn khác nhau.
+
+- **Giai đoạn Hiện tại (Phase 0 $\rightarrow$ Phase 2):** Tiếp tục sử dụng `applicationId "com.tcandt.cloudphone.agent"` để đảm bảo tính liên tục. Tuyệt đối không đổi `applicationId` trong Phase 0.
+- **Giai đoạn Phase 3 (PHASE 3 BREAKING AGENT REPLACEMENT):**
+  - Thực hiện quy trình thay thế ứng dụng:
+    1. Legacy APK `com.tcandt.cloudphone.agent` $\rightarrow$ decommission (Hủy quyền).
+    2. Gỡ cài đặt (uninstall) Legacy APK.
+    3. Install New APK `com.cloudphonerental.agent`.
+    4. Cấp lại toàn bộ quyền (re-grant permissions).
+    5. Đăng ký như một Agent mới (new enrollment).
+  - **Sau Phase 3, `com.cloudphonerental.agent` phải được đóng băng vĩnh viễn (freeze).**

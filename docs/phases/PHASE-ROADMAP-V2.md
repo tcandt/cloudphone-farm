@@ -117,7 +117,14 @@ gantt
   - Khởi động lại Router / Backend Server / Redis $\rightarrow$ Tự phục hồi.
   - Vuốt tắt app khỏi Recent / Tắt màn hình $\rightarrow$ Socket vẫn online.
   - Bật/Tắt Chế độ máy bay $\rightarrow$ Tự động kết nối lại khi có mạng.
-- **🛑 CRITICAL OWNER GATE #4:** Bằng chứng 24h Soak Test không rớt phiên, không bao giờ reset Token Key, không duplicate socket.
+- **🛑 CRITICAL OWNER GATE #4:** Bằng chứng 24-72h Soak Test với các chỉ số bắt buộc:
+  - `credential_reset_count = 0`
+  - `token_key_reset_count = 0`
+  - `re_enrollment_count = 0`
+  - `duplicate_active_connection_count = 0`
+  - `unrecovered_disconnect_count = 0`
+  - Đo lường và ghi nhận reconnect latency (p50, p95, p99).
+  - EXPECTED: Các sự cố network loss, server restart, router restart đều phải dẫn đến reconnect và tự phục hồi thành công. Mất mạng hoặc lỗi server được phép gây đứt socket tạm thời (disconnect) nhưng agent phải tự khôi phục.
 
 ---
 

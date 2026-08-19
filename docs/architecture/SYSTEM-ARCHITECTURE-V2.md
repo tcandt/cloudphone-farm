@@ -91,6 +91,7 @@ Toàn bộ quá trình định danh và xác thực Agent được chuẩn hóa 
    - Public Key (ANSI X9.62 uncompressed 65-byte point hoặc PKIX DER) được gửi lên Backend trong quá trình Enrollment `POST /api/v2/agents/enroll`.
 2. **Tại Go Backend (`pkg/crypto` & `internal/transport/http/middleware/agent_auth.go`):**
    - Backend lưu trữ Public Key vào PostgreSQL `device_agents.public_key`.
+   - Đồng thời lưu trữ cấu hình bảo mật được đo lường tại runtime: `keystore_security_level` (SOFTWARE/TEE/STRONGBOX/UNKNOWN) và `attestation_status`.
    - Khi Agent kết nối WSS `/agent/v1/connect`, Backend gửi chuỗi `challenge_nonce` (32 bytes Hex ngẫu nhiên).
    - Agent dùng Private Key ký lên chuỗi Nonce, gửi về qua `agent.challenge_response`.
    - Backend sử dụng Go standard library:

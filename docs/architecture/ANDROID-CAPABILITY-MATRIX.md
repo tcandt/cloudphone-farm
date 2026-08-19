@@ -10,9 +10,9 @@
 
 | Tính năng / Phân hệ | Android 8.0 - 8.1 (API 26-27, Oreo) | Android 9.0 (API 28, Pie) | Android 10 - 11 (API 29-30, Q/R) | Android 12 - 12L (API 31-32, S) | Android 13 (API 33, Tiramisu) | Android 14 (API 34, UpsideDownCake) | Android 15+ (API 35+, VanillaIceCream) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Android Keystore Crypto** | ✅ **ECDSA P-256** (Hardware TEE)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Hardware TEE)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (StrongBox/TEE)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (StrongBox/TEE)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Khuyên dùng)<br/>⚠️ *Ed25519 có trong Signature, Keystore hạn chế* | ✅ **ECDSA P-256** (Chuẩn hóa toàn hệ thống) | ✅ **ECDSA P-256** (Chuẩn hóa toàn hệ thống) |
-| **Foreground Service (FGS)** | ✅ `startForegroundService` cơ bản | ✅ Yêu cầu `FOREGROUND_SERVICE` permission | ✅ Hỗ trợ FGS type `mediaProjection` | ✅ Hạn chế khởi chạy FGS từ background | ✅ Yêu cầu `POST_NOTIFICATIONS` runtime | ⚠️ Bắt buộc khai báo FGS types (`connectedDevice` / `specialUse`, `mediaProjection`) | 🛑 Bắt buộc FGS prerequisites, cấm background start `mediaProjection` |
-| **Khởi động `BOOT_COMPLETED`** | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Khởi chạy `AgentConnectionService` (`connectedDevice`) | ✅ Khởi chạy `AgentConnectionService` (`connectedDevice` có prereq) |
+| **Android Keystore Crypto** | ✅ **ECDSA P-256** (Runtime Inspect)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Runtime Inspect)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Runtime Inspect)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Runtime Inspect)<br/>❌ *Ed25519 không hỗ trợ* | ✅ **ECDSA P-256** (Khuyên dùng)<br/>⚠️ *Ed25519 có trong Signature, Keystore hạn chế* | ✅ **ECDSA P-256** (Chuẩn hóa toàn hệ thống) | ✅ **ECDSA P-256** (Chuẩn hóa toàn hệ thống) |
+| **Foreground Service (FGS)** | ✅ `startForegroundService` cơ bản | ✅ Yêu cầu `FOREGROUND_SERVICE` permission | ✅ Hỗ trợ FGS type `mediaProjection` | ✅ Hạn chế khởi chạy FGS từ background | ✅ Yêu cầu `POST_NOTIFICATIONS` runtime | ⚠️ Bắt buộc khai báo FGS types (VALIDATE IN PHASE 4, `mediaProjection`) | 🛑 Bắt buộc FGS prerequisites, cấm background start `mediaProjection` |
+| **Khởi động `BOOT_COMPLETED`** | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Tự khởi chạy FGS kết nối WSS | ✅ Khởi chạy `AgentConnectionService` (Recovery Attempt) | ✅ Khởi chạy `AgentConnectionService` (Recovery Attempt) |
 | **Accessibility (Trợ năng)** | ✅ Giữ trạng thái qua Reboot | ✅ Giữ trạng thái qua Reboot | ✅ Giữ trạng thái qua Reboot | ✅ Giữ trạng thái qua Reboot | ✅ Cảnh báo Restricted Settings nếu tải sideload | ⚠️ Bắt buộc mở Restricted Settings nếu sideload APK | ⚠️ Bắt buộc mở Restricted Settings nếu sideload APK |
 | **Bàn phím ảo Remote IME** | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn | ✅ Kích hoạt 1 lần, tồn tại vĩnh viễn |
 | **MediaProjection (Capture)** | ✅ Consent 1 lần / phiên | ✅ Consent 1 lần / phiên | ✅ Yêu cầu FGS type `mediaProjection` | ✅ Yêu cầu FGS type `mediaProjection` | ✅ Hộp thoại Consent cải tiến | ⚠️ Consent Dialog kèm cảnh báo ghi hình toàn màn hình | 🛑 Token MediaProjection gắn chặt phiên tương tác người dùng |
@@ -57,7 +57,7 @@ Từ Android 14+ (API 34), mọi Foreground Service bắt buộc phải khai bá
 <service
     android:name=".connection.AgentConnectionService"
     android:exported="false"
-    android:foregroundServiceType="connectedDevice|specialUse" />
+    android:foregroundServiceType="[VALIDATE IN PHASE 4]" />
 
 <!-- 2. Service chụp màn hình và encode Video WebRTC -->
 <service
@@ -79,10 +79,11 @@ Từ Android 14+ (API 34), mọi Foreground Service bắt buộc phải khai bá
 ### 3.2. Ràng buộc Khởi động sau Reboot (`BOOT_COMPLETED`)
 - **Android 8.0 $\rightarrow$ 13:** `BootReceiver` có thể gọi `startForegroundService()` để bật `AgentConnectionService`.
 - **Android 14 $\rightarrow$ 15+:**
-  - `AgentConnectionService` được phép khởi chạy từ `BOOT_COMPLETED` vì thuộc loại `connectedDevice` / `specialUse` (kết nối máy chủ điều khiển).
+  - `AgentConnectionService` được phép thực hiện Recovery Attempt từ `BOOT_COMPLETED` (loại FGS sẽ được chốt tại Phase 4 dựa trên ADR).
   - `MediaProjectionService` (**loại `mediaProjection`**) **BỊ HỆ ĐIỀU HÀNH CHẶN TUYỆT ĐỐI** không cho khởi chạy từ background receiver nếu chưa có Intent kết quả từ hộp thoại `MediaProjectionManager.createScreenCaptureIntent()`.
-- **Hệ quả Kiến trúc:**
-  - Sau khi Reboot trên Android 14/15, Agent sẽ ngay lập tức đạt trạng thái `REGISTERED`, `AGENT_ONLINE`, và `CONTROL_READY`.
+- **Hệ quả Kiến trúc (Đo lường độc lập):**
+  - Sau khi Reboot trên Android 14/15, Agent duy trì trạng thái `REGISTERED`. Sau đó tiến hành khôi phục kết nối để đạt `AGENT_ONLINE` nếu có mạng.
+  - Trạng thái `CONTROL_READY` phụ thuộc vào việc OS tự động kích hoạt lại Accessibility Service.
   - Luồng truyền hình ảnh WebRTC (`MEDIA_READY`) chỉ được kích hoạt khi có người dùng hoặc kỹ thuật viên bấm chấp thuận hộp thoại cấp quyền ghi hình trên màn hình điện thoại (hoặc qua cấu hình thiết bị doanh nghiệp).
 
 ---

@@ -1,8 +1,8 @@
 # CLOUDPHONERENTAL V2 — PRODUCT CONSTITUTION
 
-> **Trạng thái:** BẮT BUỘC TUÂN THỦ TUYỆT ĐỐI (IMMUTABLE SYSTEM CONSTITUTION)  
-> **Phiên bản:** 2.1.0 (Audit Resolution V2)  
-> **Ngày phê duyệt:** 2026-08-19  
+> **Trạng thái:** PENDING OWNER GATE #0 APPROVAL  
+> **Phiên bản:** 2.1.0 (Audit Resolution V2.1)  
+> **Ngày phê duyệt:** (Chờ phê duyệt)  
 > **Phạm vi áp dụng:** Toàn bộ thành phần hệ thống (Control Plane, Media Plane, Agent APK, Web Client, Admin Console, Database & Infra)
 
 ---
@@ -23,6 +23,7 @@ Các quy tắc dưới đây là **Hiến pháp Dự án (Project Constitution)*
 | AUTHENTICATION     | Token Key CHỈ dùng 1 lần để Enrollment (Đăng ký ban đầu) |
 | SOCKET AUTH        | Token Key TUYỆT ĐỐI KHÔNG dùng để duy trì WebSocket     |
 | IDENTITY CRYPTO    | ECDSA P-256 (SHA256withECDSA) qua AndroidKeyStore API 26+|
+| KEYSTORE SECURITY  | Đo lường tại Runtime (Software / TEE / StrongBox)        |
 | CONTROL ENGINE     | AccessibilityService + Normalized Coordinates + Fencing  |
 | COMMAND PIPELINE   | Transactional Outbox + Monotonic Fencing Token           |
 | AUTOMATION         | Native Accessibility/UI Selector là engine chính thức    |
@@ -42,8 +43,9 @@ Các quy tắc dưới đây là **Hiến pháp Dự án (Project Constitution)*
 1. **Chuẩn Mật mã Duy nhất cho Toàn bộ Android 8–15+ (API 26–35+):**
    - **Thuật toán Khóa:** `KeyProperties.KEY_ALGORITHM_EC` (Elliptic Curve), đường cong NIST P-256 (`secp256r1` / `prime256v1`).
    - **Thuật toán Ký số:** `SHA256withECDSA`.
-   - **Kho lưu trữ Khóa:** `AndroidKeyStore` (Hardware-backed TEE / StrongBox nếu phần cứng hỗ trợ).
-   - **Lý do kỹ thuật bắt buộc:** Android Keystore hỗ trợ chính thức EC P-256 từ API 23 (Android 6.0+), đảm bảo tương thích 100% trên toàn bộ dải thiết bị từ Android 8.0 (API 26) đến Android 15+ (API 35+). (Tránh hoàn toàn lỗi không hỗ trợ Ed25519 trên các phiên bản Android 8 đến 12).
+   - **Kho lưu trữ Khóa:** `AndroidKeyStore`.
+   - **Mức độ Bảo mật Phần cứng (Keystore Security Level):** Hardware-backed security là một *khả năng (capability)* của thiết bị, KHÔNG PHẢI là một điều kiện giả định (universal assumption) cho toàn bộ Android 8-15+. Hệ thống phải kiểm tra (runtime inspect) và lưu trữ trạng thái thực tế: `SOFTWARE`, `TRUSTED_ENVIRONMENT`, `STRONGBOX`, hoặc `UNKNOWN`. Backend/device inventory phải lưu thêm `keystore_security_level` và `attestation_status`.
+   - **Lý do kỹ thuật bắt buộc:** Android Keystore hỗ trợ chính thức EC P-256 từ API 23 (Android 6.0+), đảm bảo tương thích 100% trên toàn bộ dải thiết bị từ Android 8.0 (API 26) đến Android 15+ (API 35+).
 2. **Xác thực Phía Backend Go:**
    - Sử dụng thư viện chuẩn của Go (`crypto/ecdsa`, `crypto/x509`, `crypto/sha256`) để parse Public Key ANSI X9.62 / PKIX và xác thực chữ ký ASN.1 DER `(r, s)` đối với chuỗi Challenge Nonce từ Agent.
 
@@ -75,14 +77,17 @@ stateDiagram-v2
 
 ## 4. NGUYÊN TẮC RÀNG BUỘC KHI THIẾT BỊ REBOOT (BOOT & RECOVERY CONSTRAINTS)
 
+Khả năng sẵn sàng (Readiness) của thiết bị phải được **đo lường độc lập (measured)**, tuyệt đối KHÔNG ĐƯỢC giả định từ cấu hình đã lưu.
 Sau khi điện thoại khởi động lại (Reboot / Power Cycle):
-- **Khôi phục Tự động 100%:**
-  - ✅ Danh tính thiết bị (`REGISTERED`): Bảo toàn vĩnh viễn trong KeyStore.
-  - ✅ Khôi phục Mạng IP & Kết nối WSS (`AGENT_ONLINE`): `BootReceiver` tự động kích hoạt `AgentConnectionService`.
-  - ✅ Trợ năng & Phím (`CONTROL_READY`): Android OS tự phục hồi Accessibility Service nếu trước đó đã được bật.
-- **Ràng buộc Bảo mật Android OS đối với MediaProjection:**
-  - ❌ **KHÔNG CAM KẾT tự động stream lại (No Unattended Stream Guarantee):** Trên ROM gốc Android 14+ (API 34+) và Android 15+ (API 35+), hệ điều hành Android áp đặt quy định bảo mật nghiêm ngặt: Foreground Service loại `mediaProjection` bắt buộc phải có User Consent Dialog tại thời điểm chạy và **bị cấm khởi chạy trực tiếp từ `BOOT_COMPLETED` background receiver** nếu không có tương tác người dùng hoặc chính sách MDM/Device Owner.
-  - ⚠️ Do đó, sau khi reboot, Agent sẽ đạt trạng thái `AGENT_ONLINE` và `CONTROL_READY`, còn luồng `MEDIA_READY` sẽ ở trạng thái chờ cấp quyền / kích hoạt lại khi có phiên tương tác.
+- **REGISTERED:** Danh tính thiết bị được bảo toàn vĩnh viễn trong KeyStore.
+- **BOOT_COMPLETED:** Hành động này chỉ kích hoạt (trigger) một nỗ lực khôi phục (recovery attempt).
+- **AGENT_ONLINE** chỉ đạt được khi và chỉ khi:
+  - Mạng khả dụng (Network available).
+  - `AgentConnectionService` đang chạy.
+  - WebSocket kết nối và xác thực WSS thành công.
+- **CONTROL_READY** chỉ đạt được khi và chỉ khi:
+  - `AccessibilityService` thực sự được bound và đang khỏe mạnh (healthy) báo cáo về hệ thống.
+- **AUTOMATION_READY** và **MEDIA_READY**: Phải được đo lường độc lập, không giả định sẵn sàng. Đặc biệt với MediaProjection, trên ROM gốc Android 14+ (API 34+) và Android 15+ (API 35+), hệ điều hành Android **CẤM** khởi chạy Foreground Service loại `mediaProjection` từ các background receivers nếu không có tương tác người dùng. Trạng thái `MEDIA_READY` sẽ ở dạng chờ cấp quyền (PERMISSION_REQUIRED / SERVICE_NOT_READY).
 
 ---
 
@@ -94,11 +99,13 @@ Sau khi điện thoại khởi động lại (Reboot / Power Cycle):
   - **FOCUS (4–8 máy):** Sub layer trung bình (360–480p / 10–15 FPS, 250–400 Kbps/máy).
   - **ACTIVE CONTROL (1 máy):** Sub layer cao (720p / 20–30 FPS, 800–1500 Kbps, độ trễ $< 100\text{ms}$).
   - **OFFSCREEN:** Tạm dừng nhận gói tin (Pause / Unsubscribe) tại cấp độ SFU.
-- **Chỉ số Kỹ thuật Nghiệm thu:**
-  - CPU trình duyệt $< 30\%$ (Desktop 8-core tiêu chuẩn).
-  - RAM Heap trình duyệt $< 600\text{ MB}$.
-  - Tỷ lệ rớt khung hình (Dropped frames) $< 2\%$.
-  - CPU phần cứng điện thoại Android khi encode video $< 15\%$.
+- **Mục tiêu Benchmark Đặc tả (TARGET BENCHMARKS):**
+  *(Lưu ý: Đây là các mục tiêu (Targets), CHƯA PHẢI là cam kết SLA (Not Guaranteed SLA) cho đến khi Phase 7-11 có bằng chứng thực tế trên thiết bị vật lý. Độ trễ <100ms không phải là một invariant cho toàn sản phẩm).*
+  - CPU trình duyệt mục tiêu $< 30\%$ (Desktop 8-core tiêu chuẩn).
+  - RAM Heap trình duyệt mục tiêu $< 600\text{ MB}$.
+  - Tỷ lệ rớt khung hình (Dropped frames) mục tiêu $< 2\%$.
+  - Tải CPU Phần cứng Điện thoại (Encoder CPU Load) mục tiêu $< 15\%$.
+  - Độ trễ điều khiển trực tiếp mục tiêu $< 100\text{ms}$.
 
 ---
 
