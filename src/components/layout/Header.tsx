@@ -21,11 +21,16 @@ export const Header: React.FC = () => {
 
   return (
     <header className="w-full bg-white h-[68px] px-4 md:px-6 flex items-center justify-between gap-4 z-30 flex-shrink-0">
-      {/* LEFT: Logo (Mobile) + Hamburger */}
-      <div className="flex items-center gap-3">
-        {/* Mobile Brand Logo */}
-        <div className="md:hidden cursor-pointer mr-1" onClick={() => navigate('/app/store')}>
-          <BrandLogo variant="mark" size="sm" />
+      {/* LEFT: Logo + Hamburger */}
+      <div className="flex items-center gap-3 md:gap-6">
+        {/* Brand Logo (Responsive) */}
+        <div className="cursor-pointer" onClick={() => navigate('/app/store')}>
+          <div className="hidden md:block">
+            <BrandLogo variant="full" size="sm" />
+          </div>
+          <div className="md:hidden">
+            <BrandLogo variant="mark" size="sm" />
+          </div>
         </div>
 
         {/* Collapse / Expand Toggle */}

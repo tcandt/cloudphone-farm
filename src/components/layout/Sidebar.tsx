@@ -50,9 +50,7 @@ export const Sidebar: React.FC = () => {
         isSidebarCollapsed ? 'w-[72px]' : 'w-[250px]'
       }`}
     >
-      <div className={`h-[68px] flex items-center flex-shrink-0 ${isSidebarCollapsed ? 'justify-center' : 'px-6'}`}>
-        <BrandLogo variant={isSidebarCollapsed ? 'mark' : 'full'} size="sm" />
-      </div>
+
 
       <div className="flex-1 overflow-y-auto space-y-2 py-4 custom-scrollbar">
         <NavItem to="/app/store" icon={<ShoppingBag />} label="Cửa hàng cho thuê" isCollapsed={isSidebarCollapsed} />
