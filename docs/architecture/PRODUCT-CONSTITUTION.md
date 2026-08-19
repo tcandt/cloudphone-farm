@@ -1,8 +1,8 @@
 # CLOUDPHONERENTAL V2 — PRODUCT CONSTITUTION
 
-> **Trạng thái:** PENDING OWNER GATE #0 APPROVAL  
+> **Trạng thái:** OWNER GATE #0 APPROVED  
 > **Phiên bản:** 2.1.0 (Audit Resolution V2.1)  
-> **Ngày phê duyệt:** (Chờ phê duyệt)  
+> **Approved Architecture SHA:** 2b267f15da4d0adae24c87696d4afe505e679e67  
 > **Phạm vi áp dụng:** Toàn bộ thành phần hệ thống (Control Plane, Media Plane, Agent APK, Web Client, Admin Console, Database & Infra)
 
 ---

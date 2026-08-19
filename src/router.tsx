@@ -39,7 +39,7 @@ const SuspenseLoader: React.FC<{ children: React.ReactNode }> = ({ children }) =
   </Suspense>
 );
 
-export const router = createBrowserRouter([
+export const routes: any[] = [
   {
     path: '/',
     element: <Navigate to="/app" replace />,
@@ -140,4 +140,14 @@ export const router = createBrowserRouter([
     path: '*',
     element: <Navigate to="/app" replace />,
   },
-]);
+];
+
+if (import.meta.env.DEV) {
+  const DesignSystemPreview = lazy(() => import('./dev/DesignSystemPreview').then(m => ({ default: m.DesignSystemPreview })));
+  routes.unshift({
+    path: '/dev/design-system',
+    element: <SuspenseLoader><DesignSystemPreview /></SuspenseLoader>,
+  });
+}
+
+export const router = createBrowserRouter(routes);
