@@ -44,11 +44,11 @@ export const DocsPage: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const addToast = useToastStore((state) => state.addToast);
 
-  const handleDownload = () => {
+  const handleDocClick = () => {
     addToast({
       type: 'info',
-      title: 'Tải Agent',
-      message: 'Sắp có trong giai đoạn Agent.',
+      title: 'Tài liệu chi tiết',
+      message: 'Chi tiết tài liệu sẽ được cập nhật trong phiên bản tiếp theo.',
     });
   };
 
@@ -72,7 +72,7 @@ export const DocsPage: React.FC = () => {
               placeholder="Tìm kiếm tài liệu, API, hướng dẫn..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-12 pr-4 py-4 bg-white/10 border border-white/20 rounded-2xl text-white placeholder-slate-400 focus:bg-white/20 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-all shadow-inner backdrop-blur-md"
+              className="w-full pl-12 pr-4 py-4 bg-slate-800 border border-slate-700 rounded-2xl text-white placeholder-slate-400 focus:bg-slate-800 focus:outline-none focus:border-emerald-500 transition-all shadow-inner"
             />
           </div>
         </div>
@@ -83,7 +83,11 @@ export const DocsPage: React.FC = () => {
         {DOC_CATEGORIES.map((cat) => {
           const Icon = cat.icon;
           return (
-            <div key={cat.id} className="bg-white border border-slate-200/60 rounded-[24px] p-6 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group cursor-pointer">
+            <div 
+              key={cat.id} 
+              onClick={handleDocClick}
+              className="bg-white border border-slate-200/60 rounded-[24px] p-6 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group cursor-pointer"
+            >
               <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-5 ${
                 cat.color === 'emerald' ? 'bg-emerald-50 text-emerald-600' :
                 cat.color === 'blue' ? 'bg-blue-50 text-blue-600' :
@@ -104,22 +108,22 @@ export const DocsPage: React.FC = () => {
         })}
 
         {/* ANDROID AGENT SPECIAL CARD */}
-        <div className="bg-slate-50 border border-slate-200/60 rounded-[24px] p-6 shadow-sm hover:shadow-md transition-all duration-300">
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5 bg-slate-200 text-slate-700">
-            <Download size={24} />
+        <div className="bg-slate-50 border border-slate-200/60 rounded-[24px] p-6 shadow-sm flex flex-col justify-between">
+          <div>
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center mb-5 bg-slate-200 text-slate-700">
+              <Download size={24} />
+            </div>
+            <h3 className="text-lg font-bold text-slate-900">Android Agent</h3>
+            <p className="text-sm text-slate-500 mt-2 leading-relaxed">
+              Tải và cài đặt Agent client lên thiết bị Android vật lý để kết nối vào farm.
+            </p>
           </div>
-          <h3 className="text-lg font-bold text-slate-900">Android Agent</h3>
-          <p className="text-sm text-slate-500 mt-2 leading-relaxed h-16">
-            Tải và cài đặt Agent client lên thiết bị Android vật lý để kết nối vào farm.
-          </p>
           
-          <div className="mt-4 pt-4 border-t border-slate-200/60">
-            <button
-              onClick={handleDownload}
-              className="w-full py-2.5 bg-white border border-slate-200 text-slate-700 font-bold text-sm rounded-xl hover:bg-slate-100 transition-colors shadow-sm"
-            >
-              Tải APK
-            </button>
+          <div className="mt-6 pt-4 border-t border-slate-200/60">
+            <div className="w-full py-2.5 bg-slate-100 border border-slate-200 text-slate-500 font-bold text-sm rounded-xl text-center flex flex-col items-center justify-center gap-0.5">
+              <span>Sắp có</span>
+              <span className="text-[10px] font-medium text-slate-400">Sẽ khả dụng trong giai đoạn Agent</span>
+            </div>
           </div>
         </div>
       </div>

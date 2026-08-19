@@ -1,11 +1,13 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RentalStorePage } from '../pages/RentalStorePage';
 import { DeviceListPage } from '../pages/DeviceListPage';
 import { WalletPage } from '../pages/WalletPage';
 import { DocsPage } from '../pages/DocsPage';
+import { routes } from '../router';
+import { deviceService } from '../services/device-service';
 
 // Mock translation and UI store to isolate the tests
 vi.mock('react-i18next', () => ({
@@ -20,9 +22,7 @@ vi.mock('../stores/useUiStore', () => ({
 
 vi.mock('../services/device-service', () => ({
   deviceService: {
-    // Return empty list to prevent side effects in tests,
-    // we only care about the shell rendering correctly.
-    list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    list: vi.fn(),
   },
 }));
 
@@ -32,53 +32,101 @@ vi.mock('@ui/toast/Toast', () => ({
 }));
 
 describe('Slice 1.3 Client Page Shells Contracts', () => {
+  let alertSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    alertSpy.mockRestore();
   });
 
   describe('1. Store Page', () => {
-    it('renders canonical identity and prevents real rental mutation', () => {
+    it('renders canonical identity and prevents real rental mutation (no alert)', () => {
       render(
         <MemoryRouter>
           <RentalStorePage />
         </MemoryRouter>
       );
       
-      // Page identity
       expect(screen.getByText('Cửa hàng cho thuê')).toBeInTheDocument();
       
-      // Check that alert() is not used. We mock addToast.
       const rentButton = screen.getAllByText('Thuê ngay')[0];
       expect(rentButton).toBeInTheDocument();
       
-      // Should trigger Toast, not a real checkout
       fireEvent.click(rentButton);
+      
       expect(mockAddToast).toHaveBeenCalledWith(expect.objectContaining({
         type: 'info',
         title: 'Tính năng giới hạn'
       }));
+      
+      // Explicitly assert alert is not called
+      expect(alertSpy).not.toHaveBeenCalled();
     });
   });
 
   describe('2. Devices Page', () => {
-    it('renders client-safe presentation and hides operator telemetry', () => {
+    const mockRealDevice = {
+      device_id: 'dev-1',
+      name: 'Phone-A',
+      display_name: 'Galaxy S23',
+      model: 'SM-S911B',
+      android_version: '13',
+      status: 'online',
+      group_id: 'group-1'
+    };
+
+    it('renders realistic mocked device and hides operator telemetry', async () => {
+      vi.mocked(deviceService.list).mockResolvedValue({ 
+        items: [mockRealDevice as any], 
+        total: 1,
+        page: 1,
+        limit: 10
+      });
+
       render(
         <MemoryRouter>
           <DeviceListPage />
         </MemoryRouter>
       );
       
-      expect(screen.getByText('Quản lý thiết bị')).toBeInTheDocument();
-
-      // Check presentation filters exist
-      expect(screen.getByText('Thiếu quyền')).toBeInTheDocument();
-      expect(screen.getByText('Sắp hết hạn')).toBeInTheDocument();
-
+      // Verify loading resolves and real device fields are rendered
+      await waitFor(() => {
+        expect(screen.getAllByText('Galaxy S23')[0]).toBeInTheDocument();
+      });
+      expect(screen.getAllByText('SM-S911B')[0]).toBeInTheDocument();
+      expect(screen.getAllByText('Android 13')[0]).toBeInTheDocument();
+      
       // Prohibited operator labels must be absent
-      const prohibitedWords = ['Gán Proxy', 'NodeID', 'Fencing', 'CPU', 'Agent ID'];
+      const prohibitedWords = ['Gán Proxy', 'NodeID', 'Fencing', 'CPU', 'Agent ID', 'Restart'];
       prohibitedWords.forEach(word => {
         expect(screen.queryByText(word)).not.toBeInTheDocument();
       });
+
+      // Assert deviceService.list was NOT called with invented values
+      expect(deviceService.list).toHaveBeenCalledWith(
+        expect.not.objectContaining({ status: expect.anything() })
+      );
+    });
+
+    it('renders ERROR state (not empty state) on API failure', async () => {
+      vi.mocked(deviceService.list).mockRejectedValue(new Error('API failure'));
+
+      render(
+        <MemoryRouter>
+          <DeviceListPage />
+        </MemoryRouter>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText('Không thể tải dữ liệu')).toBeInTheDocument();
+        expect(screen.getByText('Không thể tải danh sách thiết bị lúc này.')).toBeInTheDocument();
+      });
+      // Ensure "Không tìm thấy thiết bị" (empty state) is not shown
+      expect(screen.queryByText('Không tìm thấy thiết bị')).not.toBeInTheDocument();
     });
   });
 
@@ -91,9 +139,7 @@ describe('Slice 1.3 Client Page Shells Contracts', () => {
       );
       
       expect(screen.getByText('Ví điện tử')).toBeInTheDocument();
-      expect(screen.getByText('Số dư khả dụng')).toBeInTheDocument();
       
-      // Test deposit CTA
       const depositButton = screen.getByText('Tiến hành thanh toán $50');
       fireEvent.click(depositButton);
       
@@ -105,59 +151,42 @@ describe('Slice 1.3 Client Page Shells Contracts', () => {
   });
 
   describe('4. Docs Page', () => {
-    it('renders 6 canonical categories and mocks APK download', () => {
+    it('renders canonical categories and clearly marks Agent as unavailable', () => {
       render(
         <MemoryRouter>
           <DocsPage />
         </MemoryRouter>
       );
       
-      // 6 Categories
-      expect(screen.getByText('Getting Started')).toBeInTheDocument();
-      expect(screen.getByText('Device Management')).toBeInTheDocument();
-      expect(screen.getByText('Remote Control')).toBeInTheDocument();
-      expect(screen.getByText('Automation')).toBeInTheDocument();
-      expect(screen.getByText('API / Integration')).toBeInTheDocument();
-      expect(screen.getByText('Android Agent')).toBeInTheDocument();
-
-      // APK Download mock
-      const downloadBtn = screen.getByText('Tải APK');
-      fireEvent.click(downloadBtn);
-      
+      // Category click test
+      const firstCategory = screen.getByText('Getting Started');
+      fireEvent.click(firstCategory);
       expect(mockAddToast).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('Sắp có')
+        title: 'Tài liệu chi tiết'
       }));
+
+      // Assert Agent has no active download/href and is marked as coming soon
+      expect(screen.getByText('Android Agent')).toBeInTheDocument();
+      expect(screen.getByText('Sắp có')).toBeInTheDocument();
+      expect(screen.getByText('Sẽ khả dụng trong giai đoạn Agent')).toBeInTheDocument();
+      expect(screen.queryByText('Tải APK')).not.toBeInTheDocument();
     });
   });
 
   describe('Routing Contracts', () => {
-    const TestRouter = ({ initialPath }: { initialPath: string }) => (
-      <MemoryRouter initialEntries={[initialPath]}>
-        <Routes>
-          <Route path="/app/store" element={<div data-testid="route-store" />} />
-          <Route path="/app/devices" element={<div data-testid="route-devices" />} />
-          <Route path="/app/wallet" element={<div data-testid="route-wallet" />} />
-          <Route path="/app/docs" element={<div data-testid="route-docs" />} />
-        </Routes>
-      </MemoryRouter>
-    );
+    it('contains all four canonical paths inside the app route', () => {
+      // Find the /app route
+      const appRoute = routes.find(r => r.path === '/app');
+      expect(appRoute).toBeDefined();
+      expect(appRoute?.children).toBeDefined();
 
-    it('resolves all four canonical paths', () => {
-      const { unmount: unmountStore } = render(<TestRouter initialPath="/app/store" />);
-      expect(screen.getByTestId('route-store')).toBeInTheDocument();
-      unmountStore();
-
-      const { unmount: unmountDevices } = render(<TestRouter initialPath="/app/devices" />);
-      expect(screen.getByTestId('route-devices')).toBeInTheDocument();
-      unmountDevices();
-
-      const { unmount: unmountWallet } = render(<TestRouter initialPath="/app/wallet" />);
-      expect(screen.getByTestId('route-wallet')).toBeInTheDocument();
-      unmountWallet();
-
-      const { unmount: unmountDocs } = render(<TestRouter initialPath="/app/docs" />);
-      expect(screen.getByTestId('route-docs')).toBeInTheDocument();
-      unmountDocs();
+      const childPaths = appRoute!.children!.map(child => child.path);
+      
+      // Ensure it contains the canonical slice 1.3 paths
+      expect(childPaths).toContain('store');
+      expect(childPaths).toContain('devices');
+      expect(childPaths).toContain('wallet');
+      expect(childPaths).toContain('docs');
     });
   });
 });

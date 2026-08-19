@@ -5,42 +5,24 @@ import { deviceService } from '../services/device-service';
 import { useToastStore } from '@ui/toast/Toast';
 
 // 1. PAGE-LOCAL VIEW MODEL
-// We do not pollute DeviceEntity with UI/presentation fields.
 interface ClientDeviceViewModel {
   id: string;
   displayName: string;
   model: string;
   androidVersion: string;
   group: string;
-  presentationStatus: 'Online' | 'Offline' | 'Thiếu quyền' | 'Sắp hết hạn';
+  presentationStatus: 'Online' | 'Offline';
   remainingTime: string;
-  rawDevice: DeviceEntity; // Keep original reference if needed for safe actions
+  rawDevice: DeviceEntity;
 }
 
-// Map raw devices to client-friendly presentation models
 const mapToClientViewModel = (devices: DeviceEntity[]): ClientDeviceViewModel[] => {
-  return devices.map((dev, index) => {
-    // Determine a safe presentation status based on raw status and mock logic
-    let presentationStatus: ClientDeviceViewModel['presentationStatus'] = 'Offline';
-    let remainingTime = 'Hết hạn';
-
-    if (dev.status === 'online') {
-      presentationStatus = 'Online';
-      remainingTime = 'Còn 23 ngày';
-      
-      // Inject some mock edge cases for visual testing
-      if (index === 2) {
-        presentationStatus = 'Sắp hết hạn';
-        remainingTime = 'Còn 2 giờ';
-      }
-      if (index === 3) {
-        presentationStatus = 'Thiếu quyền';
-        remainingTime = 'Còn 15 ngày';
-      }
-    } else {
-      presentationStatus = 'Offline';
-      remainingTime = 'Còn 21 ngày';
-    }
+  return devices.map((dev) => {
+    // Only map real device statuses. Do not invent missing_permission or expiring.
+    const presentationStatus = dev.status === 'online' ? 'Online' : 'Offline';
+    
+    // Use neutral placeholder since rental backend is not present
+    const remainingTime = '—';
 
     return {
       id: dev.device_id,
@@ -60,12 +42,16 @@ export const DeviceListPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('Tất cả');
   const [rawDevices, setRawDevices] = useState<DeviceEntity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   
   const addToast = useToastStore((state) => state.addToast);
 
-  useEffect(() => {
+  const fetchDevices = () => {
     let isMounted = true;
-    // We only fetch based on search term. We DO NOT send our fake presentation statuses to the API.
+    setLoading(true);
+    setError(null);
+    
+    // We only fetch based on search term. We DO NOT send fake presentation statuses to the API.
     deviceService
       .list({ search: searchTerm })
       .then((res) => {
@@ -76,15 +62,22 @@ export const DeviceListPage: React.FC = () => {
       })
       .catch(() => {
         if (isMounted) {
+          setError('Không thể tải danh sách thiết bị lúc này.');
           setLoading(false);
         }
       });
 
     return () => { isMounted = false; };
+  };
+
+  useEffect(() => {
+    const cleanup = fetchDevices();
+    return cleanup;
   }, [searchTerm]);
 
   const viewModels = useMemo(() => {
     const allModels = mapToClientViewModel(rawDevices);
+    // Note: statusFilter might contain values like 'Thiếu quyền' that won't match any real devices yet
     if (statusFilter === 'Tất cả') return allModels;
     return allModels.filter(m => m.presentationStatus === statusFilter);
   }, [rawDevices, statusFilter]);
@@ -108,7 +101,6 @@ export const DeviceListPage: React.FC = () => {
           </p>
         </div>
         
-        {/* Visual anticipation of future multi-device features */}
         <div className="flex items-center gap-3">
           <button className="hidden md:flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 transition-colors shadow-sm cursor-not-allowed opacity-70" disabled>
             Wall View
@@ -160,6 +152,20 @@ export const DeviceListPage: React.FC = () => {
           <RefreshCw className="w-8 h-8 animate-spin text-emerald-500" />
           <p className="font-medium text-sm">Đang tải danh sách thiết bị...</p>
         </div>
+      ) : error ? (
+        <div className="bg-white border border-rose-100 rounded-3xl p-16 text-center shadow-sm">
+          <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4 text-rose-400">
+            <AlertCircle size={32} />
+          </div>
+          <h3 className="text-lg font-bold text-slate-900">Không thể tải dữ liệu</h3>
+          <p className="text-sm text-slate-500 mt-1">{error}</p>
+          <button 
+            onClick={() => fetchDevices()}
+            className="mt-6 px-6 py-2 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-colors"
+          >
+            Thử lại
+          </button>
+        </div>
       ) : viewModels.length === 0 ? (
         <div className="bg-white border border-slate-100 rounded-3xl p-16 text-center shadow-sm">
           <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-400">
@@ -177,10 +183,7 @@ export const DeviceListPage: React.FC = () => {
                 <div className="flex items-start justify-between mb-4">
                   <div className="flex items-center gap-3">
                     <div className={`p-2.5 rounded-xl ${
-                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' :
-                      vm.presentationStatus === 'Offline' ? 'bg-slate-100 text-slate-400' :
-                      vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-50 text-amber-600' :
-                      'bg-rose-50 text-rose-600'
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'
                     }`}>
                       <Smartphone size={20} />
                     </div>
@@ -191,16 +194,10 @@ export const DeviceListPage: React.FC = () => {
                   </div>
                   
                   <span className={`px-2.5 py-1 rounded-full flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide border ${
-                    vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/50' :
-                    vm.presentationStatus === 'Offline' ? 'bg-slate-50 text-slate-500 border-slate-200' :
-                    vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-50 text-amber-700 border-amber-200/50' :
-                    'bg-rose-50 text-rose-700 border-rose-200/50'
+                    vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/50' : 'bg-slate-50 text-slate-500 border-slate-200'
                   }`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${
-                      vm.presentationStatus === 'Online' ? 'bg-emerald-500' :
-                      vm.presentationStatus === 'Offline' ? 'bg-slate-400' :
-                      vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-500' :
-                      'bg-rose-500'
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-500' : 'bg-slate-400'
                     }`} />
                     {vm.presentationStatus}
                   </span>
@@ -236,8 +233,7 @@ export const DeviceListPage: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div className={`p-2 rounded-xl ${
-                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' :
-                      'bg-slate-100 text-slate-500'
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'
                     }`}>
                       <Smartphone size={20} />
                     </div>
@@ -256,8 +252,8 @@ export const DeviceListPage: React.FC = () => {
                 <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium px-1">
                   <span>{vm.androidVersion}</span>
                   <div className="flex items-center gap-1">
-                    <Clock size={12} className={vm.presentationStatus === 'Sắp hết hạn' ? 'text-amber-500' : ''} /> 
-                    <span className={vm.presentationStatus === 'Sắp hết hạn' ? 'text-amber-600 font-bold' : ''}>
+                    <Clock size={12} /> 
+                    <span>
                       {vm.remainingTime}
                     </span>
                   </div>
