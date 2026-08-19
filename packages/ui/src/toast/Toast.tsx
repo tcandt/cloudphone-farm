@@ -49,8 +49,10 @@ export const ToastProvider: React.FC = () => {
             toast.type === 'warning' && 'border-amber-100',
             toast.type === 'info' && 'border-blue-100'
           )}
+          role={toast.type === 'error' || toast.type === 'warning' ? 'alert' : 'status'}
+          aria-live={toast.type === 'error' || toast.type === 'warning' ? 'assertive' : 'polite'}
         >
-          <div className="shrink-0 mt-0.5">
+          <div className="shrink-0 mt-0.5" aria-hidden="true">
             {toast.type === 'success' && <CheckCircle2 size={20} className="text-emerald-500" />}
             {toast.type === 'error' && <XCircle size={20} className="text-rose-500" />}
             {toast.type === 'warning' && <AlertCircle size={20} className="text-amber-500" />}
@@ -63,8 +65,9 @@ export const ToastProvider: React.FC = () => {
           <button
             onClick={() => removeToast(toast.id)}
             className="shrink-0 text-slate-400 hover:text-slate-600 transition-colors p-1"
+            aria-label="Close notification"
           >
-            <X size={16} />
+            <X size={16} aria-hidden="true" />
           </button>
         </div>
       ))}

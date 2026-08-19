@@ -64,4 +64,8 @@ The following UI Primitives were created and exported:
 - `packages/ui/src/index.ts` (new)
 - `packages/ui/test/ui-primitives.test.tsx` (new)
 
+## 5. Error Boundary Migration Note
+`src/components/common/ErrorBoundary.tsx` has NOT been deleted.
+`packages/ui` ErrorBoundary is the V2 canonical primitive. Legacy ErrorBoundary migration will occur only when the new shell is introduced in Slice 1.2.
+
 *Status: STOP FOR OWNER REVIEW 1.1*

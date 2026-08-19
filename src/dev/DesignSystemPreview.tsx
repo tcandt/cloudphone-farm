@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { BrandLogo } from '@brand/BrandLogo';
-import { Button, Card, Badge, Modal, ToastProvider, useToastStore, Loading, EmptyState, ErrorState, ErrorBoundary } from '@ui/index';
+import { Button, Card, Badge, Modal, ConfirmDialog, ToastProvider, useToastStore, Loading, EmptyState, ErrorState, ErrorBoundary } from '@ui/index';
 import { brandTokens } from '@brand/tokens';
 import { Settings, Shield, Zap } from 'lucide-react';
 
 export const DesignSystemPreview: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isConfirmOpen, setIsConfirmOpen] = useState(false);
   const [isSimulatingError, setIsSimulatingError] = useState(false);
   const addToast = useToastStore((state) => state.addToast);
 
@@ -86,6 +87,7 @@ export const DesignSystemPreview: React.FC = () => {
           <h2 className="text-lg font-bold text-slate-800 mb-4">Interactions</h2>
           <div className="flex gap-4">
             <Button onClick={() => setIsModalOpen(true)}>Open Modal</Button>
+            <Button variant="danger" onClick={() => setIsConfirmOpen(true)}>Open Confirm</Button>
             <Button onClick={() => addToast({ type: 'success', title: 'Action Successful', message: 'The item was updated correctly.' })}>Success Toast</Button>
             <Button onClick={() => addToast({ type: 'error', title: 'Action Failed' })} variant="danger">Error Toast</Button>
           </div>
@@ -106,6 +108,19 @@ export const DesignSystemPreview: React.FC = () => {
               <p className="text-sm font-medium text-slate-700">Inner content goes here.</p>
             </Card>
           </Modal>
+
+          <ConfirmDialog
+            isOpen={isConfirmOpen}
+            onClose={() => setIsConfirmOpen(false)}
+            title="Delete Device?"
+            description="Are you sure you want to delete this device? This action cannot be undone."
+            variant="danger"
+            confirmLabel="Delete"
+            onConfirm={() => {
+              addToast({ type: 'info', title: 'Device deleted' });
+              setIsConfirmOpen(false);
+            }}
+          />
         </section>
 
         {/* States */}

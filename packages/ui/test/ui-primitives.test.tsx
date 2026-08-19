@@ -1,9 +1,17 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
-import { describe, it, expect, vi } from 'vitest';
-import { Button, Modal, ErrorState, EmptyState } from '../src';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { Button, Modal, ConfirmDialog, ToastProvider, useToastStore, ErrorState, EmptyState } from '../src';
 
 describe('UI Primitives', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('renders Button variants correctly', () => {
     render(<Button variant="primary">PrimaryBtn</Button>);
     expect(screen.getByText('PrimaryBtn')).toBeInTheDocument();
@@ -26,14 +34,64 @@ describe('UI Primitives', () => {
     expect(screen.getByText('ModalContent')).toBeInTheDocument();
   });
 
-  it('does not render Modal when closed', () => {
+  it('closes Modal on Escape key', () => {
+    const onClose = vi.fn();
     render(
-      <Modal isOpen={false} onClose={() => {}} title="Test Modal">
+      <Modal isOpen={true} onClose={onClose} title="Test Modal">
         ModalContent
       </Modal>
     );
-    expect(screen.queryByText('Test Modal')).not.toBeInTheDocument();
-    expect(screen.queryByText('ModalContent')).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles ConfirmDialog confirm action', () => {
+    const onConfirm = vi.fn();
+    render(
+      <ConfirmDialog isOpen={true} onClose={() => {}} onConfirm={onConfirm} title="Confirm action" />
+    );
+    fireEvent.click(screen.getByText('Confirm'));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles ConfirmDialog cancel action', () => {
+    const onClose = vi.fn();
+    render(
+      <ConfirmDialog isOpen={true} onClose={onClose} onConfirm={() => {}} title="Confirm action" />
+    );
+    fireEvent.click(screen.getByText('Cancel'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('adds and auto-removes Toast', () => {
+    render(<ToastProvider />);
+    const addToast = useToastStore.getState().addToast;
+    
+    act(() => {
+      addToast({ type: 'success', title: 'Test Toast' });
+    });
+    expect(screen.getByText('Test Toast')).toBeInTheDocument();
+
+    // Fast-forward 5s
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(screen.queryByText('Test Toast')).not.toBeInTheDocument();
+  });
+
+  it('manually removes Toast', () => {
+    render(<ToastProvider />);
+    const addToast = useToastStore.getState().addToast;
+    
+    act(() => {
+      addToast({ type: 'error', title: 'Manual Toast' });
+    });
+    expect(screen.getByText('Manual Toast')).toBeInTheDocument();
+
+    const closeBtn = screen.getByLabelText('Close notification');
+    fireEvent.click(closeBtn);
+    
+    expect(screen.queryByText('Manual Toast')).not.toBeInTheDocument();
   });
 
   it('renders EmptyState correctly', () => {

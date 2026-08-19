@@ -2,6 +2,7 @@ export * from './button/Button';
 export * from './card/Card';
 export * from './badge/Badge';
 export * from './modal/Modal';
+export * from './modal/ConfirmDialog';
 export * from './toast/Toast';
 export * from './loading/Loading';
 export * from './empty/EmptyState';

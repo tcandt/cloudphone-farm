@@ -39,7 +39,9 @@ const SuspenseLoader: React.FC<{ children: React.ReactNode }> = ({ children }) =
   </Suspense>
 );
 
-export const routes: any[] = [
+import type { RouteObject } from 'react-router-dom';
+
+export const routes: RouteObject[] = [
   {
     path: '/',
     element: <Navigate to="/app" replace />,
