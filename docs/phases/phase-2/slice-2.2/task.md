@@ -1,26 +1,4 @@
-- `[/]` Phase 2 Slice 2.1 Implementation
-  - `[ ]` 000010_agent_enrollment_keys migration
-    - `[ ]` Create up.sql with correct schema, FKs, and `uq_agent_enrollment_keys_org_key` unique constraint
-    - `[ ]` Create down.sql
-    - `[ ]` Verify apply/rollback
-  - `[ ]` OpenAPI Spec Update
-    - `[ ]` Add Agent Key schemas
-    - `[ ]` Add endpoints (POST, GET, GET /{id}, PATCH /{id}, DELETE /{id}, GET /{id}/devices placeholder)
-    - `[ ]` Generate Go code
-  - `[ ]` Domain implementation
-    - `[ ]` Repository (Create, Get, List, Update, Revoke)
-    - `[ ]` Service (256-bit CSPRNG, hash, business logic, tenant isolation)
-    - `[ ]` Handlers
-  - `[ ]` Automated Tests
-    - `[ ]` Raw key security (only returned once, never stored/logged)
-    - `[ ]` Tenant isolation
-    - `[ ]` PATCH immutable fields rejected
-    - `[ ]` DELETE semantic revoke
-    - `[ ]` NULL max_bindings & expires_at handled correctly
-  - `[ ]` Verification & Quality Gate 2.1
-    - `[ ]` Go tests pass
-    # Slice 2.2: Agent Binding & Challenge API Tasks
-
+# Slice 2.2: Agent Binding & Challenge API Tasks
 - [x] Create Database Migrations `000011_agent_key_bindings.up.sql` and `.down.sql`
 - [x] Update Domain Layer (`agent.go`, `agent_binding.go`)
 - [x] Update OpenAPI spec and generate models
@@ -30,6 +8,6 @@
 - [x] Implement `AgentEnrollmentHandlerV2`
 - [x] Wire dependencies in `main.go`
 - [x] Write Integration Tests (`agentenrollment_test.go`)
-- [x] Run automated checks (`go test`, `npm run typecheck`, etc.) unchanged
+- [x] Run automated checks (`go test`, `npm run typecheck`, etc.)
     - [x] Build passes
     - [x] Go tests pass

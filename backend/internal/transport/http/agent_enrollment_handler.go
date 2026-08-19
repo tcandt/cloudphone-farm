@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -39,7 +40,7 @@ func (h *AgentEnrollmentHandlerV2) RequestChallenge(w http.ResponseWriter, r *ht
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	if dec.More() {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "trailing data after JSON payload")
 		return
 	}
@@ -85,7 +86,7 @@ func (h *AgentEnrollmentHandlerV2) FinalizeEnrollment(w http.ResponseWriter, r *
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
 		return
 	}
-	if dec.More() {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "trailing data after JSON payload")
 		return
 	}
@@ -98,8 +99,13 @@ func (h *AgentEnrollmentHandlerV2) FinalizeEnrollment(w http.ResponseWriter, r *
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "client_instance_id exceeds maximum length of 64")
 		return
 	}
+
 	if req.DeviceInfo.Manufacturer == "" || req.DeviceInfo.Model == "" || req.DeviceInfo.AndroidVersion == "" || req.DeviceInfo.SerialNumber == "" || req.DeviceInfo.AgentVersion == "" || req.DeviceInfo.ProtocolVersion == "" {
-		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "missing required device_info fields")
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "device_info missing required fields")
+		return
+	}
+	if req.DeviceInfo.SDKInt <= 0 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "device_info.sdk_int must be > 0")
 		return
 	}
 

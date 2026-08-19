@@ -39,7 +39,9 @@ func TestMigration000010_AgentEnrollmentKeys(t *testing.T) {
 		t.Fatalf("failed to read 000010 down sql: %v", err)
 	}
 
-	// Make sure table does not exist yet (if ran before, we should drop it)
+	// Make sure we start clean (if 11 or 10 was run, drop them in reverse order)
+	m11Down, _ := os.ReadFile(filepath.Join(migrationsDir, "000011_agent_key_bindings.down.sql"))
+	_, _ = pool.Exec(ctx, string(m11Down))
 	_, _ = pool.Exec(ctx, string(m10Down))
 
 	// Apply 10
@@ -164,14 +166,23 @@ func TestMigration000011_AgentKeyBindings(t *testing.T) {
 	// Seed organizations and users correctly
 	orgID1 := "org_mig11_1"
 	orgID2 := "org_mig11_2"
-	pool.Exec(ctx, "INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'Org 1', 'org-1') ON CONFLICT DO NOTHING", orgID1)
-	pool.Exec(ctx, "INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'Org 2', 'org-2') ON CONFLICT DO NOTHING", orgID2)
-	pool.Exec(ctx, "INSERT INTO users (user_id, email, password_hash, display_name) VALUES ('usr_mig11', 'm11@test.com', 'hash', 'Test') ON CONFLICT DO NOTHING")
-	pool.Exec(ctx, "INSERT INTO agent_enrollment_keys (key_id, organization_id, created_by, name, token_prefix, token_hash) VALUES ('key_mig11', $1, 'usr_mig11', 'Test Key', 'cpk_', 'hash11') ON CONFLICT DO NOTHING", orgID1)
+	_, err = pool.Exec(ctx, "INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'Org 1', 'org-1') ON CONFLICT DO NOTHING", orgID1)
+	if err != nil { t.Fatalf("failed: %v", err) }
+	_, err = pool.Exec(ctx, "INSERT INTO organizations (organization_id, name, slug) VALUES ($1, 'Org 2', 'org-2') ON CONFLICT DO NOTHING", orgID2)
+	if err != nil { t.Fatalf("failed: %v", err) }
+	_, err = pool.Exec(ctx, "INSERT INTO users (user_id, email, password_hash, display_name) VALUES ('usr_mig11', 'm11@test.com', 'hash', 'Test') ON CONFLICT DO NOTHING")
+	if err != nil { t.Fatalf("failed: %v", err) }
+	_, err = pool.Exec(ctx, "INSERT INTO agent_enrollment_keys (key_id, organization_id, created_by, name, token_prefix, token_hash) VALUES ('key_mig11', $1, 'usr_mig11', 'Test Key', 'cpk_', 'hash11') ON CONFLICT DO NOTHING", orgID1)
+	if err != nil { t.Fatalf("failed: %v", err) }
 	
 	// Create Devices
-	pool.Exec(ctx, "INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities) VALUES ('dev1', $1, 'D1', 'SN1', 'M1', '1', 'active', '{}') ON CONFLICT DO NOTHING", orgID1)
-	pool.Exec(ctx, "INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities) VALUES ('dev2', $1, 'D2', 'SN2', 'M2', '2', 'active', '{}') ON CONFLICT DO NOTHING", orgID2)
+	_, err = pool.Exec(ctx, "INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities) VALUES ('dev1', $1, 'D1', 'SN1', 'M1', '1', 'active', '{}') ON CONFLICT DO NOTHING", orgID1)
+	if err != nil { t.Fatalf("failed: %v", err) }
+	_, err = pool.Exec(ctx, "INSERT INTO devices (device_id, organization_id, name, serial_number, model, platform_version, status, capabilities) VALUES ('dev2', $1, 'D2', 'SN2', 'M2', '2', 'active', '{}') ON CONFLICT DO NOTHING", orgID2)
+	if err != nil { t.Fatalf("failed: %v", err) }
+
+	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE organization_id IN ($1, $2)", orgID1, orgID2)
+	pool.Exec(ctx, "DELETE FROM device_agents WHERE organization_id IN ($1, $2)", orgID1, orgID2)
 
 	t.Run("client_instance_id uniqueness per organization", func(t *testing.T) {
 		_, err := pool.Exec(ctx, "INSERT INTO device_agents (agent_id, organization_id, device_id, client_instance_id, public_key_fingerprint, apk_version, protocol_version, status) VALUES ('agt1', $1, 'dev1', 'ci_1', '1111111111111111111111111111111111111111111111111111111111111111', '1.0', '2', 'active')", orgID1)
@@ -204,6 +215,12 @@ func TestMigration000011_AgentKeyBindings(t *testing.T) {
 		if err == nil { t.Errorf("expected FK rejection for cross tenant key") }
 	})
 
+	t.Run("cross-tenant agent FK rejected", func(t *testing.T) {
+		// Valid key in orgID1, but trying to bind an agent from orgID2
+		_, err := pool.Exec(ctx, "INSERT INTO agent_key_bindings (binding_id, organization_id, key_id, device_id, agent_id, public_key_fingerprint) VALUES ('b1_agent_fk', $1, 'key_mig11', 'dev2', 'agt3', '3333333333333333333333333333333333333333333333333333333333333333')", orgID1)
+		if err == nil { t.Errorf("expected FK rejection for cross tenant agent") }
+	})
+
 	t.Run("active binding partial unique index", func(t *testing.T) {
 		_, err := pool.Exec(ctx, "INSERT INTO agent_key_bindings (binding_id, organization_id, key_id, device_id, agent_id, public_key_fingerprint) VALUES ('b2', $1, 'key_mig11', 'dev1', 'agt1', '1111111111111111111111111111111111111111111111111111111111111111')", orgID1)
 		if err != nil { t.Errorf("expected success: %v", err) }
@@ -225,9 +242,26 @@ func TestMigration000011_AgentKeyBindings(t *testing.T) {
 		t.Fatalf("failed to apply 000011 down: %v", err)
 	}
 
+	// Assert schema items are missing
+	var exists bool
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'agent_key_bindings')").Scan(&exists)
+	if exists { t.Errorf("agent_key_bindings table should be absent after DOWN") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'device_agents' AND column_name = 'client_instance_id')").Scan(&exists)
+	if exists { t.Errorf("client_instance_id column should be absent after DOWN") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_constraint WHERE conname = 'uq_device_agents_org_client_instance')").Scan(&exists)
+	if exists { t.Errorf("uq_device_agents_org_client_instance should be absent after DOWN") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_constraint WHERE conname = 'uq_device_agents_org_device_agent')").Scan(&exists)
+	if exists { t.Errorf("uq_device_agents_org_device_agent should be absent after DOWN") }
+
 	// Re-apply 11
 	if _, err := pool.Exec(ctx, string(m11Up)); err != nil {
 		t.Fatalf("failed to re-apply 000011 up: %v", err)
 	}
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'agent_key_bindings')").Scan(&exists)
+	if !exists { t.Errorf("agent_key_bindings table should exist after UP") }
 }
 

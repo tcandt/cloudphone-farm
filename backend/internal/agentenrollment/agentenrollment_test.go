@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"math/big"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -22,58 +21,7 @@ import (
 	"github.com/tcandt/cloudphone-farm/backend/pkg/crypto"
 )
 
-var dbMigrationMutex sync.Mutex
 
-func runMigrations(t *testing.T, ctx context.Context, pool *pgxpool.Pool, migrationsDir string) {
-	dbMigrationMutex.Lock()
-	defer dbMigrationMutex.Unlock()
-
-	_, _ = pool.Exec(ctx, "SELECT pg_advisory_lock(123456789);")
-	defer func() {
-		_, _ = pool.Exec(ctx, "SELECT pg_advisory_unlock(123456789);")
-	}()
-
-	migrations := []string{
-		"000001_create_core_tables.up.sql",
-		"000002_seed_initial_rbac.up.sql",
-		"000003_harden_agent_identity_and_enrollment.up.sql",
-		"000004_harden_command_outbox.up.sql",
-		"000005_harden_command_runtime.up.sql",
-		"000006_control_lease_and_command_contract.up.sql",
-		"000007_phase14_command_delivery_attempts.up.sql",
-		"000008_nullable_physical_telemetry_and_security_metadata.up.sql",
-		"000009_enrollment_tokens_created_at.up.sql",
-		"000010_agent_enrollment_keys.up.sql",
-		"000011_agent_key_bindings.up.sql",
-	}
-
-	_, _ = pool.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS pcp_schema_migrations (
-			version BIGINT PRIMARY KEY,
-			name VARCHAR(255) NOT NULL,
-			checksum VARCHAR(64) NOT NULL,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-		);
-	`)
-
-	for _, mFile := range migrations {
-		mPath := filepath.Join(migrationsDir, mFile)
-		sqlBytes, readErr := os.ReadFile(mPath)
-		if readErr != nil {
-			t.Fatalf("failed to read migration file %s: %v", mPath, readErr)
-		}
-
-		tx, txErr := pool.Begin(ctx)
-		if txErr != nil {
-			t.Fatalf("failed to begin migration transaction for %s: %v", mFile, txErr)
-		}
-		if _, execErr := tx.Exec(ctx, string(sqlBytes)); execErr != nil {
-			_ = tx.Rollback(ctx)
-			t.Fatalf("failed to execute migration %s: %v", mFile, execErr)
-		}
-		_ = tx.Commit(ctx)
-	}
-}
 
 type ecdsaSignature struct {
 	R, S *big.Int
@@ -83,6 +31,9 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 	dbURL := os.Getenv("DATABASE_URL")
 	redisURL := os.Getenv("REDIS_URL")
 	if dbURL == "" || redisURL == "" {
+		if os.Getenv("CI") == "true" {
+			t.Fatal("Gate-critical integration test failed: CI=true but DATABASE_URL or REDIS_URL not set")
+		}
 		t.Skip("Skipping integration test; DATABASE_URL or REDIS_URL not set")
 	}
 
@@ -103,8 +54,7 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 		t.Fatalf("failed to ping redis: %v", err)
 	}
 
-	migrationsDir := filepath.Join("..", "..", "db", "migrations")
-	runMigrations(t, ctx, pool, migrationsDir)
+	// assume DB is already migrated
 
 	repo := postgres.NewEnrollmentV2Repository(pool)
 	challengeStore := agentenrollment.NewChallengeStore(rdb)
@@ -234,89 +184,118 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 		t.Errorf("expected ErrIdentityConflict, got: %v", err)
 	}
 	
-	// CONCURRENCY A: Same key, 2 different new identities, 1 slot remaining
-	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
-	
-	pubA1, privA1 := genKey()
-	ciA1 := "ci_conc_a1"
-	chalA1, nA1, _ := service.GenerateChallenge(ctx, rawSecret, ciA1, pubA1)
-	reqA1 := req1
-	reqA1.ClientInstanceID = ciA1
-	reqA1.ChallengeID = chalA1
-	reqA1.PublicKey = pubA1
-	reqA1.Signature = signNonce(nA1, privA1)
+	t.Run("TestEnrollmentV2_Concurrency_DifferentIdentitiesOneSlot", func(t *testing.T) {
+		pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
+		
+		pubA1, privA1 := genKey()
+		ciA1 := "ci_conc_a1"
+		chalA1, nA1, _ := service.GenerateChallenge(ctx, rawSecret, ciA1, pubA1)
+		reqA1 := req1
+		reqA1.ClientInstanceID = ciA1
+		reqA1.ChallengeID = chalA1
+		reqA1.PublicKey = pubA1
+		reqA1.Signature = signNonce(nA1, privA1)
 
-	pubA2, privA2 := genKey()
-	ciA2 := "ci_conc_a2"
-	chalA2, nA2, _ := service.GenerateChallenge(ctx, rawSecret, ciA2, pubA2)
-	reqA2 := req1
-	reqA2.ClientInstanceID = ciA2
-	reqA2.ChallengeID = chalA2
-	reqA2.PublicKey = pubA2
-	reqA2.Signature = signNonce(nA2, privA2)
+		pubA2, privA2 := genKey()
+		ciA2 := "ci_conc_a2"
+		chalA2, nA2, _ := service.GenerateChallenge(ctx, rawSecret, ciA2, pubA2)
+		reqA2 := req1
+		reqA2.ClientInstanceID = ciA2
+		reqA2.ChallengeID = chalA2
+		reqA2.PublicKey = pubA2
+		reqA2.Signature = signNonce(nA2, privA2)
 
-	var wg sync.WaitGroup
-	var errA1, errA2 error
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		_, _, errA1 = service.EnrollAgent(ctx, reqA1)
-	}()
-	go func() {
-		defer wg.Done()
-		_, _, errA2 = service.EnrollAgent(ctx, reqA2)
-	}()
-	wg.Wait()
+		var wg sync.WaitGroup
+		var errA1, errA2 error
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_, _, errA1 = service.EnrollAgent(ctx, reqA1)
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, errA2 = service.EnrollAgent(ctx, reqA2)
+		}()
+		wg.Wait()
 
-	if (errA1 == nil && errA2 == nil) || (errA1 != nil && errA2 != nil) {
-		t.Errorf("Concurrency A failed: expected exactly one success and one quota error, got errA1: %v, errA2: %v", errA1, errA2)
-	}
-
-	// CONCURRENCY B: Same key, 2 requests for SAME new identity with separate fresh challenges
-	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
-	pool.Exec(ctx, "DELETE FROM device_agents WHERE organization_id = $1", orgID)
-
-	pubB, privB := genKey()
-	ciB := "ci_conc_b"
-	
-	chalB1, nB1, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
-	reqB1 := req1
-	reqB1.ClientInstanceID = ciB
-	reqB1.ChallengeID = chalB1
-	reqB1.PublicKey = pubB
-	reqB1.Signature = signNonce(nB1, privB)
-
-	chalB2, nB2, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
-	reqB2 := req1
-	reqB2.ClientInstanceID = ciB
-	reqB2.ChallengeID = chalB2
-	reqB2.PublicKey = pubB
-	reqB2.Signature = signNonce(nB2, privB)
-
-	var resB1, resB2 *agentenrollment.AgentEnrollResponse
-	var errB1, errB2 error
-	var createdB1, createdB2 bool
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		resB1, createdB1, errB1 = service.EnrollAgent(ctx, reqB1)
-	}()
-	go func() {
-		defer wg.Done()
-		resB2, createdB2, errB2 = service.EnrollAgent(ctx, reqB2)
-	}()
-	wg.Wait()
-
-	if errB1 != nil || errB2 != nil {
-		t.Errorf("Concurrency B failed: expected both to succeed (one created, one idempotent). errB1: %v, errB2: %v", errB1, errB2)
-	} else {
-		if createdB1 == createdB2 {
-			t.Errorf("Concurrency B failed: one must be created=true and one created=false")
+		if errA1 == agentenrollment.ErrQuotaExhausted && errA2 == nil {
+			// A2 succeeded, A1 exhausted
+		} else if errA2 == agentenrollment.ErrQuotaExhausted && errA1 == nil {
+			// A1 succeeded, A2 exhausted
+		} else {
+			t.Errorf("Concurrency A failed: expected exactly one success and one ErrQuotaExhausted, got errA1: %v, errA2: %v", errA1, errA2)
 		}
-		if resB1.AgentID != resB2.AgentID || resB1.DeviceID != resB2.DeviceID {
-			t.Errorf("Concurrency B failed: expected same agent and device IDs")
+
+		var count int
+		err := pool.QueryRow(ctx, "SELECT COUNT(*) FROM agent_key_bindings WHERE key_id = $1 AND released_at IS NULL", keyID).Scan(&count)
+		if err != nil || count != 1 {
+			t.Errorf("expected exactly 1 active binding, got %d", count)
 		}
-	}
+	})
+
+	t.Run("TestEnrollmentV2_Concurrency_SameIdentity", func(t *testing.T) {
+		pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
+		pool.Exec(ctx, "DELETE FROM device_agents WHERE organization_id = $1", orgID)
+
+		pubB, privB := genKey()
+		ciB := "ci_conc_b"
+		
+		chalB1, nB1, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
+		reqB1 := req1
+		reqB1.ClientInstanceID = ciB
+		reqB1.ChallengeID = chalB1
+		reqB1.PublicKey = pubB
+		reqB1.Signature = signNonce(nB1, privB)
+
+		chalB2, nB2, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
+		reqB2 := req1
+		reqB2.ClientInstanceID = ciB
+		reqB2.ChallengeID = chalB2
+		reqB2.PublicKey = pubB
+		reqB2.Signature = signNonce(nB2, privB)
+
+		var resB1, resB2 *agentenrollment.AgentEnrollResponse
+		var errB1, errB2 error
+		var createdB1, createdB2 bool
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			resB1, createdB1, errB1 = service.EnrollAgent(ctx, reqB1)
+		}()
+		go func() {
+			defer wg.Done()
+			resB2, createdB2, errB2 = service.EnrollAgent(ctx, reqB2)
+		}()
+		wg.Wait()
+
+		if errB1 != nil || errB2 != nil {
+			t.Errorf("Concurrency B failed: expected both to succeed (one created, one idempotent). errB1: %v, errB2: %v", errB1, errB2)
+		} else {
+			if createdB1 == createdB2 {
+				t.Errorf("Concurrency B failed: one must be created=true and one created=false")
+			}
+			if resB1.AgentID != resB2.AgentID || resB1.DeviceID != resB2.DeviceID {
+				t.Errorf("Concurrency B failed: expected same agent and device IDs")
+			}
+		}
+
+		var countAgents int
+		_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM device_agents WHERE client_instance_id = $1", ciB).Scan(&countAgents)
+		if countAgents != 1 {
+			t.Errorf("expected 1 agent, got %d", countAgents)
+		}
+
+		var countBindings int
+		var agentID string
+		if resB1 != nil {
+			agentID = resB1.AgentID
+		}
+		_ = pool.QueryRow(ctx, "SELECT COUNT(*) FROM agent_key_bindings WHERE agent_id = $1 AND released_at IS NULL", agentID).Scan(&countBindings)
+		if countBindings != 1 {
+			t.Errorf("expected 1 binding, got %d", countBindings)
+		}
+	})
 
 	// Clean up for other tests
 	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)

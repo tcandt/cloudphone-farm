@@ -88,7 +88,7 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: postgres://pcp:pcp_password@localhost:5432/phone_farm?sslmode=disable
-          REDIS_URL: localhost:6379
+          REDIS_URL: redis://localhost:6379/0
         run: |
           go vet ./...
           go test -race -v ./...

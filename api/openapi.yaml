@@ -435,12 +435,14 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [enrollment_token, client_instance_id, public_key]
               properties:
                 enrollment_token:
                   type: string
                 client_instance_id:
                   type: string
+                  maxLength: 64
                 public_key:
                   type: string
       responses:
@@ -798,6 +800,7 @@ components:
 
     AgentEnrollRequest:
       type: object
+      additionalProperties: false
       required: [enrollment_token, challenge_id, client_instance_id, public_key, signature, device_info]
       properties:
         enrollment_token:
@@ -824,6 +827,7 @@ components:
               type: string
             sdk_int:
               type: integer
+              minimum: 1
             serial_number:
               type: string
             agent_version:

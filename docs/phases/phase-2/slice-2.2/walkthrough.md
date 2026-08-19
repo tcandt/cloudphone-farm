@@ -44,7 +44,7 @@ I have completed the implementation of **Phase 2 Slice 2.2** ensuring the archit
 - **Cryptographic Storage**: Now strictly stores the raw `public_key` (SPKI DER as `[]byte`) and validates its length/content alongside the 64-char lowercase `public_key_fingerprint`.
 - **Strict Parsing**: Uses `dec.DisallowUnknownFields()` and length validation (e.g. `client_instance_id` <= 64) to reject payloads with trailing data or unmapped properties.
 - **Typed Contracts**: Eliminated `map[string]interface{}` in favor of the strongly typed `AgentDeviceInfo`, explicitly validating the presence of Manufacturer, Model, AndroidVersion, SerialNumber, AgentVersion, and ProtocolVersion.
-- **Security Check**: `ChallengeID` now generated via 32-byte `crypto/rand` encoding to Hex.
+- **Security Check**: `ChallengeID` now generated via 32-byte `crypto/rand` encoded to base64url without padding, NOT hex.
 - **Integration Test Matrix**: We created tests fully covering the concurrency matrix (same identity, different identity) natively interacting with the PostgreSQL transaction limits and isolation levels.
 - **Schema Validation**: Tests added validating the CHECK constraint `chk_akb_fp` and the `client_instance_id` unique composite keys directly against Postgres 16.
 
