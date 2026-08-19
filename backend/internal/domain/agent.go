@@ -10,6 +10,7 @@ type DeviceAgent struct {
 	PublicKey            []byte     `json:"-"`
 	PublicKeyFingerprint string     `json:"public_key_fingerprint"`
 	ApkVersion           string     `json:"apk_version"`
+	ProtocolVersion      string     `json:"protocol_version"`
 	Status               string     `json:"status"`
 	LastAuthenticatedAt  *time.Time `json:"last_authenticated_at,omitempty"`
 }

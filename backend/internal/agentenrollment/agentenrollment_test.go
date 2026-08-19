@@ -12,7 +12,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -104,11 +103,7 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 		t.Fatalf("failed to ping redis: %v", err)
 	}
 
-	wd, _ := os.Getwd()
-	migrationsDir := filepath.Join(wd, "..", "..", "db", "migrations")
-	if strings.Contains(wd, "agentenrollment") {
-		migrationsDir = filepath.Join(wd, "..", "..", "..", "db", "migrations")
-	}
+	migrationsDir := filepath.Join("..", "..", "db", "migrations")
 	runMigrations(t, ctx, pool, migrationsDir)
 
 	repo := postgres.NewEnrollmentV2Repository(pool)
@@ -118,8 +113,8 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 	// Seed data
 	orgID := "org_v2_test"
 	userID := "user_v2_test"
-	pool.Exec(ctx, "INSERT INTO organizations (organization_id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", orgID, "Test Org V2")
-	pool.Exec(ctx, "INSERT INTO users (user_id, email, password_hash, organization_id, role) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING", userID, "v2test@example.com", "hash", orgID, "admin")
+	pool.Exec(ctx, "INSERT INTO organizations (organization_id, name, slug) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING", orgID, "Test Org V2", "test-org-v2")
+	pool.Exec(ctx, "INSERT INTO users (user_id, email, password_hash, display_name) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING", userID, "v2test@example.com", "hash", "Test User V2")
 
 	keyID := "key_test_1"
 	rawSecret := "secret_12345"
@@ -167,8 +162,14 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 		ClientInstanceID: clientInst1,
 		PublicKey:        pubKeyBase64,
 		Signature:        sig1,
-		DeviceInfo: map[string]interface{}{
-			"serial_number": "SN001",
+		DeviceInfo: agentenrollment.AgentDeviceInfo{
+			Manufacturer:    "Google",
+			Model:           "Pixel 6",
+			AndroidVersion:  "12",
+			SDKInt:          31,
+			SerialNumber:    "SN001",
+			AgentVersion:    "1.0.0",
+			ProtocolVersion: "2",
 		},
 	}
 
@@ -233,6 +234,90 @@ func TestEnrollmentV2_Integration(t *testing.T) {
 		t.Errorf("expected ErrIdentityConflict, got: %v", err)
 	}
 	
+	// CONCURRENCY A: Same key, 2 different new identities, 1 slot remaining
+	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
+	
+	pubA1, privA1 := genKey()
+	ciA1 := "ci_conc_a1"
+	chalA1, nA1, _ := service.GenerateChallenge(ctx, rawSecret, ciA1, pubA1)
+	reqA1 := req1
+	reqA1.ClientInstanceID = ciA1
+	reqA1.ChallengeID = chalA1
+	reqA1.PublicKey = pubA1
+	reqA1.Signature = signNonce(nA1, privA1)
+
+	pubA2, privA2 := genKey()
+	ciA2 := "ci_conc_a2"
+	chalA2, nA2, _ := service.GenerateChallenge(ctx, rawSecret, ciA2, pubA2)
+	reqA2 := req1
+	reqA2.ClientInstanceID = ciA2
+	reqA2.ChallengeID = chalA2
+	reqA2.PublicKey = pubA2
+	reqA2.Signature = signNonce(nA2, privA2)
+
+	var wg sync.WaitGroup
+	var errA1, errA2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _, errA1 = service.EnrollAgent(ctx, reqA1)
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, errA2 = service.EnrollAgent(ctx, reqA2)
+	}()
+	wg.Wait()
+
+	if (errA1 == nil && errA2 == nil) || (errA1 != nil && errA2 != nil) {
+		t.Errorf("Concurrency A failed: expected exactly one success and one quota error, got errA1: %v, errA2: %v", errA1, errA2)
+	}
+
+	// CONCURRENCY B: Same key, 2 requests for SAME new identity with separate fresh challenges
+	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
+	pool.Exec(ctx, "DELETE FROM device_agents WHERE organization_id = $1", orgID)
+
+	pubB, privB := genKey()
+	ciB := "ci_conc_b"
+	
+	chalB1, nB1, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
+	reqB1 := req1
+	reqB1.ClientInstanceID = ciB
+	reqB1.ChallengeID = chalB1
+	reqB1.PublicKey = pubB
+	reqB1.Signature = signNonce(nB1, privB)
+
+	chalB2, nB2, _ := service.GenerateChallenge(ctx, rawSecret, ciB, pubB)
+	reqB2 := req1
+	reqB2.ClientInstanceID = ciB
+	reqB2.ChallengeID = chalB2
+	reqB2.PublicKey = pubB
+	reqB2.Signature = signNonce(nB2, privB)
+
+	var resB1, resB2 *agentenrollment.AgentEnrollResponse
+	var errB1, errB2 error
+	var createdB1, createdB2 bool
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		resB1, createdB1, errB1 = service.EnrollAgent(ctx, reqB1)
+	}()
+	go func() {
+		defer wg.Done()
+		resB2, createdB2, errB2 = service.EnrollAgent(ctx, reqB2)
+	}()
+	wg.Wait()
+
+	if errB1 != nil || errB2 != nil {
+		t.Errorf("Concurrency B failed: expected both to succeed (one created, one idempotent). errB1: %v, errB2: %v", errB1, errB2)
+	} else {
+		if createdB1 == createdB2 {
+			t.Errorf("Concurrency B failed: one must be created=true and one created=false")
+		}
+		if resB1.AgentID != resB2.AgentID || resB1.DeviceID != resB2.DeviceID {
+			t.Errorf("Concurrency B failed: expected same agent and device IDs")
+		}
+	}
+
 	// Clean up for other tests
 	pool.Exec(ctx, "DELETE FROM agent_key_bindings WHERE key_id = $1", keyID)
 	pool.Exec(ctx, "DELETE FROM agent_enrollment_keys WHERE key_id = $1", keyID)

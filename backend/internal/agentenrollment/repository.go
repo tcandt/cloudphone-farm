@@ -20,6 +20,8 @@ type IdempotencyResult struct {
 	DeviceID    string
 	AgentID     string
 	Fingerprint string
+	Status      string
+	RevokedAt   *time.Time
 }
 
 type EnrollmentTx interface {

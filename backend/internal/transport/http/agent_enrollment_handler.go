@@ -33,13 +33,23 @@ func (h *AgentEnrollmentHandlerV2) RequestChallenge(w http.ResponseWriter, r *ht
 		PublicKey        string `json:"public_key"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+	if dec.More() {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "trailing data after JSON payload")
 		return
 	}
 
 	if req.EnrollmentToken == "" || req.ClientInstanceID == "" || req.PublicKey == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "missing required fields")
+		return
+	}
+	if len(req.ClientInstanceID) > 64 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "client_instance_id exceeds maximum length of 64")
 		return
 	}
 
@@ -55,22 +65,41 @@ func (h *AgentEnrollmentHandlerV2) RequestChallenge(w http.ResponseWriter, r *ht
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"challenge_id": challengeID,
-		"nonce":        nonce,
+	_ = json.NewEncoder(w).Encode(struct {
+		ChallengeID string `json:"challenge_id"`
+		Challenge   string `json:"challenge"`
+		ExpiresIn   int    `json:"expires_in"`
+	}{
+		ChallengeID: challengeID,
+		Challenge:   nonce,
+		ExpiresIn:   120,
 	})
 }
 
 func (h *AgentEnrollmentHandlerV2) FinalizeEnrollment(w http.ResponseWriter, r *http.Request) {
 	var req agentenrollment.AgentEnrollRequest
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid request body")
+		return
+	}
+	if dec.More() {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "trailing data after JSON payload")
 		return
 	}
 
 	if req.EnrollmentToken == "" || req.ChallengeID == "" || req.ClientInstanceID == "" || req.PublicKey == "" || req.Signature == "" {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "missing required fields")
+		return
+	}
+	if len(req.ClientInstanceID) > 64 {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "client_instance_id exceeds maximum length of 64")
+		return
+	}
+	if req.DeviceInfo.Manufacturer == "" || req.DeviceInfo.Model == "" || req.DeviceInfo.AndroidVersion == "" || req.DeviceInfo.SerialNumber == "" || req.DeviceInfo.AgentVersion == "" || req.DeviceInfo.ProtocolVersion == "" {
+		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "missing required device_info fields")
 		return
 	}
 

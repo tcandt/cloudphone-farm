@@ -83,8 +83,11 @@ type AgentEnrollRequest struct {
 
 // AgentEnrollResponse defines model for AgentEnrollResponse.
 type AgentEnrollResponse struct {
-	AgentId  string `json:"agent_id"`
-	DeviceId string `json:"device_id"`
+	AgentId           string `json:"agent_id"`
+	CredentialVersion int    `json:"credential_version"`
+	DeviceId          string `json:"device_id"`
+	OrganizationId    string `json:"organization_id"`
+	Status            string `json:"status"`
 }
 
 // AgentKey defines model for AgentKey.

@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -26,20 +25,33 @@ var (
 	ErrQuotaExhausted        = fmt.Errorf("enrollment quota exhausted")
 )
 
+type AgentDeviceInfo struct {
+	Manufacturer    string `json:"manufacturer"`
+	Model           string `json:"model"`
+	AndroidVersion  string `json:"android_version"`
+	SDKInt          int    `json:"sdk_int"`
+	SerialNumber    string `json:"serial_number"`
+	AgentVersion    string `json:"agent_version"`
+	ProtocolVersion string `json:"protocol_version"`
+}
+
 // AgentEnrollRequest matches the OpenAPI contract
 type AgentEnrollRequest struct {
-	EnrollmentToken  string                 `json:"enrollment_token"`
-	ChallengeID      string                 `json:"challenge_id"`
-	ClientInstanceID string                 `json:"client_instance_id"`
-	PublicKey        string                 `json:"public_key"`
-	Signature        string                 `json:"signature"`
-	DeviceInfo       map[string]interface{} `json:"device_info"`
+	EnrollmentToken  string          `json:"enrollment_token"`
+	ChallengeID      string          `json:"challenge_id"`
+	ClientInstanceID string          `json:"client_instance_id"`
+	PublicKey        string          `json:"public_key"`
+	Signature        string          `json:"signature"`
+	DeviceInfo       AgentDeviceInfo `json:"device_info"`
 }
 
 // AgentEnrollResponse matches the OpenAPI contract
 type AgentEnrollResponse struct {
-	AgentID  string `json:"agent_id"`
-	DeviceID string `json:"device_id"`
+	AgentID           string `json:"agent_id"`
+	DeviceID          string `json:"device_id"`
+	OrganizationID    string `json:"organization_id"`
+	CredentialVersion int    `json:"credential_version"`
+	Status            string `json:"status"`
 }
 
 type EnrollmentV2Service struct {
@@ -97,8 +109,12 @@ func (s *EnrollmentV2Service) GenerateChallenge(ctx context.Context, token, clie
 	}
 	nonceB64url := base64.RawURLEncoding.EncodeToString(nonceBytes)
 
-	// Generate challenge ID
-	challengeID := "chl_" + uuid.New().String()
+	// 6. Generate 32-byte CSPRNG Challenge ID
+	chalIDBytes := make([]byte, 32)
+	if _, err := rand.Read(chalIDBytes); err != nil {
+		return "", "", fmt.Errorf("failed to generate challenge id: %w", err)
+	}
+	challengeID := "chl_" + base64.RawURLEncoding.EncodeToString(chalIDBytes)
 
 	// 6. Save challenge context to Redis
 	challengeCtx := ChallengeContext{
@@ -153,11 +169,6 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 		return nil, false, ErrUnauthorized
 	}
 
-	var sig ecdsaSignature
-	if _, err := asn1.Unmarshal(sigBytes, &sig); err != nil {
-		return nil, false, ErrUnauthorized
-	}
-
 	parsedKey, err := x509.ParsePKIXPublicKey(pubKeyBytes)
 	if err != nil {
 		return nil, false, ErrUnauthorized
@@ -168,7 +179,7 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 	}
 
 	hash := sha256.Sum256(nonceRaw)
-	if !ecdsa.Verify(ecdsaKey, hash[:], sig.R, sig.S) {
+	if !ecdsa.VerifyASN1(ecdsaKey, hash[:], sigBytes) {
 		slog.Warn("signature verification failed")
 		return nil, false, ErrUnauthorized
 	}
@@ -205,13 +216,25 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 	}
 
 	if idem.Exists {
+		if idem.Status == "revoked" || idem.Status == "decommissioned" || idem.RevokedAt != nil {
+			return nil, false, ErrUnauthorized
+		}
 		if idem.Fingerprint == challengeCtx.PublicKeyFingerprint {
 			// Idempotent 200 OK - No quota consumption
-			tx.UpdateKeyLastUsedAt(ctx, challengeCtx.OrganizationID, challengeCtx.KeyID)
-			tx.Commit(ctx)
+			if err := tx.UpdateKeyLastUsedAt(ctx, challengeCtx.OrganizationID, challengeCtx.KeyID); err != nil {
+				slog.Error("failed to update key last used", "err", err)
+				return nil, false, fmt.Errorf("internal error")
+			}
+			if err := tx.Commit(ctx); err != nil {
+				slog.Error("failed to commit tx", "err", err)
+				return nil, false, fmt.Errorf("internal error")
+			}
 			return &AgentEnrollResponse{
-				AgentID:  idem.AgentID,
-				DeviceID: idem.DeviceID,
+				AgentID:           idem.AgentID,
+				DeviceID:          idem.DeviceID,
+				OrganizationID:    challengeCtx.OrganizationID,
+				CredentialVersion: 1,
+				Status:            "enrolled",
 			}, false, nil
 		}
 		// Fingerprint mismatch
@@ -239,20 +262,20 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 		DeviceID:        deviceID,
 		OrganizationID:  challengeCtx.OrganizationID,
 		Name:            fmt.Sprintf("Device %s", deviceID[:8]),
-		SerialNumber:    "unknown",
-		Model:           "unknown",
-		PlatformVersion: "unknown",
+		SerialNumber:    req.DeviceInfo.SerialNumber,
+		Model:           req.DeviceInfo.Model,
+		PlatformVersion: req.DeviceInfo.AndroidVersion,
 		Status:          "provisioning",
 	}
 
-	if sn, ok := req.DeviceInfo["serial_number"].(string); ok && sn != "" {
-		device.SerialNumber = sn
+	if device.SerialNumber == "" {
+		device.SerialNumber = "unknown"
 	}
-	if mod, ok := req.DeviceInfo["model"].(string); ok && mod != "" {
-		device.Model = mod
+	if device.Model == "" {
+		device.Model = "unknown"
 	}
-	if pv, ok := req.DeviceInfo["android_version"].(string); ok && pv != "" {
-		device.PlatformVersion = pv
+	if device.PlatformVersion == "" {
+		device.PlatformVersion = "unknown"
 	}
 
 	clientInstID := challengeCtx.ClientInstanceID
@@ -261,13 +284,11 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 		OrganizationID:       challengeCtx.OrganizationID,
 		DeviceID:             deviceID,
 		ClientInstanceID:     &clientInstID,
+		PublicKey:            pubKeyBytes,
 		PublicKeyFingerprint: challengeCtx.PublicKeyFingerprint,
-		ApkVersion:           "1.0.0",
+		ApkVersion:           req.DeviceInfo.AgentVersion,
+		ProtocolVersion:      req.DeviceInfo.ProtocolVersion,
 		Status:               "active",
-	}
-
-	if av, ok := req.DeviceInfo["agent_version"].(string); ok && av != "" {
-		agent.ApkVersion = av
 	}
 
 	binding := &domain.AgentKeyBinding{
@@ -297,7 +318,10 @@ func (s *EnrollmentV2Service) EnrollAgent(ctx context.Context, req AgentEnrollRe
 	}
 
 	return &AgentEnrollResponse{
-		AgentID:  agentID,
-		DeviceID: deviceID,
+		AgentID:           agentID,
+		DeviceID:          deviceID,
+		OrganizationID:    challengeCtx.OrganizationID,
+		CredentialVersion: 1,
+		Status:            "enrolled",
 	}, true, nil
 }

@@ -116,18 +116,22 @@ func (t *enrollmentTx) RevalidateKey(ctx context.Context, organizationID, keyID,
 
 func (t *enrollmentTx) CheckIdempotency(ctx context.Context, organizationID, clientInstanceID string) (*agentenrollment.IdempotencyResult, error) {
 	const query = `
-		SELECT device_id, agent_id, public_key_fingerprint
+		SELECT device_id, agent_id, public_key_fingerprint, status, revoked_at
 		FROM device_agents
 		WHERE organization_id = $1 AND client_instance_id = $2
 	`
 	row := t.tx.QueryRow(ctx, query, organizationID, clientInstanceID)
 	
 	res := &agentenrollment.IdempotencyResult{Exists: true}
-	if err := row.Scan(&res.DeviceID, &res.AgentID, &res.Fingerprint); err != nil {
+	var revokedAt sql.NullTime
+	if err := row.Scan(&res.DeviceID, &res.AgentID, &res.Fingerprint, &res.Status, &revokedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &agentenrollment.IdempotencyResult{Exists: false}, nil
 		}
 		return nil, err
+	}
+	if revokedAt.Valid {
+		res.RevokedAt = &revokedAt.Time
 	}
 	return res, nil
 }
@@ -161,11 +165,11 @@ func (t *enrollmentTx) CreateBinding(ctx context.Context, device *domain.Device,
 	// 2. Create Device Agent
 	const qAgent = `
 		INSERT INTO device_agents (
-			agent_id, organization_id, device_id, client_instance_id, public_key_fingerprint, apk_version, protocol_version, status
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			agent_id, organization_id, device_id, client_instance_id, public_key, public_key_fingerprint, apk_version, protocol_version, status
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	if _, err := t.tx.Exec(ctx, qAgent,
-		agent.AgentID, agent.OrganizationID, agent.DeviceID, agent.ClientInstanceID, agent.PublicKeyFingerprint, agent.ApkVersion, "2", agent.Status,
+		agent.AgentID, agent.OrganizationID, agent.DeviceID, agent.ClientInstanceID, agent.PublicKey, agent.PublicKeyFingerprint, agent.ApkVersion, agent.ProtocolVersion, agent.Status,
 	); err != nil {
 		return err
 	}

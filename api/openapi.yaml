@@ -450,11 +450,14 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [challenge_id, challenge, expires_in]
                 properties:
                   challenge_id:
                     type: string
-                  nonce:
+                  challenge:
                     type: string
+                  expires_in:
+                    type: integer
         '401':
           $ref: '#/components/responses/UnauthorizedError'
 
@@ -803,12 +806,14 @@ components:
           type: string
         client_instance_id:
           type: string
+          maxLength: 64
         public_key:
           type: string
         signature:
           type: string
         device_info:
           type: object
+          additionalProperties: false
           required: [manufacturer, model, android_version, sdk_int, serial_number, agent_version, protocol_version]
           properties:
             manufacturer:
@@ -828,11 +833,17 @@ components:
 
     AgentEnrollResponse:
       type: object
-      required: [agent_id, device_id]
+      required: [agent_id, device_id, organization_id, credential_version, status]
       properties:
         agent_id:
           type: string
         device_id:
+          type: string
+        organization_id:
+          type: string
+        credential_version:
+          type: integer
+        status:
           type: string
 
   responses:
