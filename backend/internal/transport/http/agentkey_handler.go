@@ -26,6 +26,7 @@ func (h *AgentKeyHandler) RegisterRoutes(r chi.Router) {
 	r.Get("/{keyId}", h.GetByID)
 	r.Patch("/{keyId}", h.Update)
 	r.Delete("/{keyId}", h.Revoke)
+	r.Get("/{keyId}/devices", h.GetBindings)
 }
 
 func (h *AgentKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -224,6 +225,37 @@ func (h *AgentKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (h *AgentKeyHandler) GetBindings(w http.ResponseWriter, r *http.Request) {
+	principal, err := auth.GetPrincipal(r.Context())
+	if err != nil {
+		WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
+		return
+	}
+
+	keyID := chi.URLParam(r, "keyId")
+
+	bindings, err := h.svc.GetBindings(r.Context(), principal.OrganizationID, keyID)
+	if err != nil {
+		if errors.Is(err, agentkey.ErrNotFound) {
+			WriteError(w, http.StatusNotFound, "NOT_FOUND", "Agent key not found")
+			return
+		}
+		WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get bindings")
+		return
+	}
+
+	var res []AgentKeyBinding
+	for _, b := range bindings {
+		res = append(res, mapDomainBindingToAPI(b))
+	}
+	if res == nil {
+		res = []AgentKeyBinding{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(res)
+}
+
 
 
 func mapDomainKeyToAPI(k *domain.AgentKey) AgentKey {
@@ -248,7 +280,25 @@ func mapDomainKeyToAPI(k *domain.AgentKey) AgentKey {
 	if k.LastUsedAt != nil {
 		ak.LastUsedAt = k.LastUsedAt
 	}
+	ak.ActiveBindings = k.ActiveBindings
 	return ak
+}
+
+func mapDomainBindingToAPI(b *domain.AgentKeyBinding) AgentKeyBinding {
+	ab := AgentKeyBinding{
+		BindingId:            b.BindingID,
+		DeviceId:             b.DeviceID,
+		AgentId:              b.AgentID,
+		PublicKeyFingerprint: b.PublicKeyFingerprint,
+		BoundAt:              b.BoundAt,
+	}
+	if b.ReleasedAt != nil {
+		ab.ReleasedAt = b.ReleasedAt
+	}
+	if b.ReleaseReason != nil {
+		ab.ReleaseReason = b.ReleaseReason
+	}
+	return ab
 }
 
 func WriteError(w http.ResponseWriter, status int, code, message string) {

@@ -60,6 +60,14 @@ func (m *MockAgentKeyService) RevokeKey(ctx context.Context, orgID, keyID string
 	return args.Error(0)
 }
 
+func (m *MockAgentKeyService) GetBindings(ctx context.Context, orgID, keyID string) ([]*domain.AgentKeyBinding, error) {
+	args := m.Called(ctx, orgID, keyID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]*domain.AgentKeyBinding), args.Error(1)
+}
+
 func setupTestRouter(svc *MockAgentKeyService, orgID string) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -143,6 +151,7 @@ func TestAgentKeyHandler_Get_RawSecretAbsent(t *testing.T) {
 	
 	assert.NotContains(t, res, "raw_secret")
 	assert.NotContains(t, res, "token_hash")
+	assert.Equal(t, float64(0), res["active_bindings"])
 }
 
 func TestAgentKeyHandler_Patch_TriState(t *testing.T) {
@@ -293,6 +302,13 @@ func TestAgentKeyHandler_TenantIsolation(t *testing.T) {
 	w3 := httptest.NewRecorder()
 	r.ServeHTTP(w3, req3)
 	assert.Equal(t, http.StatusNotFound, w3.Code)
+
+	// GET Bindings
+	svc.On("GetBindings", mock.Anything, "org2", "key1").Return(([]*domain.AgentKeyBinding)(nil), agentkey.ErrNotFound)
+	req4, _ := http.NewRequest("GET", "/api/v2/agent-keys/key1/devices", nil)
+	w4 := httptest.NewRecorder()
+	r.ServeHTTP(w4, req4)
+	assert.Equal(t, http.StatusNotFound, w4.Code)
 }
 
 func TestAgentKeyHandler_Delete(t *testing.T) {
@@ -340,3 +356,31 @@ func TestAgentKeyHandler_CORS_Options(t *testing.T) {
 	// Assert origin
 	assert.Equal(t, "http://localhost:3000", w.Header().Get("Access-Control-Allow-Origin"))
 }
+
+func TestAgentKeyHandler_GetBindings_Success(t *testing.T) {
+	svc := new(MockAgentKeyService)
+	r := setupTestRouter(svc, "org1")
+
+	expectedBindings := []*domain.AgentKeyBinding{
+		{
+			BindingID: "b1",
+			DeviceID:  "d1",
+			AgentID:   "a1",
+		},
+	}
+
+	svc.On("GetBindings", mock.Anything, "org1", "key1").Return(expectedBindings, nil)
+
+	req, _ := http.NewRequest("GET", "/api/v2/agent-keys/key1/devices", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	
+	var res []map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &res)
+	
+	assert.Len(t, res, 1)
+	assert.Equal(t, "b1", res[0]["binding_id"])
+}
+

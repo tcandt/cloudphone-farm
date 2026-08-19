@@ -423,6 +423,29 @@ paths:
         '204':
           description: Agent Key revoked successfully (revoked_at = NOW)
 
+  /agent-keys/{key_id}/devices:
+    servers:
+      - url: /api/v2
+    get:
+      summary: List devices bound to an Agent Key (V2)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of bindings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentKeyBinding'
+        '404':
+          $ref: '#/components/responses/NotFoundError'
+
   /agents/enroll/challenge:
     servers:
       - url: /api/v2
@@ -755,7 +778,7 @@ components:
           
     AgentKey:
       type: object
-      required: [key_id, organization_id, created_by, name, token_prefix, created_at, updated_at]
+      required: [key_id, organization_id, created_by, name, token_prefix, active_bindings, created_at, updated_at]
       properties:
         key_id:
           type: string
@@ -787,6 +810,32 @@ components:
         last_used_at:
           type: string
           format: date-time
+          nullable: true
+        active_bindings:
+          type: integer
+          minimum: 0
+
+    AgentKeyBinding:
+      type: object
+      required: [binding_id, device_id, agent_id, public_key_fingerprint, bound_at]
+      properties:
+        binding_id:
+          type: string
+        device_id:
+          type: string
+        agent_id:
+          type: string
+        public_key_fingerprint:
+          type: string
+        bound_at:
+          type: string
+          format: date-time
+        released_at:
+          type: string
+          format: date-time
+          nullable: true
+        release_reason:
+          type: string
           nullable: true
 
     AgentKeyCreatedResponse:

@@ -15,4 +15,5 @@ type AgentKey struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	UpdatedAt      time.Time  `json:"updated_at"`
 	LastUsedAt     *time.Time `json:"last_used_at"`
+	ActiveBindings int        `json:"active_bindings"`
 }

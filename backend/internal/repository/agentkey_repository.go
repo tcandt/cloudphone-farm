@@ -12,4 +12,5 @@ type AgentKeyRepository interface {
 	List(ctx context.Context, orgID string) ([]*domain.AgentKey, error)
 	Update(ctx context.Context, orgID, keyID string, name *string, maxBindings *int, updateMaxBindings bool, expiresAt *time.Time, updateExpiresAt bool) (*domain.AgentKey, error)
 	Revoke(ctx context.Context, orgID, keyID string) error
+	GetBindings(ctx context.Context, orgID, keyID string) ([]*domain.AgentKeyBinding, error)
 }

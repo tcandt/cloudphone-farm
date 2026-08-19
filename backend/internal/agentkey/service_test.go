@@ -74,6 +74,10 @@ func (m *mockRepo) Revoke(ctx context.Context, orgID, keyID string) error {
 	return nil
 }
 
+func (m *mockRepo) GetBindings(ctx context.Context, orgID, keyID string) ([]*domain.AgentKeyBinding, error) {
+	return nil, nil // mock does not need this implemented for existing tests
+}
+
 func TestAgentKeyService_CreateKey(t *testing.T) {
 	repo := &mockRepo{keys: make(map[string]*domain.AgentKey)}
 	svc := NewService(repo)
@@ -171,5 +175,24 @@ func TestAgentKeyService_Revoke(t *testing.T) {
 	err = svc.RevokeKey(ctx, "org1", key.KeyID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound for double revoke, got %v", err)
+	}
+}
+
+func TestAgentKeyService_GetBindings(t *testing.T) {
+	repo := &mockRepo{keys: make(map[string]*domain.AgentKey)}
+	svc := NewService(repo)
+	ctx := context.Background()
+
+	// 1. Get bindings for non-existent key
+	_, err := svc.GetBindings(ctx, "org1", "nonexistent")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for non-existent key, got %v", err)
+	}
+
+	// 2. Tenant isolation check
+	key, _, _ := svc.CreateKey(ctx, "org1", "u1", CreateKeyRequest{Name: "K"})
+	_, err = svc.GetBindings(ctx, "org2", key.KeyID) // different org
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound for cross-tenant key, got %v", err)
 	}
 }

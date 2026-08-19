@@ -92,6 +92,7 @@ type AgentEnrollResponse struct {
 
 // AgentKey defines model for AgentKey.
 type AgentKey struct {
+	ActiveBindings int        `json:"active_bindings"`
 	CreatedAt      time.Time  `json:"created_at"`
 	CreatedBy      string     `json:"created_by"`
 	ExpiresAt      *time.Time `json:"expires_at"`
@@ -103,6 +104,17 @@ type AgentKey struct {
 	RevokedAt      *time.Time `json:"revoked_at"`
 	TokenPrefix    string     `json:"token_prefix"`
 	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// AgentKeyBinding defines model for AgentKeyBinding.
+type AgentKeyBinding struct {
+	AgentId              string     `json:"agent_id"`
+	BindingId            string     `json:"binding_id"`
+	BoundAt              time.Time  `json:"bound_at"`
+	DeviceId             string     `json:"device_id"`
+	PublicKeyFingerprint string     `json:"public_key_fingerprint"`
+	ReleaseReason        *string    `json:"release_reason"`
+	ReleasedAt           *time.Time `json:"released_at"`
 }
 
 // AgentKeyCreatedResponse defines model for AgentKeyCreatedResponse.
@@ -324,6 +336,9 @@ type ServerInterface interface {
 	// Update Agent Key (V2)
 	// (PATCH /agent-keys/{key_id})
 	PatchAgentKeysKeyId(w http.ResponseWriter, r *http.Request, keyId string)
+	// List devices bound to an Agent Key (V2)
+	// (GET /agent-keys/{key_id}/devices)
+	GetAgentKeysKeyIdDevices(w http.ResponseWriter, r *http.Request, keyId string)
 	// Finalize Agent Enrollment
 	// (POST /agents/enroll)
 	PostAgentsEnroll(w http.ResponseWriter, r *http.Request)
@@ -408,6 +423,12 @@ func (_ Unimplemented) GetAgentKeysKeyId(w http.ResponseWriter, r *http.Request,
 // Update Agent Key (V2)
 // (PATCH /agent-keys/{key_id})
 func (_ Unimplemented) PatchAgentKeysKeyId(w http.ResponseWriter, r *http.Request, keyId string) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// List devices bound to an Agent Key (V2)
+// (GET /agent-keys/{key_id}/devices)
+func (_ Unimplemented) GetAgentKeysKeyIdDevices(w http.ResponseWriter, r *http.Request, keyId string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -656,6 +677,39 @@ func (siw *ServerInterfaceWrapper) PatchAgentKeysKeyId(w http.ResponseWriter, r 
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PatchAgentKeysKeyId(w, r, keyId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetAgentKeysKeyIdDevices operation middleware
+func (siw *ServerInterfaceWrapper) GetAgentKeysKeyIdDevices(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+
+	// ------------- Path parameter "key_id" -------------
+	var keyId string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "key_id", chi.URLParam(r, "key_id"), &keyId, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "key_id", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetAgentKeysKeyIdDevices(w, r, keyId)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1287,6 +1341,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Patch(options.BaseURL+"/agent-keys/{key_id}", wrapper.PatchAgentKeysKeyId)
+	})
+	r.Group(func(r chi.Router) {
+		r.Get(options.BaseURL+"/agent-keys/{key_id}/devices", wrapper.GetAgentKeysKeyIdDevices)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/agents/enroll", wrapper.PostAgentsEnroll)

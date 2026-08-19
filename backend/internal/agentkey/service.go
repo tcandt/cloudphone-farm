@@ -41,6 +41,7 @@ type AgentKeyService interface {
 	GetKey(ctx context.Context, orgID, keyID string) (*domain.AgentKey, error)
 	UpdateKey(ctx context.Context, orgID, keyID string, req UpdateKeyRequest) (*domain.AgentKey, error)
 	RevokeKey(ctx context.Context, orgID, keyID string) error
+	GetBindings(ctx context.Context, orgID, keyID string) ([]*domain.AgentKeyBinding, error)
 }
 
 type agentKeyService struct {
@@ -141,4 +142,18 @@ func (s *agentKeyService) RevokeKey(ctx context.Context, orgID, keyID string) er
 		return err
 	}
 	return nil
+}
+
+func (s *agentKeyService) GetBindings(ctx context.Context, orgID, keyID string) ([]*domain.AgentKeyBinding, error) {
+	// Verify key ownership first to ensure 404 for unknown/cross-tenant keys
+	key, err := s.repo.GetByID(ctx, orgID, keyID)
+	if err != nil {
+		return nil, err
+	}
+	if key == nil {
+		return nil, ErrNotFound
+	}
+	
+	// Key is owned by org, proceed to get bindings
+	return s.repo.GetBindings(ctx, orgID, keyID)
 }
