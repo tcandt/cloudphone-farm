@@ -11,7 +11,7 @@ export interface IAgentKeyService {
 
 export class HttpAgentKeyService implements IAgentKeyService {
   async createKey(name: string, maxBindings?: number, expiresAt?: string): Promise<AgentKeyCreatedResponse> {
-    const payload: Record<string, any> = { name };
+    const payload: Record<string, unknown> = { name };
     if (maxBindings !== undefined) payload.max_bindings = maxBindings;
     if (expiresAt !== undefined) payload.expires_at = expiresAt;
 
