@@ -22,9 +22,18 @@ describe('Slice 1.4: Admin AppShell Contracts', () => {
     expect(indexChild?.element).toBeTruthy();
     
     // Assert the actual redirect path
-    const elementProps = (indexChild?.element as any)?.props;
-    expect(elementProps?.to).toBe('/admin/overview');
-    expect(elementProps?.replace).toBe(true);
+    const element = indexChild?.element;
+    
+    expect(
+      React.isValidElement<{ to?: string; replace?: boolean }>(element)
+    ).toBe(true);
+    
+    if (!React.isValidElement<{ to?: string; replace?: boolean }>(element)) {
+      throw new Error('Expected admin index redirect React element');
+    }
+    
+    expect(element.props.to).toBe('/admin/overview');
+    expect(element.props.replace).toBe(true);
   });
 
   it('B. Actual admin router contains all 20 canonical children', () => {
