@@ -2,6 +2,8 @@ module github.com/tcandt/cloudphone-farm/backend
 
 go 1.24.0
 
+toolchain go1.26.5
+
 require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/go-chi/chi/v5 v5.1.0

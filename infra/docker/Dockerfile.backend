@@ -1,5 +1,5 @@
-# Multi-stage Dockerfile for Go Backend Service (Pinned Go 1.22.6)
-FROM golang:1.22.6-alpine AS builder
+# Multi-stage Dockerfile for Go Backend Service (Pinned Go 1.26.5)
+FROM golang:1.26.5-alpine AS builder
 
 WORKDIR /app
 
