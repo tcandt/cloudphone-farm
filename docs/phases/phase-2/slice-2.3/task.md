@@ -38,3 +38,9 @@
   - [x] Run all linters, typechecks, Vitest, Playwright, Go tests (with race).
 - [x] 12. EVIDENCE
   - [x] Create `walkthrough.md`.
+- [x] 13. FULL VERIFICATION & PUSH (FINAL GATE)
+  - [x] Run full build: `npm run build`
+  - [x] Run frontend linter: `npm run lint -- --max-warnings=0`
+  - [x] Run frontend typecheck: `npm run typecheck`
+  - [x] Ensure backend tests pass: `go test -v ./...`
+  - [x] Commit `test(agent): close slice 2.3 phase 2 final gate` and push to remote.
