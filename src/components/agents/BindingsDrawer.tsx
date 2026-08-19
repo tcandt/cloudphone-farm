@@ -12,11 +12,21 @@ export const BindingsDrawer: React.FC<BindingsDrawerProps> = ({ keyId, onClose }
   const [bindings, setBindings] = useState<AgentKeyBinding[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchBindings = () => {
+    setLoading(true);
+    setError(null);
     agentKeyService.getBindings(keyId)
       .then(setBindings)
-      .catch(console.error)
+      .catch(err => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    fetchBindings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [keyId]);
 
   return (
@@ -36,6 +46,13 @@ export const BindingsDrawer: React.FC<BindingsDrawerProps> = ({ keyId, onClose }
         <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/50">
           {loading ? (
             <div className="text-center text-slate-500 text-sm py-8 animate-pulse">Đang tải lịch sử...</div>
+          ) : error ? (
+            <div className="text-center text-red-600 text-sm py-8 flex flex-col items-center gap-3">
+              <span>{error}</span>
+              <button onClick={fetchBindings} className="px-4 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-lg text-xs font-bold transition-colors">
+                Thử lại
+              </button>
+            </div>
           ) : bindings.length === 0 ? (
             <div className="text-center text-slate-400 text-sm py-8">Chưa có thiết bị nào sử dụng token này</div>
           ) : (
@@ -43,7 +60,7 @@ export const BindingsDrawer: React.FC<BindingsDrawerProps> = ({ keyId, onClose }
               <div key={b.binding_id} className="bg-white p-3 rounded-xl border border-slate-200 shadow-sm transition-all hover:shadow-md">
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-mono text-sm font-bold text-slate-700 truncate" title={b.device_id}>
-                    {b.device_id.substring(0, 8)}...
+                    {b.device_id}
                   </span>
                   {b.released_at ? (
                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase">
@@ -55,7 +72,19 @@ export const BindingsDrawer: React.FC<BindingsDrawerProps> = ({ keyId, onClose }
                     </span>
                   )}
                 </div>
-                <div className="text-[11px] text-slate-500 space-y-1.5">
+                <div className="text-[11px] text-slate-500 space-y-1.5 mt-2 pt-2 border-t border-slate-50">
+                  <div className="flex gap-1.5">
+                    <span className="font-bold w-20">Agent ID:</span>
+                    <span className="font-mono truncate">{b.agent_id}</span>
+                  </div>
+                  {b.public_key_fingerprint && (
+                    <div className="flex gap-1.5">
+                      <span className="font-bold w-20">Fingerprint:</span>
+                      <span className="font-mono truncate text-[10px]" title={b.public_key_fingerprint}>
+                        {b.public_key_fingerprint.substring(0, 16)}...
+                      </span>
+                    </div>
+                  )}
                   <div className="flex items-center gap-1.5">
                     <Clock size={12} className="text-slate-400" />
                     <span>Kết nối: {new Date(b.bound_at).toLocaleString('vi-VN')}</span>

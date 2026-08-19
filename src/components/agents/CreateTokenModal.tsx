@@ -27,7 +27,7 @@ export const CreateTokenModal: React.FC<CreateTokenModalProps> = ({ onClose, onS
       return;
     }
 
-    let maxBindings: number | undefined;
+    let maxBindings: number | null = null;
     if (maxBindingsStr.trim()) {
       maxBindings = parseInt(maxBindingsStr, 10);
       if (isNaN(maxBindings) || maxBindings <= 0) {
@@ -36,7 +36,7 @@ export const CreateTokenModal: React.FC<CreateTokenModalProps> = ({ onClose, onS
       }
     }
 
-    let expiresAt: string | undefined;
+    let expiresAt: string | null = null;
     if (expiresDaysStr.trim()) {
       const days = parseInt(expiresDaysStr, 10);
       if (isNaN(days) || days <= 0) {

@@ -14,9 +14,24 @@ export const AgentsPage: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsError, setAgentsError] = useState<string | null>(null);
+
+  const fetchAgents = () => {
+    setAgentsLoading(true);
+    setAgentsError(null);
+    agentService.listAgents()
+      .then(setAgents)
+      .catch(err => {
+        setAgentsError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setAgentsLoading(false));
+  };
+
   useEffect(() => {
     if (activeTab === 'agents') {
-      agentService.listAgents().then(setAgents).catch(() => {});
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchAgents();
     }
   }, [activeTab]);
 
@@ -102,7 +117,24 @@ export const AgentsPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
-                  {agents.length === 0 ? (
+                  {agentsLoading ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-slate-500 font-medium">
+                        Đang tải danh sách...
+                      </td>
+                    </tr>
+                  ) : agentsError ? (
+                    <tr>
+                      <td colSpan={5} className="py-8 text-center text-red-600 font-medium">
+                        <div className="flex flex-col items-center gap-2">
+                          <span>{agentsError}</span>
+                          <button onClick={fetchAgents} className="px-4 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg text-xs font-bold transition-colors">
+                            Thử lại
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : agents.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="py-8 text-center text-slate-400">
                         Chưa có Agent nào được đăng ký.

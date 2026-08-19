@@ -1,7 +1,50 @@
 import { AgentKey, AgentKeyBinding, AgentKeyCreatedResponse } from '../types';
 
+export class AgentKeyApiError extends Error {
+  constructor(public status: number, public code: string, message: string) {
+    super(message);
+    this.name = 'AgentKeyApiError';
+  }
+}
+
+async function handleResponse(res: Response, expectedStatus?: number) {
+  if (expectedStatus !== undefined && res.status !== expectedStatus) {
+    // If not matching the exact expected success status (e.g., 201 or 204)
+    // We fall through to error handling.
+    let errorData;
+    try {
+      errorData = await res.json();
+    } catch {
+      // ignore JSON parse error
+    }
+    throw new AgentKeyApiError(
+      res.status,
+      errorData?.code || 'UNKNOWN_ERROR',
+      errorData?.message || `Unexpected HTTP status ${res.status}`
+    );
+  }
+
+  if (!res.ok) {
+    let errorData;
+    try {
+      errorData = await res.json();
+    } catch {
+      // ignore
+    }
+    throw new AgentKeyApiError(
+      res.status,
+      errorData?.code || 'UNKNOWN_ERROR',
+      errorData?.message || `HTTP error ${res.status}`
+    );
+  }
+
+  if (res.status !== 204) {
+    return res.json();
+  }
+}
+
 export interface IAgentKeyService {
-  createKey(name: string, maxBindings?: number, expiresAt?: string): Promise<AgentKeyCreatedResponse>;
+  createKey(name: string, maxBindings: number | null, expiresAt: string | null): Promise<AgentKeyCreatedResponse>;
   listKeys(): Promise<AgentKey[]>;
   getKey(keyId: string): Promise<AgentKey | null>;
   updateKey(keyId: string, payload: { name?: string; max_bindings?: number | null; expires_at?: string | null }): Promise<AgentKey>;
@@ -10,10 +53,12 @@ export interface IAgentKeyService {
 }
 
 export class HttpAgentKeyService implements IAgentKeyService {
-  async createKey(name: string, maxBindings?: number, expiresAt?: string): Promise<AgentKeyCreatedResponse> {
-    const payload: Record<string, unknown> = { name };
-    if (maxBindings !== undefined) payload.max_bindings = maxBindings;
-    if (expiresAt !== undefined) payload.expires_at = expiresAt;
+  async createKey(name: string, maxBindings: number | null, expiresAt: string | null): Promise<AgentKeyCreatedResponse> {
+    const payload: Record<string, unknown> = {
+      name,
+      max_bindings: maxBindings,
+      expires_at: expiresAt,
+    };
 
     const res = await fetch('/api/v2/agent-keys', {
       method: 'POST',
@@ -21,8 +66,8 @@ export class HttpAgentKeyService implements IAgentKeyService {
       credentials: 'include',
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error('Failed to create agent key');
-    return res.json();
+    
+    return handleResponse(res, 201);
   }
 
   async listKeys(): Promise<AgentKey[]> {
@@ -30,8 +75,7 @@ export class HttpAgentKeyService implements IAgentKeyService {
       headers: { Accept: 'application/json' },
       credentials: 'include',
     });
-    if (!res.ok) throw new Error('Failed to list agent keys');
-    return res.json();
+    return handleResponse(res, 200);
   }
 
   async getKey(keyId: string): Promise<AgentKey | null> {
@@ -40,8 +84,7 @@ export class HttpAgentKeyService implements IAgentKeyService {
       credentials: 'include',
     });
     if (res.status === 404) return null;
-    if (!res.ok) throw new Error('Failed to fetch agent key');
-    return res.json();
+    return handleResponse(res, 200);
   }
 
   async updateKey(keyId: string, payload: { name?: string; max_bindings?: number | null; expires_at?: string | null }): Promise<AgentKey> {
@@ -51,8 +94,7 @@ export class HttpAgentKeyService implements IAgentKeyService {
       credentials: 'include',
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error('Failed to update agent key');
-    return res.json();
+    return handleResponse(res, 200);
   }
 
   async revokeKey(keyId: string): Promise<void> {
@@ -60,7 +102,7 @@ export class HttpAgentKeyService implements IAgentKeyService {
       method: 'DELETE',
       credentials: 'include',
     });
-    if (!res.ok && res.status !== 404 && res.status !== 204) throw new Error('Failed to revoke agent key');
+    await handleResponse(res, 204);
   }
 
   async getBindings(keyId: string): Promise<AgentKeyBinding[]> {
@@ -68,9 +110,7 @@ export class HttpAgentKeyService implements IAgentKeyService {
       headers: { Accept: 'application/json' },
       credentials: 'include',
     });
-    if (res.status === 404) return [];
-    if (!res.ok) throw new Error('Failed to fetch bindings for agent key');
-    return res.json();
+    return handleResponse(res, 200);
   }
 }
 

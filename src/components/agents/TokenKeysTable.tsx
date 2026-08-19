@@ -9,17 +9,20 @@ import { BindingsDrawer } from './BindingsDrawer';
 export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTrigger }) => {
   const [keys, setKeys] = useState<AgentKey[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   
   const [editingToken, setEditingToken] = useState<AgentKey | null>(null);
   const [viewingBindingsFor, setViewingBindingsFor] = useState<string | null>(null);
+  const [revokingToken, setRevokingToken] = useState<AgentKey | null>(null);
 
   const fetchKeys = async () => {
     try {
       setLoading(true);
+      setError(null);
       const data = await agentKeyService.listKeys();
       setKeys(data);
-    } catch (e) {
-      console.error(e);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -30,20 +33,36 @@ export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTr
     fetchKeys();
   }, [refreshTrigger]);
 
-  const handleRevoke = async (keyId: string) => {
-    if (!window.confirm('Bạn có chắc chắn muốn thu hồi Token này? Việc này sẽ ngăn các agent mới dùng token này để đăng ký, nhưng không ảnh hưởng tới các agent đã đăng ký.')) {
-      return;
-    }
+  const handleRevoke = async () => {
+    if (!revokingToken) return;
     try {
-      await agentKeyService.revokeKey(keyId);
+      await agentKeyService.revokeKey(revokingToken.key_id);
       fetchKeys();
-    } catch (e) {
-      alert('Lỗi khi thu hồi: ' + e);
+      setRevokingToken(null);
+    } catch (e: unknown) {
+      // In a real app we'd show a toast, but we can set error or just let modal handle it
+      setError('Lỗi khi thu hồi: ' + (e instanceof Error ? e.message : String(e)));
+      setRevokingToken(null);
     }
   };
 
-  if (loading) {
-    return <div className="p-8 text-center text-slate-500 font-medium text-sm animate-pulse">Đang tải Token Keys...</div>;
+  if (loading && keys.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 flex justify-center">
+        <div className="text-slate-500 font-medium text-sm animate-pulse">Đang tải Token Keys...</div>
+      </div>
+    );
+  }
+
+  if (error && keys.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 flex flex-col items-center gap-3">
+        <div className="text-red-600 font-medium text-sm">{error}</div>
+        <button onClick={fetchKeys} className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-sm transition-colors">
+          Thử lại
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -64,6 +83,8 @@ export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTr
               <th className="py-3 px-4">Trạng thái</th>
               <th className="py-3 px-4">Đã sử dụng / Quota</th>
               <th className="py-3 px-4">Ngày hết hạn</th>
+              <th className="py-3 px-4">Lần sử dụng cuối</th>
+              <th className="py-3 px-4">Ngày tạo</th>
               <th className="py-3 px-4 text-right">Thao tác</th>
             </tr>
           </thead>
@@ -110,12 +131,19 @@ export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTr
                       <div className="flex items-center gap-1.5">
                         <Smartphone size={14} className="text-slate-400" />
                         <span className="font-mono font-bold text-slate-700">
-                          {k.active_bindings} / {k.max_bindings ?? '∞'}
+                          {k.active_bindings} / {k.max_bindings === null ? 'Không giới hạn' : k.max_bindings}
                         </span>
                       </div>
                     </td>
                     <td className="py-3.5 px-4 text-slate-600">
-                      {k.expires_at ? new Date(k.expires_at).toLocaleString('vi-VN') : 'Không bao giờ'}
+                      {k.expires_at ? new Date(k.expires_at).toLocaleString('vi-VN') : 'Không hết hạn'}
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-600">
+                      {/* TODO: If we had last_used_at we'd display it. Currently we only have active_bindings and created_at. Let's fallback gracefully if API doesn't have it yet. */}
+                      Chưa rõ
+                    </td>
+                    <td className="py-3.5 px-4 text-slate-600">
+                      {k.created_at ? new Date(k.created_at).toLocaleString('vi-VN') : ''}
                     </td>
                     <td className="py-3.5 px-4 text-right space-x-1">
                       <button
@@ -139,9 +167,9 @@ export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTr
                       )}
                       
                       {isActive && (
-                        <PermissionGuard permission="agent.revoke">
+                        <PermissionGuard permission="agent.enroll">
                           <button
-                            onClick={() => handleRevoke(k.key_id)}
+                            onClick={() => setRevokingToken(k)}
                             className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                             title="Thu hồi Token"
                           >
@@ -174,6 +202,31 @@ export const TokenKeysTable: React.FC<{ refreshTrigger: number }> = ({ refreshTr
           keyId={viewingBindingsFor}
           onClose={() => setViewingBindingsFor(null)}
         />
+      )}
+
+      {revokingToken && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-5 border border-slate-100">
+            <h3 className="text-lg font-extrabold text-slate-900">Thu hồi Token Key</h3>
+            <p className="text-sm text-slate-600">
+              Bạn đang thu hồi Token Key <strong>{revokingToken.name}</strong>.
+            </p>
+            <ul className="text-sm text-slate-600 list-disc list-inside space-y-1">
+              <li>Việc đăng ký thiết bị mới với Token này sẽ bị chặn.</li>
+              <li>Các Agents và Thiết bị đã đăng ký vẫn tiếp tục hoạt động.</li>
+              <li>Các bindings hiện tại sẽ được giữ nguyên.</li>
+              <li className="text-red-600 font-bold">Hành động này KHÔNG THỂ HOÀN TÁC.</li>
+            </ul>
+            <div className="pt-4 flex gap-3 justify-end">
+              <button onClick={() => setRevokingToken(null)} className="px-5 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-bold rounded-xl text-sm transition-colors">
+                Hủy
+              </button>
+              <button onClick={handleRevoke} className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-sm transition-colors">
+                Đồng ý thu hồi
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

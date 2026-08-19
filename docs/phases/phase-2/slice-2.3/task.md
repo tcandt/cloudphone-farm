@@ -1,0 +1,40 @@
+# Phase 2 Final Gate - Slice 2.3 Corrective Patch
+
+- [x] 1. FIX AGENT KEY HTTP SERVICE SEMANTICS
+  - [x] Introduce structured API errors (AgentKeyApiError).
+  - [x] Create sends `{ name, max_bindings: number|null, expires_at: string|null }` explicitly.
+  - [x] POST success ONLY 201.
+  - [x] GET key 404 is null, others throw.
+  - [x] DELETE 404 MUST throw, not successful revoke.
+  - [x] GET `/devices` 404 MUST throw, DO NOT convert to `[]`.
+- [x] 2. REVOKE CONFIRMATION — NO BROWSER DIALOGS
+  - [x] Remove `window.confirm()`, `alert()`. Create approved modal `RevokeConfirmDialog.tsx`.
+  - [x] Privilege check is `agent.enroll`, NOT `agent.revoke`.
+  - [x] Explicit confirmation copy (future stops, existing remains, no undo). No Unrevoke.
+- [x] 3. COMPLETE TOKEN KEY TABLE
+  - [x] Add Last Used, Created columns.
+  - [x] Display `Unlimited / Không giới hạn` and `Forever / Không hết hạn`.
+  - [x] Loading, real empty, error, retry state implementation. No silent transform of failure to empty.
+- [x] 4. COMPLETE BINDINGS DRAWER
+  - [x] Authoritative fields: Agent ID, Fingerprint, Bound At, Released At, Reason, State.
+  - [x] Handle loading, 200 `[]`, 404, 403, 5xx/network, retry. Remove `.catch(console.error)`.
+- [x] 5. COMPLETE EDIT TRI-STATE
+  - [x] `max_bindings: null => Unlimited`, `expires_at: null => Forever`. Explicit UI controls.
+- [x] 6. REGISTERED AGENTS ERROR STATE
+  - [x] Remove `.catch(() => {})`. Handle loading, empty, error, retry.
+- [x] 7. BACKEND REPOSITORY INTEGRATION TESTS
+  - [x] Real PostgreSQL tests for `AgentKeyRepository`. (active_bindings counting, tenant isolation, ordering).
+  - [x] Check `rows.Err()` in `List` and `GetBindings`.
+- [x] 8. BACKEND HANDLER/ROUTER TESTS (RBAC)
+  - [x] Check `TenantMiddleware` extracts org correctly for agent-keys endpoints.
+  - [x] Check `RequirePermission("agent.enroll")` is mounted for POST, PUT, DELETE, and GET `/devices`.
+  - [x] Check `RequirePermission("agent.read")` is mounted for GET.
+- [x] 9. FRONTEND UNIT / INTEGRATION TEST MATRIX
+  - [x] Add Vitest component/service coverage for V2 list, create (null), raw secret clear, states, capacity, Last Used/Created, edit, bindings, error states, etc.
+- [x] 10. PLAYWRIGHT — KEEP MOCKED UI TEST, ADD REAL GATE
+  - [x] Fix POST mock 200 -> 201 in `agent-keys.spec.ts`.
+  - [x] Create Canonical Phase 2 real-backend E2E flow. Use PostgreSQL + Redis + real Go backend and VITE_API_MODE=http. Do NOT bypass real backend authorization with `page.route()` for `/api/v2/agent-keys`. Canonical real-backend flow tests Create, List, View, Edit, Revoke end-to-end to prove the persistence+auth chain works.
+- [x] 11. FULL REGRESSION
+  - [x] Run all linters, typechecks, Vitest, Playwright, Go tests (with race).
+- [x] 12. EVIDENCE
+  - [x] Create `walkthrough.md`.

@@ -12,7 +12,10 @@ interface EditTokenKeyModalProps {
 export const EditTokenKeyModal: React.FC<EditTokenKeyModalProps> = ({ token, onClose, onSuccess }) => {
   const [name, setName] = useState(token.name);
   const [maxBindingsStr, setMaxBindingsStr] = useState(token.max_bindings?.toString() || '');
+  const [maxBindingsUnlimited, setMaxBindingsUnlimited] = useState(token.max_bindings === null);
+  
   const [expiresDaysStr, setExpiresDaysStr] = useState('');
+  const [expiresAtForever, setExpiresAtForever] = useState(token.expires_at === null);
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,9 +30,9 @@ export const EditTokenKeyModal: React.FC<EditTokenKeyModalProps> = ({ token, onC
     }
 
     let maxBindings: number | null | undefined;
-    if (maxBindingsStr.trim() === '') {
+    if (maxBindingsUnlimited) {
       maxBindings = null;
-    } else {
+    } else if (maxBindingsStr.trim() !== '') {
       maxBindings = parseInt(maxBindingsStr, 10);
       if (isNaN(maxBindings) || maxBindings <= 0) {
         setError('Số thiết bị tối đa phải lớn hơn 0');
@@ -38,10 +41,12 @@ export const EditTokenKeyModal: React.FC<EditTokenKeyModalProps> = ({ token, onC
     }
 
     let expiresAt: string | null | undefined;
-    if (expiresDaysStr.trim() !== '') {
+    if (expiresAtForever) {
+      expiresAt = null;
+    } else if (expiresDaysStr.trim() !== '') {
       const days = parseInt(expiresDaysStr, 10);
       if (isNaN(days) || days <= 0) {
-        setError('Số ngày hết hạn phải lớn hơn 0');
+        setError('Số ngày gia hạn phải lớn hơn 0');
         return;
       }
       expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
@@ -49,11 +54,11 @@ export const EditTokenKeyModal: React.FC<EditTokenKeyModalProps> = ({ token, onC
 
     try {
       setLoading(true);
-      await agentKeyService.updateKey(token.key_id, {
-        name,
-        max_bindings: maxBindings,
-        expires_at: expiresAt,
-      });
+      const payload: { name?: string; max_bindings?: number | null; expires_at?: string | null } = { name };
+      if (maxBindings !== undefined) payload.max_bindings = maxBindings;
+      if (expiresAt !== undefined) payload.expires_at = expiresAt;
+
+      await agentKeyService.updateKey(token.key_id, payload);
       onSuccess();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -100,27 +105,57 @@ export const EditTokenKeyModal: React.FC<EditTokenKeyModalProps> = ({ token, onC
 
           <div className="space-y-1.5">
             <label className="text-sm font-bold text-slate-700">Số thiết bị tối đa (Capacity)</label>
-            <input
-              type="number"
-              value={maxBindingsStr}
-              onChange={e => setMaxBindingsStr(e.target.value)}
-              placeholder="Để trống nếu không giới hạn"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl outline-none transition-all text-sm font-medium"
-              min="1"
-            />
+            <div className="flex flex-col gap-2">
+              <input
+                type="number"
+                value={maxBindingsStr}
+                onChange={e => { setMaxBindingsStr(e.target.value); setMaxBindingsUnlimited(false); }}
+                disabled={maxBindingsUnlimited}
+                placeholder={maxBindingsUnlimited ? "Không giới hạn" : "Để trống nếu không đổi"}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl outline-none transition-all text-sm font-medium disabled:opacity-50"
+                min="1"
+              />
+              <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={maxBindingsUnlimited}
+                  onChange={e => {
+                    setMaxBindingsUnlimited(e.target.checked);
+                    if (e.target.checked) setMaxBindingsStr('');
+                  }}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                Không giới hạn
+              </label>
+            </div>
             <p className="text-xs text-slate-500">Số lượng thiết bị tối đa có thể đồng thời sử dụng token này.</p>
           </div>
 
           <div className="space-y-1.5">
             <label className="text-sm font-bold text-slate-700">Gia hạn thêm (Ngày)</label>
-            <input
-              type="number"
-              value={expiresDaysStr}
-              onChange={e => setExpiresDaysStr(e.target.value)}
-              placeholder="Bỏ trống để giữ nguyên"
-              className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl outline-none transition-all text-sm font-medium"
-              min="1"
-            />
+            <div className="flex flex-col gap-2">
+              <input
+                type="number"
+                value={expiresDaysStr}
+                onChange={e => { setExpiresDaysStr(e.target.value); setExpiresAtForever(false); }}
+                disabled={expiresAtForever}
+                placeholder={expiresAtForever ? "Không hết hạn" : "Bỏ trống để giữ nguyên"}
+                className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 rounded-xl outline-none transition-all text-sm font-medium disabled:opacity-50"
+                min="1"
+              />
+              <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={expiresAtForever}
+                  onChange={e => {
+                    setExpiresAtForever(e.target.checked);
+                    if (e.target.checked) setExpiresDaysStr('');
+                  }}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                Không hết hạn / Forever
+              </label>
+            </div>
             <p className="text-xs text-slate-500">Nhập số ngày để gia hạn tính từ bây giờ.</p>
           </div>
 

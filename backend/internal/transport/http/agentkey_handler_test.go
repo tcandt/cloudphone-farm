@@ -80,6 +80,10 @@ func setupTestRouter(svc *MockAgentKeyService, orgID string) *chi.Mux {
 			principal := &auth.Principal{
 				UserID:         "user1",
 				OrganizationID: orgID,
+				Permissions: map[string]struct{}{
+					"agent.enroll": {},
+					"agent.read":   {},
+				},
 			}
 			ctx := auth.WithPrincipal(r.Context(), principal)
 			next.ServeHTTP(w, r.WithContext(ctx))

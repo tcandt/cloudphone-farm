@@ -33,7 +33,7 @@ test.describe('Token Keys V2 E2E Flow', () => {
       } else if (route.request().method() === 'POST') {
         const body = route.request().postDataJSON();
         await route.fulfill({
-          status: 200,
+          status: 201,
           json: {
             key: {
               key_id: 'key_999',

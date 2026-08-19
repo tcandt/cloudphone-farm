@@ -154,6 +154,9 @@ func (r *agentKeyRepository) List(ctx context.Context, orgID string) ([]*domain.
 		}
 		keys = append(keys, &key)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return keys, nil
 }
 
@@ -299,6 +302,9 @@ func (r *agentKeyRepository) GetBindings(ctx context.Context, orgID, keyID strin
 			b.ReleaseReason = &releaseReason.String
 		}
 		bindings = append(bindings, &b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return bindings, nil
 }
