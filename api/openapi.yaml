@@ -423,35 +423,72 @@ paths:
         '204':
           description: Agent Key revoked successfully (revoked_at = NOW)
 
-  /agents/enroll:
+  /agents/enroll/challenge:
+    servers:
+      - url: /api/v2
     post:
-      summary: Enroll Android APK Agent via Token
+      summary: Request Agent Enrollment Challenge
+      security: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [token_code, public_key_fingerprint]
+              required: [enrollment_token, client_instance_id, public_key]
               properties:
-                token_code:
+                enrollment_token:
                   type: string
-                public_key_fingerprint:
+                client_instance_id:
                   type: string
-                app_version:
+                public_key:
                   type: string
       responses:
         '200':
-          description: Agent registered successfully
+          description: Challenge issued
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  agent_id:
+                  challenge_id:
                     type: string
-                  device_id:
+                  nonce:
                     type: string
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /agents/enroll:
+    servers:
+      - url: /api/v2
+    post:
+      summary: Finalize Agent Enrollment
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentEnrollRequest'
+      responses:
+        '200':
+          description: Idempotent success (Existing Agent)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentEnrollResponse'
+        '201':
+          description: Agent registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentEnrollResponse'
+        '400':
+          $ref: '#/components/responses/BadRequestError'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+        '409':
+          $ref: '#/components/responses/ConflictError'
 
   /audit-logs:
     get:
@@ -754,6 +791,48 @@ components:
         key:
           $ref: '#/components/schemas/AgentKey'
         raw_secret:
+          type: string
+
+    AgentEnrollRequest:
+      type: object
+      required: [enrollment_token, challenge_id, client_instance_id, public_key, signature, device_info]
+      properties:
+        enrollment_token:
+          type: string
+        challenge_id:
+          type: string
+        client_instance_id:
+          type: string
+        public_key:
+          type: string
+        signature:
+          type: string
+        device_info:
+          type: object
+          required: [manufacturer, model, android_version, sdk_int, serial_number, agent_version, protocol_version]
+          properties:
+            manufacturer:
+              type: string
+            model:
+              type: string
+            android_version:
+              type: string
+            sdk_int:
+              type: integer
+            serial_number:
+              type: string
+            agent_version:
+              type: string
+            protocol_version:
+              type: string
+
+    AgentEnrollResponse:
+      type: object
+      required: [agent_id, device_id]
+      properties:
+        agent_id:
+          type: string
+        device_id:
           type: string
 
   responses:

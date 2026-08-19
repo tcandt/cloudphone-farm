@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	agentservice "github.com/tcandt/cloudphone-farm/backend/internal/agent"
+	"github.com/tcandt/cloudphone-farm/backend/internal/agentenrollment"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentkey"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
@@ -123,6 +124,8 @@ func main() {
 	fenceRepo := pgrepo.NewFenceRepository(pgPool)
 	leaseRepo := redisrepo.NewLeaseRepository(rdb)
 	agentKeyRepo := pgrepo.NewAgentKeyRepository(pgPool)
+	enrollV2Repo := pgrepo.NewEnrollmentV2Repository(pgPool)
+	challengeStore := agentenrollment.NewChallengeStore(rdb)
 
 	agentConnRepo := redisrepo.NewAgentConnectionRepository(rdb)
 	mediaSessionRepo := redisrepo.NewMediaSessionRepository(rdb)
@@ -157,6 +160,7 @@ func main() {
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 	cmdService := command.NewCommandService(pgPool, leaseService)
 	agentKeyService := agentkey.NewService(agentKeyRepo)
+	enrollV2Service := agentenrollment.NewEnrollmentV2Service(enrollV2Repo, challengeStore)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb, outboxDispatcher)
@@ -164,6 +168,7 @@ func main() {
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
 	agentKeyHandler := httptransport.NewAgentKeyHandler(agentKeyService)
+	agentEnrollmentV2Handler := httptransport.NewAgentEnrollmentHandlerV2(enrollV2Service)
 
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo, browserHub)
 	agentWSHandler.SetClusterComponents(cfg.NodeID, agentConnRepo, clusterRouter)
@@ -304,6 +309,9 @@ func main() {
 	r.Route("/api/v2", func(r chi.Router) {
 		r.Use(middleware.Timeout(30 * time.Second))
 		r.Use(rateLimiter.LimitMiddleware(custommw.ScopeRestAPI, 100, 20))
+
+		// Public Agent Enrollment Challenge & Finalize Endpoints (V2)
+		r.With(rateLimiter.LimitMiddleware(custommw.ScopeEnrollment, 10, 2)).Route("/agents/enroll", agentEnrollmentV2Handler.RegisterRoutes)
 
 		r.Group(func(r chi.Router) {
 			r.Use(authMiddleware.Handler)

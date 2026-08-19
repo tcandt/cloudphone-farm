@@ -63,6 +63,30 @@ const (
 	EnrollmentTokenStatusRevoked  EnrollmentTokenStatus = "revoked"
 )
 
+// AgentEnrollRequest defines model for AgentEnrollRequest.
+type AgentEnrollRequest struct {
+	ChallengeId      string `json:"challenge_id"`
+	ClientInstanceId string `json:"client_instance_id"`
+	DeviceInfo       struct {
+		AgentVersion    string `json:"agent_version"`
+		AndroidVersion  string `json:"android_version"`
+		Manufacturer    string `json:"manufacturer"`
+		Model           string `json:"model"`
+		ProtocolVersion string `json:"protocol_version"`
+		SdkInt          int    `json:"sdk_int"`
+		SerialNumber    string `json:"serial_number"`
+	} `json:"device_info"`
+	EnrollmentToken string `json:"enrollment_token"`
+	PublicKey       string `json:"public_key"`
+	Signature       string `json:"signature"`
+}
+
+// AgentEnrollResponse defines model for AgentEnrollResponse.
+type AgentEnrollResponse struct {
+	AgentId  string `json:"agent_id"`
+	DeviceId string `json:"device_id"`
+}
+
 // AgentKey defines model for AgentKey.
 type AgentKey struct {
 	CreatedAt      time.Time  `json:"created_at"`
@@ -219,11 +243,11 @@ type PatchAgentKeysKeyIdJSONBody struct {
 	Name        *string    `json:"name,omitempty"`
 }
 
-// PostAgentsEnrollJSONBody defines parameters for PostAgentsEnroll.
-type PostAgentsEnrollJSONBody struct {
-	AppVersion           *string `json:"app_version,omitempty"`
-	PublicKeyFingerprint string  `json:"public_key_fingerprint"`
-	TokenCode            string  `json:"token_code"`
+// PostAgentsEnrollChallengeJSONBody defines parameters for PostAgentsEnrollChallenge.
+type PostAgentsEnrollChallengeJSONBody struct {
+	ClientInstanceId string `json:"client_instance_id"`
+	EnrollmentToken  string `json:"enrollment_token"`
+	PublicKey        string `json:"public_key"`
 }
 
 // GetAuditLogsParams defines parameters for GetAuditLogs.
@@ -263,7 +287,10 @@ type PostAgentKeysJSONRequestBody PostAgentKeysJSONBody
 type PatchAgentKeysKeyIdJSONRequestBody PatchAgentKeysKeyIdJSONBody
 
 // PostAgentsEnrollJSONRequestBody defines body for PostAgentsEnroll for application/json ContentType.
-type PostAgentsEnrollJSONRequestBody PostAgentsEnrollJSONBody
+type PostAgentsEnrollJSONRequestBody = AgentEnrollRequest
+
+// PostAgentsEnrollChallengeJSONRequestBody defines body for PostAgentsEnrollChallenge for application/json ContentType.
+type PostAgentsEnrollChallengeJSONRequestBody PostAgentsEnrollChallengeJSONBody
 
 // PostAuthLoginJSONRequestBody defines body for PostAuthLogin for application/json ContentType.
 type PostAuthLoginJSONRequestBody PostAuthLoginJSONBody
@@ -294,9 +321,12 @@ type ServerInterface interface {
 	// Update Agent Key (V2)
 	// (PATCH /agent-keys/{key_id})
 	PatchAgentKeysKeyId(w http.ResponseWriter, r *http.Request, keyId string)
-	// Enroll Android APK Agent via Token
+	// Finalize Agent Enrollment
 	// (POST /agents/enroll)
 	PostAgentsEnroll(w http.ResponseWriter, r *http.Request)
+	// Request Agent Enrollment Challenge
+	// (POST /agents/enroll/challenge)
+	PostAgentsEnrollChallenge(w http.ResponseWriter, r *http.Request)
 	// List Organization Audit Logs
 	// (GET /audit-logs)
 	GetAuditLogs(w http.ResponseWriter, r *http.Request, params GetAuditLogsParams)
@@ -378,9 +408,15 @@ func (_ Unimplemented) PatchAgentKeysKeyId(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// Enroll Android APK Agent via Token
+// Finalize Agent Enrollment
 // (POST /agents/enroll)
 func (_ Unimplemented) PostAgentsEnroll(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// Request Agent Enrollment Challenge
+// (POST /agents/enroll/challenge)
+func (_ Unimplemented) PostAgentsEnrollChallenge(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -629,16 +665,22 @@ func (siw *ServerInterfaceWrapper) PatchAgentKeysKeyId(w http.ResponseWriter, r 
 // PostAgentsEnroll operation middleware
 func (siw *ServerInterfaceWrapper) PostAgentsEnroll(w http.ResponseWriter, r *http.Request) {
 
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.PostAgentsEnroll(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PostAgentsEnrollChallenge operation middleware
+func (siw *ServerInterfaceWrapper) PostAgentsEnrollChallenge(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PostAgentsEnrollChallenge(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1245,6 +1287,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/agents/enroll", wrapper.PostAgentsEnroll)
+	})
+	r.Group(func(r chi.Router) {
+		r.Post(options.BaseURL+"/agents/enroll/challenge", wrapper.PostAgentsEnrollChallenge)
 	})
 	r.Group(func(r chi.Router) {
 		r.Get(options.BaseURL+"/audit-logs", wrapper.GetAuditLogs)
