@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { BrandLogo } from '@brand/BrandLogo';
-import { Button, Card, Badge, Modal, ConfirmDialog, ToastProvider, useToastStore, Loading, EmptyState, ErrorState, ErrorBoundary } from '@ui/index';
+import { Button, Card, Badge, Modal, ConfirmDialog, ToastProvider, useToastStore, Loading, EmptyState, ErrorBoundary } from '@ui/index';
 import { brandTokens } from '@brand/tokens';
-import { Settings, Shield, Zap } from 'lucide-react';
+import { Settings } from 'lucide-react';
 
 export const DesignSystemPreview: React.FC = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);

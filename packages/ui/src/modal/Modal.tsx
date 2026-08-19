@@ -29,6 +29,9 @@ export const Modal: React.FC<ModalProps> = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
+  const reactId = React.useId();
+  const titleId = title ? `modal-title-${reactId}` : undefined;
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -109,8 +112,6 @@ export const Modal: React.FC<ModalProps> = ({
     xl: 'max-w-4xl',
   };
 
-  const reactId = React.useId();
-  const titleId = title ? `modal-title-${reactId}` : undefined;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">

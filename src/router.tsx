@@ -11,7 +11,7 @@ const VerifyEmailPage = lazy(() => import('./pages/auth/VerifyEmailPage').then(m
 const ForgotPasswordPage = lazy(() => import('./pages/auth/ForgotPasswordPage').then(m => ({ default: m.ForgotPasswordPage })));
 const ResetPasswordPage = lazy(() => import('./pages/auth/ResetPasswordPage').then(m => ({ default: m.ResetPasswordPage })));
 
-const DashboardPage = lazy(() => import('./pages/DashboardPage').then(m => ({ default: m.DashboardPage })));
+
 const DeviceListPage = lazy(() => import('./pages/DeviceListPage').then(m => ({ default: m.DeviceListPage })));
 const DeviceGridPage = lazy(() => import('./pages/DeviceGridPage').then(m => ({ default: m.DeviceGridPage })));
 const DeviceDetailPage = lazy(() => import('./pages/DeviceDetailPage').then(m => ({ default: m.DeviceDetailPage })));
@@ -26,6 +26,8 @@ const BillingPage = lazy(() => import('./pages/BillingPage').then(m => ({ defaul
 const RentalStorePage = lazy(() => import('./pages/RentalStorePage').then(m => ({ default: m.RentalStorePage })));
 const DiagnosticsPage = lazy(() => import('./pages/DiagnosticsPage').then(m => ({ default: m.DiagnosticsPage })));
 const LiveMonitorPage = lazy(() => import('./pages/LiveMonitorPage').then(m => ({ default: m.LiveMonitorPage })));
+const WalletPage = lazy(() => import('./pages/WalletPage').then(m => ({ default: m.WalletPage })));
+const DocsPage = lazy(() => import('./pages/DocsPage').then(m => ({ default: m.DocsPage })));
 
 const SuspenseLoader: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <Suspense
@@ -78,7 +80,19 @@ export const routes: RouteObject[] = [
     children: [
       {
         index: true,
-        element: <SuspenseLoader><DashboardPage /></SuspenseLoader>,
+        element: <Navigate to="/app/store" replace />,
+      },
+      {
+        path: 'store',
+        element: <SuspenseLoader><RentalStorePage /></SuspenseLoader>,
+      },
+      {
+        path: 'wallet',
+        element: <SuspenseLoader><WalletPage /></SuspenseLoader>,
+      },
+      {
+        path: 'docs',
+        element: <SuspenseLoader><DocsPage /></SuspenseLoader>,
       },
       {
         path: 'devices',
