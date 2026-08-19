@@ -52,4 +52,7 @@ artifacts/
 __pycache__/
 *.pyc
 android-agent-apk-*/
+.agents/
+.codegraph/
+
 
