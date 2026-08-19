@@ -1,8 +1,8 @@
 # CLOUDPHONERENTAL V2 — CODEGRAPH V2
 
-> **Tài liệu:** Bản đồ CodeGraph Tổng thể & Ma trận Điểm chạm Toàn hệ thống V2 (Master CodeGraph & Dependency Matrix)  
-> **Phiên bản:** 2.0.0  
-> **Mục đích:** Hướng dẫn tra cứu symbol, luồng gọi hàm (Inbound/Outbound Call Paths) và phân tích tác động trước khi code.
+> **Tài liệu:** Bản đồ CodeGraph Tổng thể & Ma trận Điểm chạm Toàn hệ thống V2 (Authoritative Master CodeGraph & Dependency Matrix)  
+> **Trạng thái:** TÀI LIỆU DUY NHẤT VÀ CHUẨN MỰC TỐI CAO CỦA HỆ THỐNG CODEGRAPH (CANONICAL)  
+> **Phiên bản:** 2.1.0 (Audit Resolution V2)
 
 ---
 
@@ -44,7 +44,7 @@ flowchart TD
 
     subgraph ANDROID_AGENT ["Android Agent"]
         ConnectUI["ui/ConnectActivity.kt"] --> EnrollMgr["enrollment/EnrollmentManager.kt"]
-        EnrollMgr --> KeyStoreAgent["security/AgentKeyStore.kt: getOrCreateKeyPair()"]
+        EnrollMgr --> KeyStoreAgent["security/AgentKeyStore.kt: getOrCreateKeyPair(ECDSA P-256)"]
         EnrollMgr --> EnrollApiAgent["enrollment/EnrollmentApi.kt: POST /api/v2/agents/enroll"]
         EnrollApiAgent --> HTTP_AgentEnroll
         EnrollMgr --> CredStore["security/CredentialStore.kt: saveIdentity(agentId, deviceId)"]
@@ -54,19 +54,19 @@ flowchart TD
 
 ---
 
-### 2.2. Luồng 2: Kết nối WebSocket & Xác thực Mật mã Challenge-Response
+### 2.2. Luồng 2: Kết nối WebSocket & Xác thực Mật mã Challenge-Response (ECDSA P-256)
 
 ```mermaid
 flowchart TD
     subgraph ANDROID_CONN ["Android Connection Pipeline"]
         Supervisor["connection/ConnectionSupervisor.kt"] --> WS["connection/AgentWebSocket.kt: connect()"]
         WS --> Signer["security/ChallengeSigner.kt: signChallenge(nonce)"]
-        Signer --> KeyStore["security/AgentKeyStore.kt: signData()"]
+        Signer --> KeyStore["security/AgentKeyStore.kt: sign(SHA256withECDSA)"]
     end
 
     subgraph BACKEND_WS ["Backend WSS Gateway"]
         WS -->|WSS /agent/v1/connect| WSHandler["transport/ws: AgentWSHandler.Connect"]
-        WSHandler --> MW_AgentAuth["middleware: AgentAuthMiddleware"]
+        WSHandler --> MW_AgentAuth["middleware: AgentAuthMiddleware (ecdsa.VerifyASN1)"]
         WSHandler --> Hub["agentws: Hub.RegisterConnection"]
         Hub --> Repo_Presence["repository/redis: PresenceRepo.SetOnline"]
         Hub --> Repo_Conn["repository/redis: AgentConnRepo.SetConnection"]

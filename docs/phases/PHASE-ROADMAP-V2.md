@@ -6,7 +6,23 @@
 
 ---
 
-## BẢNG TỔNG QUAN LỘ TRÌNH 16 GIAI ĐOẠN
+## 1. THÔNG SỐ BASELINE VÀ PHÂN ĐỊNH LỊCH SỬ
+
+```text
++-----------------------------------------------------------------------------------------------+
+|                                  V2 REBASELINE AUTHORITY                                      |
++-----------------------------------------------------------------------------------------------+
+| V2 REBASELINE BASELINE SHA | a59f0b4670c83a57e4bd71f289a697725474ee3d (2026-08-18 11:35:55)  |
+| PHASE 0 INITIAL SHA        | 1da054493a04d72c718bc497962381a46bcd7750 (2026-08-19 08:10:51)  |
+| ACTIVE REMOTE BRANCH       | feature/phase-1.8-physical-acceptance                            |
+| LEGACY ROADMAP STATUS      | SUPERSEDED (Toàn bộ Phase 1.1 -> 1.8 cũ chuyển thành tham khảo)  |
+| AUTHORITATIVE ROADMAP      | CloudPhoneRental V2 — Master Phase 0 -> Phase 15                 |
++-----------------------------------------------------------------------------------------------+
+```
+
+---
+
+## 2. BẢNG TỔNG QUAN LỘ TRÌNH 16 GIAI ĐOẠN
 
 ```mermaid
 gantt
@@ -37,20 +53,22 @@ gantt
 
 ---
 
-## CHI TIẾT TỪNG GIAI ĐOẠN & TIÊU CHÍ OWNER GATE
+## 3. CHI TIẾT TỪNG GIAI ĐOẠN & TIÊU CHÍ OWNER GATE
 
-### 🟡 PHASE 0 — Architecture Rebaseline (ĐANG THỰC HIỆN)
-- **Mục tiêu:** Tái cấu trúc tư duy kiến trúc, bảo toàn nền tảng Go Backend/Postgres/Redis/Fencing, định hình chuẩn thương mại CloudPhoneRental V2, lập tài liệu chuẩn hóa trước khi code.
-- **Sản phẩm bàn giao (Artifacts):**
+### 🟡 PHASE 0 — Architecture Rebaseline (HOÀN TẤT AUDIT RESOLUTION)
+- **Mục tiêu:** Tái cấu trúc tư duy kiến trúc, bảo toàn nền tảng Go Backend/Postgres/Redis/Fencing, chuẩn hóa mật mã học **ECDSA P-256 (SHA256withECDSA)** cho toàn bộ Android 8–15+, xây dựng Ma trận Khả năng Tương thích Android OS và Định lượng Benchmark Bức tường 50 máy.
+- **Sản phẩm bàn giao (Authoritative Artifacts):**
   1. `docs/architecture/PRODUCT-CONSTITUTION.md`
   2. `docs/architecture/SYSTEM-ARCHITECTURE-V2.md`
   3. `docs/architecture/ANDROID-AGENT-V2.md`
-  4. `docs/architecture/WEB-ARCHITECTURE-V2.md`
-  5. `docs/architecture/MEDIA-PLANE-V2.md`
-  6. `docs/architecture/AUTOMATION-V2.md`
-  7. `docs/codegraph/CODEGRAPH-V2.md`
-  8. `docs/phases/PHASE-ROADMAP-V2.md`
-- **🛑 OWNER GATE #0:** Dừng lại, báo cáo toàn bộ 8 tài liệu cho Owner duyệt trước khi viết bất kỳ dòng mã nguồn sản phẩm nào.
+  4. `docs/architecture/ANDROID-CAPABILITY-MATRIX.md`
+  5. `docs/architecture/WEB-ARCHITECTURE-V2.md`
+  6. `docs/architecture/MEDIA-PLANE-V2.md`
+  7. `docs/architecture/AUTOMATION-V2.md`
+  8. `docs/codegraph/CODEGRAPH-V2.md`
+  9. `docs/phases/PHASE-ROADMAP-V2.md`
+  10. `docs/architecture/README.md`
+- **🛑 OWNER GATE #0:** Dừng lại, báo cáo toàn bộ tài liệu cho Owner duyệt trước khi viết bất kỳ dòng mã nguồn sản phẩm nào.
 
 ---
 
@@ -76,11 +94,11 @@ gantt
 
 ---
 
-### PHASE 3 — APK Agent Foundation & Keystore
-- **Mục tiêu:** Khởi tạo cấu trúc Android Agent V2 với giao diện kết nối và quản lý khóa mật mã phần cứng.
+### PHASE 3 — APK Agent Foundation & Keystore (ECDSA P-256)
+- **Mục tiêu:** Khởi tạo cấu trúc Android Agent V2 với giao diện kết nối và quản lý khóa mật mã phần cứng ECDSA P-256.
 - **Nội dung thực hiện:**
   - Thiết kế `ConnectActivity` (Nhập BaseURL, User, Token Key).
-  - Khởi tạo `AgentKeyStore` tạo cặp khóa Ed25519 bằng Android KeyStore.
+  - Khởi tạo `AgentKeyStore` tạo cặp khóa ECDSA P-256 bằng Android KeyStore (tương thích API 26–35+).
   - Tích hợp `EnrollmentApi` gọi Backend V2 và lưu trữ định danh vào `CredentialStore`.
 - **🛑 OWNER GATE #3:** Đăng ký thành công thiết bị thật với Backend V2, nhận `agent_id` và `device_id` bền vững.
 
@@ -89,10 +107,10 @@ gantt
 ### 🔴 PHASE 4 — Stable Connection & Supervisor (GATE QUAN TRỌNG NHẤT)
 - **Mục tiêu:** Đạt độ ổn định kết nối tuyệt đối $99.99\%$, tự phục hồi vô hạn khi có sự cố mạng.
 - **Nội dung thực hiện:**
-  - Triển khai `AgentConnectionService` (Foreground Service) độc lập hoàn toàn với Activity UI.
+  - Triển khai `AgentConnectionService` (FGS type: `connectedDevice`) độc lập hoàn toàn với Activity UI.
   - Triển khai `ConnectionSupervisor` và máy trạng thái FSM (UNENROLLED $\rightarrow$ READY $\rightarrow$ BACKOFF).
   - Thuật toán Exponential Backoff + Jitter ($\pm 20\%$).
-  - Xác thực Challenge-Response bằng chữ ký Ed25519 qua WSS.
+  - Xác thực Challenge-Response bằng chữ ký `SHA256withECDSA` qua WSS.
   - Khởi động cùng hệ thống `BootReceiver`.
 - **Thử nghiệm Đánh giá (Fault Injection Suite trên thiết bị thật 24–72 giờ):**
   - Tắt/Bật Wi-Fi $\rightarrow$ Tự kết nối lại, giữ nguyên `agent_id`.
@@ -127,7 +145,7 @@ gantt
 ### PHASE 7 — Media Plane V2 (Single Phone WebRTC)
 - **Mục tiêu:** Luồng stream WebRTC trực tiếp từ phần cứng điện thoại đạt chuẩn HD.
 - **Nội dung thực hiện:**
-  - Triển khai `MediaProjectionService` và `HardwareEncoder` (H.264 Hardware MediaCodec).
+  - Triển khai `MediaProjectionService` (FGS type `mediaProjection`) và `HardwareEncoder` (H.264 Hardware MediaCodec).
   - Tích hợp WebRTC Native `WebRtcPublisher` và kênh Signaling chuyển tiếp qua WSS.
   - Hiển thị luồng video trên Web `DeviceViewer` với độ trễ $< 100\text{ms}$.
   - Phân tách tuyệt đối: Đóng mở video stream không ảnh hưởng đến socket điều khiển WSS.
@@ -161,7 +179,7 @@ gantt
 - **Tiêu chuẩn nghiệm thu:**
   - 50 máy online, 50 preview tiles mượt mà.
   - Chọn 1 máy mở modal điều khiển $\rightarrow$ luồng máy đó nâng lên HD 720p/30fps tức thì.
-  - Không xảy ra bão React Rerender, bộ nhớ trình duyệt ổn định $< 500\text{MB}$.
+  - Không xảy ra bão React Rerender, bộ nhớ trình duyệt ổn định $< 600\text{ MB}$, Inbound bitrate $< 6\text{ Mbps}$.
 - **🛑 CRITICAL OWNER GATE #11:** Phê duyệt Bức tường 50 Thiết bị thương mại.
 
 ---

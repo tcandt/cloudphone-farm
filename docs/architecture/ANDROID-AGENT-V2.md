@@ -1,7 +1,7 @@
 # CLOUDPHONERENTAL V2 — ANDROID AGENT ARCHITECTURE V2
 
 > **Tài liệu:** Bản thiết kế Kiến trúc Agent Android V2 (CloudPhoneRental Agent V2 Blueprint)  
-> **Package mục tiêu:** `com.cloudphonerental.agent`  
+> **Package mục tiêu:** `com.cloudphonerental.agent` *(Lưu ý chiến lược chuyển đổi: Trong Phase 0-2, mã nguồn giữ `applicationId` hiện hành `com.tcandt.cloudphone.agent` để tránh phá vỡ test suite và thiết bị đã cài đặt; Phase 3 sẽ thực hiện tái cấu trúc package/applicationId theo lộ trình nâng cấp sạch).*  
 > **Hệ điều hành hỗ trợ:** Android 8.0 (API Level 26) $\rightarrow$ Android 15+ (API Level 35+)  
 > **Trạng thái phần cứng:** Stock ROM / ROM gốc, Non-root 100%
 
@@ -15,27 +15,27 @@
 graph TD
     subgraph UI_LAYER ["1. UI & User Interaction Layer"]
         ConnectAct["ConnectActivity<br/>(Base URL + User + Token Key)"]
-        MainAct["MainActivity<br/>(Trạng thái kết nối + Điểm Quyền)"]
+        MainAct["MainActivity<br/>(Trạng thái kết nối + Điểm Quyền 86%)"]
         LogsAct["LogsActivity<br/>(Xem log trực tiếp từ SQLite)"]
         SettingsAct["SettingsActivity<br/>(Cấu hình, Chẩn đoán, Đăng xuất)"]
     end
 
     subgraph SUPERVISOR_LAYER ["2. Background Supervision & Core Service"]
-        ConnService["AgentConnectionService<br/>(Foreground Service + Sticky)"]
-        Supervisor["ConnectionSupervisor<br/>(Quản lý Máy trạng thái kết nối)"]
+        ConnService["AgentConnectionService<br/>(FGS type: connectedDevice|specialUse)"]
+        Supervisor["ConnectionSupervisor<br/>(Quản lý Máy trạng thái kết nối FSM)"]
         NetMonitor["NetworkMonitor<br/>(Lắng nghe ConnectivityManager)"]
-        Backoff["BackoffPolicy<br/>(Exponential Backoff + Jitter)"]
+        Backoff["BackoffPolicy<br/>(Exponential Backoff + Jitter ±20%)"]
     end
 
     subgraph SECURITY_LAYER ["3. Security & Persistent Identity"]
-        KeyStore["AgentKeyStore<br/>(Android KeyStore Ed25519 KeyPair)"]
+        KeyStore["AgentKeyStore<br/>(AndroidKeyStore ECDSA P-256)"]
         CredStore["CredentialStore<br/>(EncryptedSharedPreferences)"]
-        Signer["ChallengeSigner<br/>(Ký Challenge Nonce bằng Private Key)"]
+        Signer["ChallengeSigner<br/>(Ký Nonce bằng SHA256withECDSA)"]
     end
 
     subgraph PROTOCOL_LAYER ["4. Protocol & Networking"]
         AgentWS["AgentWebSocket<br/>(OkHttp WSS Client + Ping/Pong)"]
-        Router["ProtocolRouter<br/>(Điều phối WSEnvelope)"]
+        Router["ProtocolRouter<br/>(Điều phối WSEnvelope v2)"]
     end
 
     subgraph EXECUTION_LAYER ["5. Control, IME & Automation"]
@@ -49,7 +49,7 @@ graph TD
     end
 
     subgraph MEDIA_LAYER ["6. Media Streaming Plane"]
-        MediaService["MediaProjectionService<br/>(Foreground MediaProjection)"]
+        MediaService["MediaProjectionService<br/>(FGS type: mediaProjection)"]
         ScreenCap["ScreenCapturer<br/>(VirtualDisplay Frame Provider)"]
         H264Enc["HardwareEncoder<br/>(MediaCodec Hardware H.264)"]
         WebRTC["WebRtcPublisher<br/>(Google WebRTC PeerConnection)"]
@@ -70,7 +70,44 @@ graph TD
 
 ---
 
-## 2. CẤU TRÚC THƯ MỤC NGUỒN (PACKAGE STRUCTURE)
+## 2. CHUẨN MẬT MÃ ĐỊNH DANH THIẾT BỊ (ECDSA P-256 SECURITY)
+
+Để tương thích 100% trên toàn bộ các phiên bản Android từ 8.0 (API 26) đến 15+ (API 35+), Agent V2 sử dụng thuật toán **ECDSA P-256 (`secp256r1`)** với chữ ký **`SHA256withECDSA`** lưu trữ an toàn trong phần cứng bảo mật `AndroidKeyStore`.
+
+### 2.1. Cấu hình Khởi tạo Cặp Khóa trong Kotlin (`AgentKeyStore.kt`)
+```kotlin
+val keyPairGenerator = KeyPairGenerator.getInstance(
+    KeyProperties.KEY_ALGORITHM_EC,
+    "AndroidKeyStore"
+)
+
+val parameterSpec = KeyGenParameterSpec.Builder(
+    "cpr_device_identity_key",
+    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+)
+    .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+    .setDigests(KeyProperties.DIGEST_SHA256)
+    .build()
+
+keyPairGenerator.initialize(parameterSpec)
+val keyPair = keyPairGenerator.generateKeyPair()
+```
+
+### 2.2. Ký Số Xác thực Thử thách (`ChallengeSigner.kt`)
+```kotlin
+val privateKey = keyStore.getKey("cpr_device_identity_key", null) as PrivateKey
+val signature = Signature.getInstance("SHA256withECDSA").run {
+    initSign(privateKey)
+    update(challengeNonce.toByteArray(Charsets.UTF_8))
+    sign()
+}
+// Chữ ký ASN.1 DER (r, s) được mã hóa Base64 và gửi về Backend trong agent.challenge_response
+val signatureBase64 = Base64.encodeToString(signature, Base64.NO_WRAP)
+```
+
+---
+
+## 3. CẤU TRÚC THƯ MỤC NGUỒN MỤC TIÊU (PACKAGE STRUCTURE)
 
 ```text
 android-agent/app/src/main/java/com/cloudphonerental/agent/
@@ -83,15 +120,15 @@ android-agent/app/src/main/java/com/cloudphonerental/agent/
 │   ├── EnrollmentManager.kt        # Điều phối Enrollment API và lưu trữ danh tính
 │   └── EnrollmentApi.kt            # HTTP REST Client gọi /api/v2/agents/enroll
 ├── security/                       # Mật mã học & Khóa định danh
-│   ├── AgentKeyStore.kt            # Tạo và quản lý cặp khóa Ed25519 trong Android KeyStore
+│   ├── AgentKeyStore.kt            # Tạo và quản lý cặp khóa ECDSA P-256 trong AndroidKeyStore
 │   ├── CredentialStore.kt          # Lưu trữ an toàn agent_id, device_id, base_url
-│   └── ChallengeSigner.kt          # Ký chuỗi Nonce xác thực Challenge-Response
+│   └── ChallengeSigner.kt          # Ký chuỗi Nonce xác thực SHA256withECDSA
 ├── connection/                     # Quản lý kết nối mạng và giám sát trạng thái
-│   ├── AgentConnectionService.kt   # Foreground Service chạy độc lập với UI
-│   ├── ConnectionSupervisor.kt     # Trái tim điều phối máy trạng thái kết nối
+│   ├── AgentConnectionService.kt   # Foreground Service (connectedDevice) chạy độc lập với UI
+│   ├── ConnectionSupervisor.kt     # Trái tim điều phối máy trạng thái kết nối FSM
 │   ├── AgentWebSocket.kt           # OkHttp WebSocket Client
 │   ├── NetworkMonitor.kt           # Theo dõi trạng thái Wi-Fi, Ethernet, Cellular
-│   ├── BackoffPolicy.kt            # Thuật toán tính toán thời gian retry có Jitter
+│   ├── BackoffPolicy.kt            # Thuật toán tính toán thời gian retry có Jitter ±20%
 │   └── ConnectionState.kt          # Định nghĩa các trạng thái của Agent
 ├── protocol/                       # Định dạng gói tin và chuẩn giao tiếp
 │   ├── WSEnvelope.kt               # Lớp thực thể JSON Envelope v2
@@ -105,12 +142,12 @@ android-agent/app/src/main/java/com/cloudphonerental/agent/
 ├── automation/                     # Tự động hóa native không cần Appium
 │   ├── UiSelectorEngine.kt         # Quét AccessibilityNodeInfo theo ResourceID, Text, Class
 │   ├── UiSnapshotProvider.kt       # Chụp cây giao diện UI dạng JSON
-│   ├── WaitEngine.kt               # Chờ phần tử UI xuất hiện với timeout
+│   ├── WaitEngine.kt               # Chờ phần tử UI xuất hiện có timeout
 │   └── AutomationExecutor.kt       # Thực thi kịch bản chuỗi hành động
 ├── ime/                            # Nhập liệu văn bản từ xa
 │   └── CloudPhoneInputMethodService.kt # Custom InputMethodService gõ trực tiếp UTF-8
 ├── media/                          # Truyền dẫn hình ảnh WebRTC
-│   ├── MediaProjectionService.kt   # Quản lý quyền và Service Screen Capture
+│   ├── MediaProjectionService.kt   # Quản lý FGS type mediaProjection
 │   ├── ScreenCapturer.kt           # Lấy frame từ VirtualDisplay
 │   ├── HardwareEncoder.kt          # Cấu hình phần cứng MediaCodec H.264
 │   └── WebRtcPublisher.kt          # Đóng gói RTP Stream gửi lên SFU / Browser
@@ -125,50 +162,31 @@ android-agent/app/src/main/java/com/cloudphonerental/agent/
 
 ---
 
-## 3. MÁY TRẠNG THÁI KẾT NỐI (CONNECTION STATE MACHINE)
-
-Agent V2 hoạt động theo máy trạng thái hữu hạn (FSM) chặt chẽ, loại bỏ hoàn toàn tình trạng mất kết nối làm mất dữ liệu đăng ký:
+## 4. PHÂN TÁCH VÒNG ĐỜI KẾT NỐI VÀ MEDIA SAU REBOOT
 
 ```mermaid
-stateDiagram-v2
-    [*] --> UNENROLLED: Lần đầu mở app
+sequenceDiagram
+    autonumber
+    participant Boot as Android OS (Boot Completed)
+    participant Receiver as BootReceiver
+    participant ConnSvc as AgentConnectionService (FGS: connectedDevice)
+    participant WS as WebSocket Client
+    participant Server as Backend WSS Gateway
+    participant MediaSvc as MediaProjectionService (FGS: mediaProjection)
 
-    UNENROLLED --> ENROLLING: Bấm nút "KẾT NỐI"<br/>Gọi POST /api/v2/agents/enroll
-    ENROLLING --> ENROLLED: 201 Created<br/>Lưu AgentID & DeviceID
-    ENROLLING --> UNENROLLED: Lỗi xác thực Token / Quota full
-
-    ENROLLED --> WAIT_NETWORK: Kiểm tra trạng thái mạng IP
+    Boot->>Receiver: Phát Intent ACTION_BOOT_COMPLETED
+    Receiver->>ConnSvc: Khởi động AgentConnectionService
+    ConnSvc->>WS: Đọc thông tin từ CredentialStore & Khởi tạo kết nối WSS
+    WS->>Server: GET /agent/v1/connect (WSS 101 Upgrade)
+    Server-->>WS: server.challenge {nonce}
+    WS->>WS: Dùng AndroidKeyStore ECDSA P-256 ký Nonce
+    WS-->>Server: agent.challenge_response {signature}
+    Server-->>WS: connection.ready {status: online}
+    Note over ConnSvc,Server: Thiết bị đạt trạng thái REGISTERED + AGENT_ONLINE + CONTROL_READY
     
-    WAIT_NETWORK --> CONNECTING: Có kết nối mạng (Wi-Fi/4G/LAN)
-    
-    CONNECTING --> AUTHENTICATING: WebSocket TCP Handshake 101 OK<br/>Nhận server.challenge
-    CONNECTING --> BACKOFF: Không thể kết nối máy chủ / Timeout
-
-    AUTHENTICATING --> READY: Ký Ed25519 Challenge thành công<br/>Nhận connection.ready
-    AUTHENTICATING --> REVOKED: Máy chủ báo Agent bị thu hồi (Code 4401)
-    AUTHENTICATING --> BACKOFF: Lỗi chữ ký / Nonce hết hạn
-
-    READY --> WAIT_NETWORK: Mất kết nối mạng (Wi-Fi tắt / Rớt cáp)
-    READY --> BACKOFF: Socket bị ngắt / Server đóng kết nối
-
-    BACKOFF --> CONNECTING: Hết thời gian chờ Backoff (Retry Timer)
-
-    REVOKED --> UNENROLLED: Người dùng xác nhận Đăng xuất / Re-enroll
+    Note over MediaSvc: Luồng MediaProjection KHÔNG tự động bật sau Reboot (Do quy định bảo mật Android 14/15)
+    Note over MediaSvc: Sẵn sàng kích hoạt MEDIA_READY khi Operator mở phiên xem và cấp quyền tương tác
 ```
-
-### Quy tắc Vàng về Lỗi Mạng:
-- $\text{NETWORK\_LOST} \neq \text{AUTH\_FAILURE}$: Mất mạng chỉ đưa Agent về `WAIT_NETWORK`, không bao giờ đưa về `UNENROLLED`.
-- $\text{SOCKET\_CLOSED} \neq \text{CREDENTIAL\_REVOKED}$: Socket bị đứt chỉ kích hoạt `BackoffPolicy`, giữ nguyên toàn bộ cặp khóa và định danh thiết bị.
-
----
-
-## 4. CHÍNH SÁCH RECONNECT VÔ HẠN CÓ JITTER (EXPONENTIAL BACKOFF)
-
-Agent áp dụng thuật toán tăng thời gian chờ có hệ số ngẫu nhiên (Jitter $\pm 20\%$) để chống hiện tượng nghẽn mạng đồng loạt (Thundering Herd Problem) khi toàn bộ farm 500 máy cùng kết nối lại:
-
-$$T_{\text{wait}} = \min\left(T_{\text{max}}, T_{\text{base}} \times 2^{\text{attempt}}\right) \times (1 + \text{uniform}(-0.2, 0.2))$$
-
-- Chuỗi thời gian: $1\text{s} \rightarrow 2\text{s} \rightarrow 4\text{s} \rightarrow 8\text{s} \rightarrow 15\text{s} \rightarrow 30\text{s} \rightarrow 30\text{s} \dots$ (Vô hạn lần, không bao giờ dừng lại).
 
 ---
 
@@ -199,20 +217,10 @@ $$T_{\text{wait}} = \min\left(T_{\text{max}}, T_{\text{base}} \times 2^{\text{at
 
 ---
 
-## 6. DANH MỤC LỆNH ĐIỀU KHIỂN & AUTOMATION V2
+## 6. CHIẾN LƯỢC CHUYỂN ĐỔI APPLICATION ID & PACKAGE (MIGRATION STRATEGY)
 
-| Lệnh | Phân nhóm | Mô tả & Cách thức thực thi trên Android |
-| :--- | :--- | :--- |
-| `gesture.tap` | Control | Chạm tại tọa độ chuẩn hóa (`NormalizedCoordinateMapper` $\rightarrow$ `GestureDescription`) |
-| `gesture.swipe` | Control | Vuốt màn hình từ $(x_1, y_1)$ đến $(x_2, y_2)$ theo thời gian $t$ ms |
-| `gesture.drag` | Control | Giữ chạm tại $(x_1, y_1)$ trong $500\text{ms}$ rồi kéo đến $(x_2, y_2)$ |
-| `gesture.long_press`| Control | Nhấn giữ tại $(x, y)$ trong $1000\text{ms}$ |
-| `key.global_action` | Control | Gọi `performGlobalAction(GLOBAL_ACTION_BACK / HOME / RECENTS)` |
-| `key.press` | Control | Gửi mã phím cứng (`KEYCODE_POWER`, `KEYCODE_VOLUME_UP/DOWN`) |
-| `ime.text_input` | IME | Truyền chuỗi văn bản UTF-8 vào trường đang focus qua `InputConnection` |
-| `ui.snapshot` | Automation | Đọc toàn bộ cây `AccessibilityNodeInfo` và xuất ra cấu trúc JSON |
-| `ui.find` | Automation | Tìm phần tử theo `resource_id`, `text`, `text_contains`, `class_name` |
-| `ui.click` | Automation | Tìm phần tử thỏa điều kiện và thực hiện click trực tiếp vào Node |
-| `ui.set_text` | Automation | Gán trực tiếp giá trị vào `EditText` thông qua Accessibility Action |
-| `app.launch` | Automation | Khởi chạy ứng dụng theo `package_name` qua Android `PackageManager` |
-| `screenshot.capture`| Media | Chụp 1 khung hình tĩnh từ `VirtualDisplay` chuyển thành ảnh JPEG/PNG |
+- **Giai đoạn Hiện tại (Phase 0 $\rightarrow$ Phase 2):** Tiếp tục sử dụng `applicationId "com.tcandt.cloudphone.agent"` để đảm bảo tính liên tục của các script test E2E và các file build hiện có.
+- **Giai đoạn Phase 3 (APK Agent Foundation):**
+  - Xây dựng cấu trúc module mới với namespace `com.cloudphonerental.agent`.
+  - Cung cấp tài liệu hướng dẫn gỡ bỏ APK cũ hoặc cấu hình Flavor chuyển tiếp mượt mà.
+  - Tuyệt đối không thay đổi mã nguồn trước khi có quyết định phê duyệt tại Owner Gate Phase 3.

@@ -1,12 +1,12 @@
 # CLOUDPHONERENTAL V2 — SYSTEM ARCHITECTURE V2
 
 > **Tài liệu:** Bản thiết kế Kiến trúc Tổng thể Hệ thống V2 (System Architecture Blueprint)  
-> **Phiên bản:** 2.0.0  
+> **Phiên bản:** 2.1.0 (Audit Resolution V2)  
 > **Phạm vi:** Toàn bộ Backend Go, Data Layer, Clustering, Media Plane, Edge Ingress & Client Integration
 
 ---
 
-## 1. TỔNG QUAN HỆ THỐNG V2
+## 1. TỔNG QUAN KIẾN TRÚC HỆ THỐNG V2
 
 Hệ thống **CloudPhoneRental V2** được kiến trúc theo mô hình phân tầng module hóa cao độ, phân tách triệt để giữa **Control Plane** (Mặt phẳng Điều khiển & Lệnh giao dịch) và **Media Plane** (Mặt phẳng Truyền dẫn Hình ảnh Thời gian thực), vận hành trên hạ tầng Backend phân tán đa node (Distributed Multi-node Go Cluster).
 
@@ -23,7 +23,7 @@ flowchart TB
 
     subgraph CONTROL_PLANE ["3. CONTROL PLANE (Go Backend Cluster)"]
         API_GATEWAY["Core REST API Gateway<br/>(Chi Router + RBAC + Tenant Middleware)"]
-        WS_GATEWAY["Realtime Agent WS Gateway<br/>(Mutual Ed25519 Handshake + Connection Tracker)"]
+        WS_GATEWAY["Realtime Agent WS Gateway<br/>(Mutual ECDSA P-256 Handshake + Connection Tracker)"]
         OUTBOX_WORKER["Transactional Outbox Dispatcher<br/>(At-Least-Once Delivery + Exponential Backoff)"]
         LEASE_SVC["Control Lease & Fencing Service<br/>(Monotonic Fencing Engine)"]
         BULK_SVC["Bulk Command Coordinator<br/>(Fan-out 1-to-N Batch Commands)"]
@@ -39,7 +39,7 @@ flowchart TB
 
     subgraph MEDIA_PLANE ["5. MEDIA PLANE (WebRTC & Streaming)"]
         MEDIA_MGR["Media Session Manager<br/>(Session Lifecycle & Quota Enforcer)"]
-        SFU["WebRTC SFU / Media Gateway<br/>(Adaptive Simulcast / SVC Downscaler)"]
+        SFU["WebRTC SFU / Media Gateway<br/>(Multi-layer Simulcast Downscaler)"]
         COTURN["CoTURN (STUN/TURN)<br/>(NAT Traversal / Relay)"]
     end
 
@@ -83,29 +83,29 @@ CloudPhoneRental V2 kế thừa trọn vẹn và củng cố 10 trụ cột kỹ
 
 ---
 
-## 3. CÁC PHÂN HỆ CHỨC NĂNG BACKEND V2
+## 3. MÔ HÌNH XÁC THỰC MẬT MÃ TOÀN HỆ THỐNG (ECDSA P-256 M2M AUTH)
 
-```text
-backend/internal/
-├── auth/           # Xác thực người dùng, băm Argon2id, quản lý JWT/Session Cookie
-├── tenant/         # Middleware & Service cách ly dữ liệu Organization
-├── user/           # Quản lý hồ sơ người dùng, phân quyền RBAC
-├── device/         # Quản lý hồ sơ phần cứng thiết bị, trạng thái kết hợp (Presence + Lifecycle)
-├── agent/          # Xác thực Agent Ed25519, quản lý định danh & decommission
-├── enrollment/     # Xử lý Token Key V2 (CPRK-XXXX), kiểm soát hạn ngạch Quota & Expiry
-├── connection/     # Quản lý Socket Hub, Connection Generation, Ping/Pong Heartbeat
-├── command/        # Transactional Outbox Worker, Dispatcher, Retry Backoff
-├── bulkcontrol/    # Bộ điều phối lệnh hàng loạt (Fan-out 1-to-N Devices)
-├── media/          # Điều phối phiên WebRTC Media Session, phân bổ ICE Servers & Quota
-├── workflow/       # Công cụ lập trình kịch bản tự động hóa, thực thi bước UI Selector
-├── rental/         # Quản lý gói thuê thiết bị, thời hạn sử dụng, kích hoạt/thu hồi quyền
-├── billing/        # Quản lý ví tiền khách hàng, trừ tiền theo giờ/ngày, nạp tiền tự động
-├── alert/          # Giám sát sức khỏe farm, phát hiện máy quá nhiệt/mất nguồn/offline
-├── audit/          # Ghi vết toàn bộ hành động người dùng và sự kiện hệ thống
-├── cluster/        # Node Registry, Redis Pub/Sub Bus, Cross-node Envelope Routing
-├── telemetry/      # Prometheus Metrics Exporter & Runtime Telemetry Aggregator
-└── transport/      # Chi HTTP Handlers, Web Handlers, Agent WSS Handlers
-```
+Toàn bộ quá trình định danh và xác thực Agent được chuẩn hóa theo chuẩn **ECDSA P-256 (`SHA256withECDSA`)**:
+1. **Tại Android Agent:**
+   - Cặp khóa bất đối xứng được tạo và bảo vệ bên trong `AndroidKeyStore`.
+   - Public Key (ANSI X9.62 uncompressed 65-byte point hoặc PKIX DER) được gửi lên Backend trong quá trình Enrollment `POST /api/v2/agents/enroll`.
+2. **Tại Go Backend (`pkg/crypto` & `internal/transport/http/middleware/agent_auth.go`):**
+   - Backend lưu trữ Public Key vào PostgreSQL `device_agents.public_key`.
+   - Khi Agent kết nối WSS `/agent/v1/connect`, Backend gửi chuỗi `challenge_nonce` (32 bytes Hex ngẫu nhiên).
+   - Agent dùng Private Key ký lên chuỗi Nonce, gửi về qua `agent.challenge_response`.
+   - Backend sử dụng Go standard library:
+     ```go
+     // Parse ECDSA P-256 Public Key
+     pub, err := x509.ParsePKIXPublicKey(agentPublicKeyBytes)
+     ecdsaPub := pub.(*ecdsa.PublicKey)
+     
+     // Hash chuỗi nonce bằng SHA-256
+     hash := sha256.Sum256([]byte(nonce))
+     
+     // Xác thực chữ ký ASN.1 DER (r, s)
+     valid := ecdsa.VerifyASN1(ecdsaPub, hash[:], signatureBytes)
+     ```
+   - Cơ chế này hoạt động chính xác 100% trên toàn bộ các phiên bản Android từ 8.0 đến 15+ mà không cần phụ thuộc thư viện ngoài.
 
 ---
 
@@ -144,38 +144,3 @@ erDiagram
 5. `workflows`, `workflow_versions`, `workflow_runs`, `workflow_step_logs` (Migration `000014`): Công cụ tự động hóa UI Selector không cần Appium.
 6. `media_wall_sessions` (Migration `000015`): Quản lý phiên xem bức tường 30–50 máy.
 7. `agent_releases` (Migration `000016`): Quản lý các phiên bản APK phát hành và cập nhật OTA.
-
----
-
-## 5. CƠ CHẾ ĐIỀU PHỐI CỤM (CLUSTER ORCHESTRATION & ROUTING)
-
-Hệ thống hỗ trợ chạy mở rộng ngang (Horizontal Scaling) không giới hạn số lượng Backend Node:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Browser as Client Browser (Node 1)
-    participant Node1 as Backend Node 1 (HTTP Gateway)
-    participant Redis as Redis Pub/Sub & Presence
-    participant Node2 as Backend Node 2 (Agent WSS Hub)
-    participant Agent as Android Device Agent
-
-    Note over Agent,Node2: Agent đang duy trì kết nối WSS tại Node 2
-    Browser->>Node1: POST /api/v1/commands (Gửi lệnh điều khiển)
-    Node1->>Redis: Kiểm tra vị trí Agent (GET pcp:agent:conn:v1:{org}:{dev})
-    Redis-->>Node1: Trả về: {node_id: "node-02", connection_id: "conn_xxx", generation: 1}
-    
-    Node1->>Redis: PUBLISH pcp:cluster:bus:v1:node-02 [type="command.route.request", payload=...]
-    Redis->>Node2: Nhận tin nhắn chuyển tiếp
-    
-    Node2->>Agent: Gửi trực tiếp qua WSEnvelope [type="command.dispatch"]
-    Agent-->>Node2: Gửi WSEnvelope [type="command.status", status="ack"]
-    
-    Node2->>Redis: PUBLISH pcp:cluster:bus:v1:node-01 [type="command.route.receipt", success=true]
-    Redis->>Node1: Nhận biên nhận thành công
-    Node1-->>Browser: 202 Accepted {command_id, status: "pending"}
-```
-
-Kiến trúc này đảm bảo:
-- Client có thể gửi lệnh qua bất kỳ Backend Node nào mà không cần biết Agent đang nằm ở Node nào.
-- Nếu Agent chuyển dịch sang Node khác (do reconnect), Redis Connection Repository sẽ tự cập nhật và lệnh tiếp theo sẽ tự động hướng sang Node mới.

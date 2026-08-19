@@ -8,13 +8,13 @@
 
 ## 1. TỔNG QUAN KIẾN TRÚC MEDIA PLANE
 
-Khác biệt hoàn toàn với các giải pháp cũ (như `socmtool` chụp ảnh Bitmap $\rightarrow$ nén JPEG $\rightarrow$ mã hóa Base64 $\rightarrow$ gửi qua JSON WebSocket gây quá tải CPU và lag nghẽn), **CloudPhoneRental Media Plane V2** được xây dựng 100% trên nền tảng **WebRTC Native Video Streaming** chuẩn công nghiệp.
+Khác biệt hoàn toàn với các giải pháp cũ (như `socmtool` chụp ảnh Bitmap $\rightarrow$ nén JPEG $\rightarrow$ mã hóa Base64 $\rightarrow$ gửi qua JSON WebSocket gây quá tải CPU và lag nghẽn), **CloudPhoneRental Media Plane V2** được xây dựng 100% trên nền tảng **WebRTC Native Video Streaming** chuẩn công nghiệp kết hợp máy chủ **WebRTC SFU (Selective Forwarding Unit)** hỗ trợ Multi-layer Simulcast.
 
 ```mermaid
 flowchart LR
     subgraph ANDROID_PIPELINE ["Android Hardware Media Pipeline"]
         Screen["Màn hình Android (Display)"]
-        Proj["MediaProjection Service"]
+        Proj["MediaProjection Service (FGS)"]
         VDisplay["VirtualDisplay Surface"]
         Codec["MediaCodec Hardware H.264 Encoder"]
         RTC_Agent["WebRtcPublisher (Native PeerConnection)"]
@@ -24,19 +24,19 @@ flowchart LR
 
     subgraph MEDIA_GATEWAY ["Media Gateway & Distribution"]
         TURN["CoTURN (STUN/TURN Server)"]
-        SFU["WebRTC SFU (Selective Forwarding Unit)<br/>- Adaptive Downscaling<br/>- Dynamic Subscription"]
+        SFU["WebRTC SFU (Selective Forwarding Unit)<br/>- Multi-layer Simulcast Routing<br/>- Dynamic Layer Switching<br/>- Offscreen Track Pause"]
     end
 
     subgraph BROWSER_PIPELINE ["Browser Client Pipeline"]
         WallMgr["Wall Media Session Manager"]
-        Obs["IntersectionObserver (Viewport Tracker)"]
+        Obs["IntersectionObserver (UI Viewport Controller)"]
         VideoEl["HTML5 <video> Element (Hardware Decoded)"]
         
         WallMgr --> Obs --> VideoEl
     end
 
-    RTC_Agent <===>|SRTP / RTP H.264 Track| SFU
-    SFU <===>|WebRTC Adaptive Quality Tracks| WallMgr
+    RTC_Agent <===>|SRTP / RTP H.264 Track (Simulcast)| SFU
+    SFU <===>|WebRTC Adaptive Quality Layer (Preview/Focus/Control)| WallMgr
     RTC_Agent -.-> TURN
     WallMgr -.-> TURN
 ```
@@ -61,13 +61,13 @@ $$\text{MEDIA PLANE} \perp \text{CONTROL PLANE}$$
 
 | Cấu hình | Độ phân giải | Tốc độ khung hình (FPS) | Băng thông (Bitrate) | Mục đích sử dụng |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. PREVIEW** | $240 \times 480$ (hoặc 180p) | $2 - 5\text{ FPS}$ | $50 - 150\text{ Kbps}$ | Hiển thị thumbnail trên lưới 30–50 máy |
-| **2. FOCUS** | $360 \times 720$ (hoặc 480p) | $10 - 15\text{ FPS}$ | $250 - 500\text{ Kbps}$ | Theo dõi nhóm 4–8 máy đang chạy kịch bản |
+| **1. PREVIEW** | $240 \times 480$ (hoặc 180p) | $2 - 5\text{ FPS}$ | $50 - 100\text{ Kbps}$ | Hiển thị thumbnail trên lưới 30–50 máy (Tổng wall: $\sim 3-5\text{ Mbps}$) |
+| **2. FOCUS** | $360 \times 720$ (hoặc 480p) | $10 - 15\text{ FPS}$ | $250 - 400\text{ Kbps}$ | Theo dõi nhóm 4–8 máy đang chạy kịch bản tự động |
 | **3. CONTROL** | $720 \times 1280$ (HD 720p) | $20 - 30\text{ FPS}$ | $800 - 1500\text{ Kbps}$ | Tương tác tay trực tiếp với độ trễ $< 100\text{ms}$ |
 
 ---
 
-## 4. BẢN THIẾT KẾ BỨC TƯỜNG 30–50 MÁY (WALL VIEW OPTIMIZATION)
+## 4. BẢN THIẾT KẾ BỨC TƯỜNG 30–50 MÁY & ĐỊNH LƯỢNG CHỈ SỐ (QUANTITATIVE SLA BENCHMARKS)
 
 Khi hiển thị 30–50 thiết bị trên màn hình Dashboard:
 
@@ -83,21 +83,32 @@ Khi hiển thị 30–50 thiết bị trên màn hình Dashboard:
 └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Các Giải pháp Kỹ thuật Chống Sập Trình Duyệt:
-1. **IntersectionObserver Viewport Management:**
-   - Các Tile đang nằm trong tầm nhìn (In Viewport) $\rightarrow$ Đăng ký nhận luồng **PREVIEW**.
-   - Các Tile cuộn ra ngoài màn hình (Offscreen) $\rightarrow$ Tự động gửi lệnh `UNSUBSCRIBE / PAUSE`, ngắt giải mã Video để giải phóng GPU/RAM.
-2. **On-Demand Quality Upgrade:**
-   - Khi Operator click chuột vào bất kỳ Tile nào để mở Modal điều khiển $\rightarrow$ Hệ thống tự động nâng cấp luồng riêng của máy đó từ **PREVIEW** lên **CONTROL (720p / 30 FPS)**.
-   - Khi đóng Modal $\rightarrow$ Hạ cấp trở lại **PREVIEW**.
+### 4.1. Cơ chế Điều phối SFU & UI Viewport Controller:
+1. **IntersectionObserver UI Controller:**
+   - Hoạt động như một bộ điều khiển tín hiệu tại tầng Client (UI Optimization).
+   - Khi Tile nằm trong Viewport $\rightarrow$ Kích hoạt Subscription nhận layer **PREVIEW** từ SFU.
+   - Khi Tile cuộn ra ngoài Viewport (Offscreen) $\rightarrow$ Gửi tín hiệu `PAUSE_TRACK / UNSUBSCRIBE` lên SFU để SFU ngừng forward RTP packet, giúp giải phóng hoàn toàn băng thông mạng và năng lực giải mã của GPU.
+2. **On-Demand Dynamic Layer Switching:**
+   - Khi Operator click chuột vào bất kỳ Tile nào để mở Modal điều khiển $\rightarrow$ SFU chuyển đổi tức thì luồng của máy đó lên layer **CONTROL (720p / 30 FPS)**.
+   - Khi đóng Modal $\rightarrow$ SFU chuyển trở lại layer **PREVIEW**.
 3. **Chống bão Rerender trong React:**
    - Mỗi thẻ `<video>` được quản lý độc lập bên trong Component tự quản (Self-contained VideoSurface).
    - Dữ liệu WebRTC Stats (FPS, Bitrate, RTT) được cập nhật qua Direct DOM mutation hoặc Ref, không đưa vào React Root State gây giật lag giao diện.
 
+### 4.2. Bộ Chỉ số Định lượng Nghiệm thu Bức tường 50 Thiết bị (Acceptance Benchmarks):
+- **Tải CPU Trình duyệt (Browser CPU Load):** $< 30\%$ trên vi xử lý Desktop 8-core tiêu chuẩn (Intel Core i7 / AMD Ryzen 7 / Apple M-series).
+- **Bộ nhớ Trình duyệt (Browser RAM Heap):** $< 600\text{ MB}$ sau 1 giờ chạy liên tục (Zero Memory Leak).
+- **Tổng Băng thông Mạng Inbound (Total Inbound Bitrate):** $< 6\text{ Mbps}$ cho toàn bộ 50 máy ở chế độ PREVIEW.
+- **Tỷ lệ Khung hình Rớt (Dropped Frames):** $< 2\%$ trên tổng số frame nhận được.
+- **Thời gian Thực thi Tác vụ Dài (Long Tasks > 50ms):** $< 0.1\%$ trên tổng số khung hình trình duyệt.
+- **Tải CPU Phần cứng Điện thoại (Android Hardware Encoder Load):** $< 15\%$ CPU trên từng máy vật lý nhờ sử dụng chip MediaCodec H.264 phần cứng.
+- **Độ trễ Điều khiển Trực tiếp (Glass-to-Glass Latency):** $< 100\text{ms}$ khi ở chế độ CONTROL.
+
 ---
 
-## 5. HẠ TẦNG XUYÊN NAT & RELAY (COTURN & SFU ARCHITECTURE)
+## 5. RÀNG BUỘC BẢO MẬT MEDIAPROJECTION KHI REBOOT
 
-- **STUN (Session Traversal Utilities for NAT):** Phát hiện địa chỉ IP công khai khi Agent và Client nằm sau các lớp NAT khác nhau.
-- **TURN (Traversal Using Relays around NAT):** Chuyển tiếp luồng Media có mã hóa (DTLS-SRTP) qua cổng UDP/TCP 3478 / 5349 khi mạng chặn Direct P2P (như mạng 4G/5G hoặc tường lửa doanh nghiệp nghiêm ngặt).
-- **SFU (Selective Forwarding Unit):** Phân phối 1 luồng video từ Agent tới nhiều người xem hoặc chuyển đổi bitrate linh hoạt mà không bắt chip điện thoại Android phải encode nhiều lần.
+- **Nguyên tắc:** Trên ROM gốc Android 14+ (API 34) và 15+ (API 35), hệ điều hành Android **CẤM** khởi chạy Foreground Service loại `mediaProjection` từ các background receivers (như `BOOT_COMPLETED`) mà không có User Consent Token hợp lệ từ người dùng tại thời điểm khởi chạy.
+- **Cam kết Khôi phục:**
+  - Sau khi Reboot, hệ thống **KHÔNG CAM KẾT tự động khôi phục luồng stream (No Unattended Stream Guarantee)** trên ROM gốc unmanaged.
+  - Tuy nhiên, kết nối điều khiển WSS (`AGENT_ONLINE`) và dịch vụ Trợ năng (`CONTROL_READY`) sẽ khôi phục 100% tự động, sẵn sàng nhận lệnh mở hộp thoại cấp quyền ghi hình khi kỹ thuật viên / operator yêu cầu.
