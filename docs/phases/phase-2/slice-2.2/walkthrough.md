@@ -56,5 +56,7 @@ All integration, unit, and frontend tests pass (`go test`, `npm run typecheck`, 
 
 **Note**: Docker local verification unavailable due to Docker engine being offline.
 
-> [!TIP]
-> The infrastructure and security hardening for V2 Enrollment is now complete. The repository state matches the documented architecture goals. You can safely lock **Gate 2.2**.
+> [!IMPORTANT]
+> **GATE 2.2 LOCKED**
+> 
+> The Slice 2.2 implementation is officially approved and locked at canonical SHA `775abd8974ab718e548cb0383f7c1e93aa0b38d4`. All verification paths (Frontend, Backend, Migrations, E2E Failover, Quota Invariants, Android Compilation Check) successfully passed in canonical CI run `32259875178`. Awaiting Owner Authorization to proceed to Slice 2.3.
