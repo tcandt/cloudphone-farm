@@ -218,3 +218,33 @@ export interface RentalPackage {
   available_stock: number;
   badge?: string;
 }
+
+export interface AgentKey {
+  key_id: string;
+  organization_id: string;
+  created_by: string;
+  name: string;
+  token_prefix: string;
+  max_bindings?: number;
+  active_bindings: number;
+  created_at: string;
+  updated_at: string;
+  expires_at?: string;
+  revoked_at?: string;
+  last_used_at?: string;
+}
+
+export interface AgentKeyBinding {
+  binding_id: string;
+  device_id: string;
+  agent_id: string;
+  public_key_fingerprint: string;
+  bound_at: string;
+  released_at?: string;
+  release_reason?: string;
+}
+
+export interface AgentKeyCreatedResponse {
+  key: AgentKey;
+  raw_secret: string;
+}
