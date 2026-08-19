@@ -46,7 +46,13 @@ The following UI Primitives were created, hardened, and exported:
 ## 4. Visual Evidence
 ![Design System Desktop](./design-system-desktop.png)
 
-## 5. Changed File List
+## 5. Logo Asset Integration
+- **Actual Dimensions:** 512x512
+- **Format:** PNG
+- **Actual Asset SHA256:** `3A02C25A2294AAAF5C5337CE989C3C4D9EDD6EE2F1AFEBE1C01B246A94AB9112`
+- **Build Output Asset Filename:** Not emitted in production build (Rollup correctly dead-code eliminated `BrandLogo` since it is exclusively imported inside `src/dev/DesignSystemPreview.tsx` which is gated by `import.meta.env.DEV`. It will be emitted once integrated into the production app shell).
+
+## 6. Changed File List
 - `tsconfig.json` (modified)
 - `vite.config.ts` (modified)
 - `tailwind.config.js` (modified)
