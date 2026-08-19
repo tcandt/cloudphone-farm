@@ -42,6 +42,7 @@ const SuspenseLoader: React.FC<{ children: React.ReactNode }> = ({ children }) =
 );
 
 import type { RouteObject } from 'react-router-dom';
+import { AdminLayout } from './components/admin/layout/AdminLayout';
 
 export const routes: RouteObject[] = [
   {
@@ -68,6 +69,104 @@ export const routes: RouteObject[] = [
     path: '/reset-password',
     element: <SuspenseLoader><ResetPasswordPage /></SuspenseLoader>,
   },
+  // ADMIN ROUTES
+  {
+    path: '/admin',
+    element: (
+      <RouteGuard>
+        <ErrorBoundary>
+          <AdminLayout />
+        </ErrorBoundary>
+      </RouteGuard>
+    ),
+    children: [
+      {
+        index: true,
+        element: <Navigate to="/admin/overview" replace />,
+      },
+      {
+        path: 'overview',
+        lazy: () => import('./pages/admin/OverviewPage').then(m => ({ Component: m.OverviewPage })),
+      },
+      {
+        path: 'customers',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.CustomersPage })),
+      },
+      {
+        path: 'devices',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.DevicesPage })),
+      },
+      {
+        path: 'device-groups',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.DeviceGroupsPage })),
+      },
+      {
+        path: 'wall-monitor',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.WallMonitorPage })),
+      },
+      {
+        path: 'agents',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AgentsPage })),
+      },
+      {
+        path: 'agent-keys',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AgentKeysPage })),
+      },
+      {
+        path: 'agent-releases',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AgentReleasesPage })),
+      },
+      {
+        path: 'automation',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AutomationPage })),
+      },
+      {
+        path: 'workflows',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.WorkflowsPage })),
+      },
+      {
+        path: 'automation-runs',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AutomationRunsPage })),
+      },
+      {
+        path: 'rentals',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.RentalsPage })),
+      },
+      {
+        path: 'plans',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.PlansPage })),
+      },
+      {
+        path: 'wallets',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.WalletsPage })),
+      },
+      {
+        path: 'transactions',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.TransactionsPage })),
+      },
+      {
+        path: 'alerts',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AlertsPage })),
+      },
+      {
+        path: 'audit',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AuditPage })),
+      },
+      {
+        path: 'admin-users',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.AdminUsersPage })),
+      },
+      {
+        path: 'roles',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.RolesPage })),
+      },
+      {
+        path: 'settings',
+        lazy: () => import('./pages/admin/PlaceholderPages').then(m => ({ Component: m.SettingsPage })),
+      },
+    ],
+  },
+  // CLIENT ROUTES
   {
     path: '/app',
     element: (
