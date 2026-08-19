@@ -9,8 +9,6 @@ info:
 servers:
   - url: /api/v1
     description: Primary API Gateway Base Path (Legacy)
-  - url: /api/v2
-    description: V2 API Gateway Base Path
 
 security:
   - bearerAuth: []
@@ -313,6 +311,8 @@ paths:
           description: Token revoked successfully
 
   /agent-keys:
+    servers:
+      - url: /api/v2
     get:
       summary: List Agent Keys (V2)
       responses:
@@ -353,6 +353,8 @@ paths:
                 $ref: '#/components/schemas/AgentKeyCreatedResponse'
 
   /agent-keys/{key_id}:
+    servers:
+      - url: /api/v2
     get:
       summary: Get Agent Key details (V2)
       parameters:
@@ -412,25 +414,6 @@ paths:
       responses:
         '204':
           description: Agent Key revoked successfully (revoked_at = NOW)
-
-  /agent-keys/{key_id}/devices:
-    get:
-      summary: List devices bound to an Agent Key
-      parameters:
-        - name: key_id
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: List of bound devices
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/DeviceEntity'
 
   /agents/enroll:
     post:

@@ -147,31 +147,50 @@ func (r *agentKeyRepository) List(ctx context.Context, orgID string) ([]*domain.
 	return keys, nil
 }
 
-func (r *agentKeyRepository) Update(ctx context.Context, orgID, keyID string, name string, maxBindings *int, expiresAt *time.Time) (*domain.AgentKey, error) {
+func (r *agentKeyRepository) Update(ctx context.Context, orgID, keyID string, name *string, maxBindings *int, updateMaxBindings bool, expiresAt *time.Time, updateExpiresAt bool) (*domain.AgentKey, error) {
+	// First fetch the current key to apply partial updates cleanly
+	key, err := r.GetByID(ctx, orgID, keyID)
+	if err != nil {
+		return nil, err
+	}
+	if key == nil {
+		return nil, nil // ErrNoRows mapping
+	}
+
+	if name != nil {
+		key.Name = *name
+	}
+	if updateMaxBindings {
+		key.MaxBindings = maxBindings
+	}
+	if updateExpiresAt {
+		key.ExpiresAt = expiresAt
+	}
+
 	query := `
 		UPDATE agent_enrollment_keys
 		SET name = $1, max_bindings = $2, expires_at = $3, updated_at = NOW()
 		WHERE organization_id = $4 AND key_id = $5
 		RETURNING key_id, organization_id, created_by, name, token_hash, token_prefix, max_bindings, expires_at, revoked_at, created_at, updated_at, last_used_at
 	`
-	row := r.db.QueryRow(ctx, query, name, maxBindings, expiresAt, orgID, keyID)
+	row := r.db.QueryRow(ctx, query, key.Name, key.MaxBindings, key.ExpiresAt, orgID, keyID)
 	
-	var key domain.AgentKey
+	var outKey domain.AgentKey
 	var maxBindingsOut sql.NullInt64
 	var expiresAtOut, revokedAt, lastUsedAt sql.NullTime
 
-	err := row.Scan(
-		&key.KeyID,
-		&key.OrganizationID,
-		&key.CreatedBy,
-		&key.Name,
-		&key.TokenHash,
-		&key.TokenPrefix,
+	err = row.Scan(
+		&outKey.KeyID,
+		&outKey.OrganizationID,
+		&outKey.CreatedBy,
+		&outKey.Name,
+		&outKey.TokenHash,
+		&outKey.TokenPrefix,
 		&maxBindingsOut,
 		&expiresAtOut,
 		&revokedAt,
-		&key.CreatedAt,
-		&key.UpdatedAt,
+		&outKey.CreatedAt,
+		&outKey.UpdatedAt,
 		&lastUsedAt,
 	)
 
@@ -184,19 +203,19 @@ func (r *agentKeyRepository) Update(ctx context.Context, orgID, keyID string, na
 
 	if maxBindingsOut.Valid {
 		val := int(maxBindingsOut.Int64)
-		key.MaxBindings = &val
+		outKey.MaxBindings = &val
 	}
 	if expiresAtOut.Valid {
-		key.ExpiresAt = &expiresAtOut.Time
+		outKey.ExpiresAt = &expiresAtOut.Time
 	}
 	if revokedAt.Valid {
-		key.RevokedAt = &revokedAt.Time
+		outKey.RevokedAt = &revokedAt.Time
 	}
 	if lastUsedAt.Valid {
-		key.LastUsedAt = &lastUsedAt.Time
+		outKey.LastUsedAt = &lastUsedAt.Time
 	}
 
-	return &key, nil
+	return &outKey, nil
 }
 
 func (r *agentKeyRepository) Revoke(ctx context.Context, orgID, keyID string) error {

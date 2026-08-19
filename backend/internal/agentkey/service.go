@@ -27,9 +27,11 @@ type CreateKeyRequest struct {
 }
 
 type UpdateKeyRequest struct {
-	Name        string
-	MaxBindings *int
-	ExpiresAt   *time.Time
+	Name              *string
+	MaxBindings       *int
+	UpdateMaxBindings bool
+	ExpiresAt         *time.Time
+	UpdateExpiresAt   bool
 }
 
 type AgentKeyService interface {
@@ -103,11 +105,14 @@ func (s *agentKeyService) GetKey(ctx context.Context, orgID, keyID string) (*dom
 }
 
 func (s *agentKeyService) UpdateKey(ctx context.Context, orgID, keyID string, req UpdateKeyRequest) (*domain.AgentKey, error) {
-	if req.MaxBindings != nil && *req.MaxBindings <= 0 {
+	if req.UpdateMaxBindings && req.MaxBindings != nil && *req.MaxBindings <= 0 {
+		return nil, ErrInvalidParams
+	}
+	if req.Name != nil && len(*req.Name) == 0 {
 		return nil, ErrInvalidParams
 	}
 	
-	key, err := s.repo.Update(ctx, orgID, keyID, req.Name, req.MaxBindings, req.ExpiresAt)
+	key, err := s.repo.Update(ctx, orgID, keyID, req.Name, req.MaxBindings, req.UpdateMaxBindings, req.ExpiresAt, req.UpdateExpiresAt)
 	if err != nil {
 		return nil, err
 	}

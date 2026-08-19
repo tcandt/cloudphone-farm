@@ -192,7 +192,7 @@ func main() {
 	// CORS configuration
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CorsAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID", "X-Agent-Fingerprint", "X-Agent-ID", "X-Agent-Timestamp", "X-Agent-Nonce", "X-Agent-Signature"},
 		ExposedHeaders:   []string{"Link", "X-Request-ID"},
 		AllowCredentials: true,
@@ -287,13 +287,6 @@ func main() {
 
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("agent.enroll"))
-				r.Post("/agent-keys", agentKeyHandler.Create)
-				r.Get("/agent-keys", agentKeyHandler.List)
-				r.Get("/agent-keys/{keyId}", agentKeyHandler.GetByID)
-				r.Patch("/agent-keys/{keyId}", agentKeyHandler.Update)
-				r.Delete("/agent-keys/{keyId}", agentKeyHandler.Revoke)
-				r.Get("/agent-keys/{keyId}/devices", agentKeyHandler.ListDevices)
-
 				r.Post("/enrollment-tokens", agentHandler.CreateToken)
 				r.Get("/enrollment-tokens", agentHandler.ListTokens)
 				r.Get("/enrollment-tokens/{id}/readiness", agentHandler.GetTokenReadiness)
@@ -311,6 +304,25 @@ func main() {
 					"user_id":         principal.UserID,
 					"organization_id": principal.OrganizationID,
 				})
+			})
+		})
+	})
+
+	r.Route("/api/v2", func(r chi.Router) {
+		r.Use(middleware.Timeout(30 * time.Second))
+		r.Use(rateLimiter.LimitMiddleware(custommw.ScopeRestAPI, 100, 20))
+
+		r.Group(func(r chi.Router) {
+			r.Use(authMiddleware.Handler)
+			r.Use(custommw.TenantMiddleware)
+
+			r.Group(func(r chi.Router) {
+				r.Use(custommw.RequirePermission("agent.enroll"))
+				r.Post("/agent-keys", agentKeyHandler.Create)
+				r.Get("/agent-keys", agentKeyHandler.List)
+				r.Get("/agent-keys/{keyId}", agentKeyHandler.GetByID)
+				r.Patch("/agent-keys/{keyId}", agentKeyHandler.Update)
+				r.Delete("/agent-keys/{keyId}", agentKeyHandler.Revoke)
 			})
 		})
 	})

@@ -118,21 +118,45 @@ func (h *AgentKeyHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	keyID := chi.URLParam(r, "keyId")
 
-	var req PatchAgentKeysKeyIdJSONBody
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var rawReq map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&rawReq); err != nil {
 		WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body")
 		return
 	}
 
 	svcReq := agentkey.UpdateKeyRequest{}
-	if req.Name != nil {
-		svcReq.Name = *req.Name
+	
+	if nameRaw, ok := rawReq["name"]; ok {
+		if nameRaw != nil {
+			if str, isStr := nameRaw.(string); isStr {
+				svcReq.Name = &str
+			}
+		} else {
+			// explicitly null, which is invalid for name, let service return error
+			empty := ""
+			svcReq.Name = &empty
+		}
 	}
-	if req.MaxBindings != nil {
-		svcReq.MaxBindings = req.MaxBindings
+	
+	if maxBRaw, ok := rawReq["max_bindings"]; ok {
+		svcReq.UpdateMaxBindings = true
+		if maxBRaw != nil {
+			if num, isNum := maxBRaw.(float64); isNum {
+				val := int(num)
+				svcReq.MaxBindings = &val
+			}
+		}
 	}
-	if req.ExpiresAt != nil {
-		svcReq.ExpiresAt = req.ExpiresAt
+	
+	if expRaw, ok := rawReq["expires_at"]; ok {
+		svcReq.UpdateExpiresAt = true
+		if expRaw != nil {
+			if str, isStr := expRaw.(string); isStr {
+				if t, err := time.Parse(time.RFC3339, str); err == nil {
+					svcReq.ExpiresAt = &t
+				}
+			}
+		}
 	}
 
 	key, err := h.svc.UpdateKey(r.Context(), principal.OrganizationID, keyID, svcReq)
@@ -175,30 +199,7 @@ func (h *AgentKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *AgentKeyHandler) ListDevices(w http.ResponseWriter, r *http.Request) {
-	principal, err := auth.GetPrincipal(r.Context())
-	if err != nil {
-		WriteError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "Authentication required")
-		return
-	}
 
-	keyID := chi.URLParam(r, "keyId")
-	
-	_, err = h.svc.GetKey(r.Context(), principal.OrganizationID, keyID)
-	if err != nil {
-		if errors.Is(err, agentkey.ErrNotFound) {
-			WriteError(w, http.StatusNotFound, "NOT_FOUND", "Agent key not found")
-			return
-		}
-		WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get agent key")
-		return
-	}
-
-	// Wait for Slice 2.2 for Agent Key Bindings. For now return empty list.
-	res := []DeviceEntity{}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(res)
-}
 
 func mapDomainKeyToAPI(k *domain.AgentKey) AgentKey {
 	ak := AgentKey{
