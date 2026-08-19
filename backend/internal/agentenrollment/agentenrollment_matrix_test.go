@@ -337,7 +337,7 @@ func TestEnrollmentV2_SecurityMatrix(t *testing.T) {
 			ChallengeID:      chalID,
 			ClientInstanceID: "ci_malformed_sig",
 			PublicKey:        pub,
-			Signature:        "invalid_base64_sig==",
+			Signature:        base64.StdEncoding.EncodeToString([]byte{0x30, 0x03, 0x02, 0x01, 0x01}),
 			DeviceInfo:       validDeviceInfo,
 		}
 		_, _, err := service.EnrollAgent(ctx, req)

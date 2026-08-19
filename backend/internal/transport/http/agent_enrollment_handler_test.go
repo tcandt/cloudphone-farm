@@ -338,5 +338,23 @@ func TestAgentEnrollmentHandlerV2_Integration(t *testing.T) {
 		if rr9.Code != http.StatusUnauthorized {
 			t.Errorf("expected 401 Unauthorized for invalid signature, got %d", rr9.Code)
 		}
+
+		// rate limit exhaustion -> 429
+		got429 := false
+		for i := 0; i < 60; i++ {
+			bInvalidSig, _ := json.Marshal(bodyInvalidSig)
+			reqInvalidSig, _ := http.NewRequest("POST", "/api/v2/agents/enroll", bytes.NewReader(bInvalidSig))
+			reqInvalidSig.Header.Set("Content-Type", "application/json")
+			reqInvalidSig.RemoteAddr = "10.0.0.99:1234"
+			rrRL := httptest.NewRecorder()
+			r.ServeHTTP(rrRL, reqInvalidSig)
+			if rrRL.Code == http.StatusTooManyRequests {
+				got429 = true
+				break
+			}
+		}
+		if !got429 {
+			t.Errorf("expected at least one 429 Too Many Requests, got none")
+		}
 	})
 }
