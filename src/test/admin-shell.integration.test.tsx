@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect } from 'vitest';
 import { adminNavGroups } from '../components/admin/navigation/adminNav';
@@ -20,8 +20,11 @@ describe('Slice 1.4: Admin AppShell Contracts', () => {
     const indexChild = adminRoute?.children?.find(child => child.index === true);
     expect(indexChild).toBeDefined();
     expect(indexChild?.element).toBeTruthy();
-    // Assuming the Navigate to attribute inside element can be checked indirectly
-    // Since we can't easily parse React elements, the route existence is a proxy, but we confirm index is present.
+    
+    // Assert the actual redirect path
+    const elementProps = (indexChild?.element as any)?.props;
+    expect(elementProps?.to).toBe('/admin/overview');
+    expect(elementProps?.replace).toBe(true);
   });
 
   it('B. Actual admin router contains all 20 canonical children', () => {
@@ -83,9 +86,12 @@ describe('Slice 1.4: Admin AppShell Contracts', () => {
     // Click route closes it (handled internally by clicking a NavLink, which triggers setMobileDrawerOpen(false))
     fireEvent.click(toggleBtn); // open again
     expect(toggleBtn.getAttribute('aria-expanded')).toBe('true');
-    const overviewLinks = screen.getAllByText('Tổng quan');
-    fireEvent.click(overviewLinks[0]);
+    const drawerForLink = screen.getByRole('dialog');
+    const overviewLink = within(drawerForLink).getByRole('link', { name: /Overview/i });
+    fireEvent.click(overviewLink);
+    
     expect(toggleBtn.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('G. Token Keys page contains presentation-only enrollment-phase copy', () => {

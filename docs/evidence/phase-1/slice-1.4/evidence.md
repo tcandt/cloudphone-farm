@@ -29,6 +29,8 @@ Console errors: 0
 Horizontal overflow: PASS
 
 ## 3. Exact Changed Source Files
+
+### Admin AppShell Implementation
 - `src/components/admin/layout/AdminHeader.tsx`
 - `src/components/admin/layout/AdminLayout.tsx`
 - `src/components/admin/layout/AdminMobileDrawer.tsx`
@@ -40,6 +42,13 @@ Horizontal overflow: PASS
 - `src/router.tsx`
 - `src/stores/useAdminUiStore.ts`
 - `src/test/admin-shell.integration.test.tsx`
+
+### Phase 1 Final Lint-Gate Hygiene / Behavior-Preserving
+- `src/components/layout/Sidebar.tsx`
+- `src/pages/DeviceListPage.tsx`
+- `src/pages/RentalStorePage.tsx`
+- `src/test/client-shell.integration.test.tsx`
+- `src/test/page-shells.integration.test.tsx`
 
 ## 4. Visual Verification
 
