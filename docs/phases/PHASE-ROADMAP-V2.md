@@ -95,7 +95,7 @@ gantt
 ---
 
 ### PHASE 3 — APK Agent Foundation & Keystore (ECDSA P-256)
-- **Mục tiêu:** Khởi tạo cấu trúc Android Agent V2 với giao diện kết nối và quản lý khóa mật mã phần cứng ECDSA P-256.
+- **Mục tiêu:** Khởi tạo cấu trúc Android Agent V2 với giao diện kết nối và quản lý khóa mật mã AndroidKeyStore ECDSA P-256 with runtime security-level inspection (SOFTWARE / TRUSTED_ENVIRONMENT / STRONGBOX / UNKNOWN).
 - **Nội dung thực hiện:**
   - Thiết kế `ConnectActivity` (Nhập BaseURL, User, Token Key).
   - Khởi tạo `AgentKeyStore` tạo cặp khóa ECDSA P-256 bằng Android KeyStore (tương thích API 26–35+).
@@ -105,9 +105,9 @@ gantt
 ---
 
 ### 🔴 PHASE 4 — Stable Connection & Supervisor (GATE QUAN TRỌNG NHẤT)
-- **Mục tiêu:** Đạt độ ổn định kết nối tuyệt đối $99.99\%$, tự phục hồi vô hạn khi có sự cố mạng.
+- **Mục tiêu:** Đạt kết nối bền bỉ và khả năng tự phục hồi có đo lường; release SLO chỉ được chốt sau 24–72h physical-device soak evidence.
 - **Nội dung thực hiện:**
-  - Triển khai `AgentConnectionService` (FGS type: `connectedDevice`) độc lập hoàn toàn với Activity UI.
+  - Triển khai `AgentConnectionService` (FGS type: VALIDATE IN PHASE 4 per ADR-ANDROID-AGENT-FGS-TYPE.md) độc lập hoàn toàn với Activity UI.
   - Triển khai `ConnectionSupervisor` và máy trạng thái FSM (UNENROLLED $\rightarrow$ READY $\rightarrow$ BACKOFF).
   - Thuật toán Exponential Backoff + Jitter ($\pm 20\%$).
   - Xác thực Challenge-Response bằng chữ ký `SHA256withECDSA` qua WSS.
