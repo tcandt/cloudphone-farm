@@ -54,5 +54,7 @@ I have completed the implementation of **Phase 2 Slice 2.2** ensuring the archit
 
 All integration, unit, and frontend tests pass (`go test`, `npm run typecheck`, `npm run lint -- --max-warnings=0`, `npm run test -- --run`, `npm run build`), and the implementation follows your hardening plan exactly. 
 
+**Note**: Docker local verification unavailable due to Docker engine being offline.
+
 > [!TIP]
 > The infrastructure and security hardening for V2 Enrollment is now complete. The repository state matches the documented architecture goals. You can safely lock **Gate 2.2**.
