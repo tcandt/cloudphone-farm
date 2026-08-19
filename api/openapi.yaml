@@ -8,7 +8,9 @@ info:
 
 servers:
   - url: /api/v1
-    description: Primary API Gateway Base Path
+    description: Primary API Gateway Base Path (Legacy)
+  - url: /api/v2
+    description: V2 API Gateway Base Path
 
 security:
   - bearerAuth: []
@@ -310,6 +312,126 @@ paths:
         '204':
           description: Token revoked successfully
 
+  /agent-keys:
+    get:
+      summary: List Agent Keys (V2)
+      responses:
+        '200':
+          description: List of agent keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentKey'
+
+    post:
+      summary: Create new Agent Enrollment Key (V2)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                max_bindings:
+                  type: integer
+                  nullable: true
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '201':
+          description: Agent Key created (Raw secret returned ONLY ONCE)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentKeyCreatedResponse'
+
+  /agent-keys/{key_id}:
+    get:
+      summary: Get Agent Key details (V2)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent Key details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentKey'
+                
+    patch:
+      summary: Update Agent Key (V2)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                max_bindings:
+                  type: integer
+                  nullable: true
+                expires_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+      responses:
+        '200':
+          description: Agent Key updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentKey'
+
+    delete:
+      summary: Revoke Agent Key (V2)
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Agent Key revoked successfully (revoked_at = NOW)
+
+  /agent-keys/{key_id}/devices:
+    get:
+      summary: List devices bound to an Agent Key
+      parameters:
+        - name: key_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of bound devices
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeviceEntity'
+
   /agents/enroll:
     post:
       summary: Enroll Android APK Agent via Token
@@ -533,6 +655,26 @@ components:
         bound_group_id:
           type: string
 
+    EnrollmentToken:
+      type: object
+      required: [token_id, organization_id, created_by, created_at, expires_at, status]
+      properties:
+        token_id:
+          type: string
+        organization_id:
+          type: string
+        created_by:
+          type: string
+        created_at:
+          type: string
+        expires_at:
+          type: string
+        status:
+          type: string
+          enum: [active, consumed, revoked, expired]
+        bound_group_id:
+          type: string
+
     EnrollmentTokenMetadata:
       type: object
       required: [token_id, organization_id, created_by, created_at, expires_at, status]
@@ -576,6 +718,51 @@ components:
         ip_address:
           type: string
         created_at:
+          type: string
+          
+    AgentKey:
+      type: object
+      required: [key_id, organization_id, created_by, name, token_prefix, created_at, updated_at]
+      properties:
+        key_id:
+          type: string
+        organization_id:
+          type: string
+        created_by:
+          type: string
+        name:
+          type: string
+        token_prefix:
+          type: string
+        max_bindings:
+          type: integer
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    AgentKeyCreatedResponse:
+      type: object
+      required: [key, raw_secret]
+      properties:
+        key:
+          $ref: '#/components/schemas/AgentKey'
+        raw_secret:
           type: string
 
   responses:

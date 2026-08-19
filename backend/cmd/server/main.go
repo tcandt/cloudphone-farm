@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	agentservice "github.com/tcandt/cloudphone-farm/backend/internal/agent"
+	"github.com/tcandt/cloudphone-farm/backend/internal/agentkey"
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentws"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	"github.com/tcandt/cloudphone-farm/backend/internal/cluster"
@@ -121,6 +122,7 @@ func main() {
 	cmdRepo := pgrepo.NewCommandRepository(pgPool)
 	fenceRepo := pgrepo.NewFenceRepository(pgPool)
 	leaseRepo := redisrepo.NewLeaseRepository(rdb)
+	agentKeyRepo := pgrepo.NewAgentKeyRepository(pgPool)
 
 	agentConnRepo := redisrepo.NewAgentConnectionRepository(rdb)
 	mediaSessionRepo := redisrepo.NewMediaSessionRepository(rdb)
@@ -154,12 +156,14 @@ func main() {
 	agentService.SetAgentConnectionRepository(agentConnRepo)
 	leaseService := devservice.NewLeaseService(fenceRepo, leaseRepo)
 	cmdService := command.NewCommandService(pgPool, leaseService)
+	agentKeyService := agentkey.NewService(agentKeyRepo)
 
 	// Handlers & Middlewares
 	healthHandler := httptransport.NewHealthHandler(pgPool, rdb, outboxDispatcher)
 	authHandler := httptransport.NewAuthHandler(authService, cfg)
 	deviceHandler := httptransport.NewDeviceHandler(deviceService)
 	agentHandler := httptransport.NewAgentHandler(agentService, rdb)
+	agentKeyHandler := httptransport.NewAgentKeyHandler(agentKeyService)
 
 	agentWSHandler := wstransport.NewAgentWSHandler(wsHub, enrollRepo, cmdRepo, browserHub)
 	agentWSHandler.SetClusterComponents(cfg.NodeID, agentConnRepo, clusterRouter)
@@ -283,6 +287,13 @@ func main() {
 
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("agent.enroll"))
+				r.Post("/agent-keys", agentKeyHandler.Create)
+				r.Get("/agent-keys", agentKeyHandler.List)
+				r.Get("/agent-keys/{keyId}", agentKeyHandler.GetByID)
+				r.Patch("/agent-keys/{keyId}", agentKeyHandler.Update)
+				r.Delete("/agent-keys/{keyId}", agentKeyHandler.Revoke)
+				r.Get("/agent-keys/{keyId}/devices", agentKeyHandler.ListDevices)
+
 				r.Post("/enrollment-tokens", agentHandler.CreateToken)
 				r.Get("/enrollment-tokens", agentHandler.ListTokens)
 				r.Get("/enrollment-tokens/{id}/readiness", agentHandler.GetTokenReadiness)
