@@ -1,266 +1,278 @@
-import React, { useState, useEffect } from 'react';
-import { useTranslation } from 'react-i18next';
-import { Search, CheckSquare, Square, Play, Loader2 } from 'lucide-react';
-import { mockGroups } from '../data/mockData';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Search, MonitorPlay, Smartphone, Clock, Filter, AlertCircle, RefreshCw } from 'lucide-react';
 import { DeviceEntity } from '../types';
-import { useUiStore } from '../stores/useUiStore';
-import { DeviceControlModal } from '../components/devices/DeviceControlModal';
-import { PermissionGuard } from '../components/common/PermissionGuard';
 import { deviceService } from '../services/device-service';
+import { useToastStore } from '@ui/toast/Toast';
+
+// 1. PAGE-LOCAL VIEW MODEL
+// We do not pollute DeviceEntity with UI/presentation fields.
+interface ClientDeviceViewModel {
+  id: string;
+  displayName: string;
+  model: string;
+  androidVersion: string;
+  group: string;
+  presentationStatus: 'Online' | 'Offline' | 'Thiếu quyền' | 'Sắp hết hạn';
+  remainingTime: string;
+  rawDevice: DeviceEntity; // Keep original reference if needed for safe actions
+}
+
+// Map raw devices to client-friendly presentation models
+const mapToClientViewModel = (devices: DeviceEntity[]): ClientDeviceViewModel[] => {
+  return devices.map((dev, index) => {
+    // Determine a safe presentation status based on raw status and mock logic
+    let presentationStatus: ClientDeviceViewModel['presentationStatus'] = 'Offline';
+    let remainingTime = 'Hết hạn';
+
+    if (dev.status === 'online') {
+      presentationStatus = 'Online';
+      remainingTime = 'Còn 23 ngày';
+      
+      // Inject some mock edge cases for visual testing
+      if (index === 2) {
+        presentationStatus = 'Sắp hết hạn';
+        remainingTime = 'Còn 2 giờ';
+      }
+      if (index === 3) {
+        presentationStatus = 'Thiếu quyền';
+        remainingTime = 'Còn 15 ngày';
+      }
+    } else {
+      presentationStatus = 'Offline';
+      remainingTime = 'Còn 21 ngày';
+    }
+
+    return {
+      id: dev.device_id,
+      displayName: dev.display_name || dev.name || 'Cloud Phone',
+      model: dev.model,
+      androidVersion: `Android ${dev.android_version}`,
+      group: dev.group_id || 'Mặc định',
+      presentationStatus,
+      remainingTime,
+      rawDevice: dev,
+    };
+  });
+};
 
 export const DeviceListPage: React.FC = () => {
-  const { t } = useTranslation();
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [groupFilter, setGroupFilter] = useState<string>('all');
-  const [activeControlDevice, setActiveControlDevice] = useState<DeviceEntity | null>(null);
-  const [devices, setDevices] = useState<DeviceEntity[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const { selectedDeviceIds, toggleSelectDevice, selectAllDevices, clearDeviceSelection } = useUiStore();
+  const [statusFilter, setStatusFilter] = useState<string>('Tất cả');
+  const [rawDevices, setRawDevices] = useState<DeviceEntity[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  const addToast = useToastStore((state) => state.addToast);
 
   useEffect(() => {
     let isMounted = true;
-
+    // We only fetch based on search term. We DO NOT send our fake presentation statuses to the API.
     deviceService
-      .list({
-        status: statusFilter,
-        group_id: groupFilter,
-        search: searchTerm,
-      })
+      .list({ search: searchTerm })
       .then((res) => {
         if (isMounted) {
-          setDevices(res.items);
+          setRawDevices(res.items);
           setLoading(false);
         }
       })
-      .catch((err) => {
+      .catch(() => {
         if (isMounted) {
-          setError(err.message || 'Failed to load devices');
           setLoading(false);
         }
       });
 
-    return () => {
-      isMounted = false;
-    };
-  }, [searchTerm, statusFilter, groupFilter]);
+    return () => { isMounted = false; };
+  }, [searchTerm]);
 
-  const isAllSelected =
-    devices.length > 0 && devices.every((d) => selectedDeviceIds.includes(d.device_id));
+  const viewModels = useMemo(() => {
+    const allModels = mapToClientViewModel(rawDevices);
+    if (statusFilter === 'Tất cả') return allModels;
+    return allModels.filter(m => m.presentationStatus === statusFilter);
+  }, [rawDevices, statusFilter]);
 
-  const handleSelectAll = () => {
-    if (isAllSelected) {
-      clearDeviceSelection();
-    } else {
-      selectAllDevices(devices.map((d) => d.device_id));
-    }
+  const handleControlClick = () => {
+    addToast({
+      type: 'info',
+      title: 'Tính năng giới hạn',
+      message: 'Tính năng điều khiển sẽ được kích hoạt ở giai đoạn thương mại.',
+    });
   };
 
   return (
-    <div className="space-y-6">
-      {/* Title Bar */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+    <div className="space-y-6 md:space-y-8 p-4 md:p-8 max-w-7xl mx-auto">
+      {/* PAGE HEADER */}
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">{t('devices.title')}</h1>
-          <p className="text-xs text-slate-500 font-medium">
-            Quản lý danh sách, gán nhóm và theo dõi trạng thái thiết bị Android
+          <h1 className="text-3xl font-black text-slate-900 tracking-tight">Quản lý thiết bị</h1>
+          <p className="text-sm text-slate-500 font-medium mt-1">
+            Tổng cộng {rawDevices.length} thiết bị đang thuê
           </p>
         </div>
-
-        {/* Selected Batch Actions Bar */}
-        {selectedDeviceIds.length > 0 && (
-          <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 px-4 py-2 rounded-2xl shadow-sm animate-fadeIn">
-            <span className="text-xs font-bold text-blue-900">Đã chọn: {selectedDeviceIds.length}</span>
-            <span className="text-blue-300">|</span>
-            <button
-              onClick={() => alert(`Lệnh restart đã gửi tới ${selectedDeviceIds.length} thiết bị.`)}
-              className="px-3 py-1 bg-white hover:bg-slate-50 text-slate-800 rounded-xl text-xs font-bold shadow-sm"
-            >
-              Restart
-            </button>
-            <button
-              onClick={() => alert(`Đang áp dụng Proxy cho ${selectedDeviceIds.length} thiết bị.`)}
-              className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm"
-            >
-              Gán Proxy
-            </button>
-          </div>
-        )}
+        
+        {/* Visual anticipation of future multi-device features */}
+        <div className="flex items-center gap-3">
+          <button className="hidden md:flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-50 transition-colors shadow-sm cursor-not-allowed opacity-70" disabled>
+            Wall View
+          </button>
+          <button className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-semibold hover:bg-emerald-100 transition-colors cursor-not-allowed opacity-70 border border-emerald-200/50" disabled>
+            Điều khiển đồng bộ
+          </button>
+        </div>
       </div>
 
-      {/* Filter and Control Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row gap-4 justify-between items-center">
-        <div className="relative w-full md:w-80">
-          <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+      {/* FILTER TOOLBAR */}
+      <div className="bg-white p-2 md:p-3 rounded-2xl border border-slate-100 shadow-sm flex flex-col md:flex-row gap-3">
+        <div className="relative flex-1">
+          <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
+            <Search size={18} className="text-slate-400" />
+          </div>
           <input
             type="text"
-            placeholder={t('devices.searchPlaceholder')}
+            placeholder="Tìm kiếm tên thiết bị..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all"
+            className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-transparent rounded-xl text-sm focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all outline-none"
           />
         </div>
-
-        <div className="flex flex-wrap items-center gap-3 w-full md:w-auto">
-          {/* Status Filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none"
-          >
-            <option value="all">{t('common.allStatus')}</option>
-            <option value="online">Online</option>
-            <option value="offline">Offline</option>
-            <option value="degraded">Degraded</option>
-            <option value="busy">Busy</option>
-          </select>
-
-          {/* Group Filter */}
-          <select
-            value={groupFilter}
-            onChange={(e) => setGroupFilter(e.target.value)}
-            className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none"
-          >
-            <option value="all">{t('common.allGroups')}</option>
-            {mockGroups.map((grp) => (
-              <option key={grp.group_id} value={grp.group_id}>
-                {grp.name}
-              </option>
-            ))}
-          </select>
+        
+        <div className="flex overflow-x-auto custom-scrollbar gap-2 pb-1 md:pb-0">
+          {['Tất cả', 'Online', 'Offline', 'Thiếu quyền', 'Sắp hết hạn'].map((status) => (
+            <button
+              key={status}
+              onClick={() => setStatusFilter(status)}
+              className={`flex-shrink-0 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
+                statusFilter === status
+                  ? 'bg-slate-900 text-white shadow-sm'
+                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100 border border-transparent'
+              }`}
+            >
+              {status}
+            </button>
+          ))}
+          <button className="flex-shrink-0 flex items-center gap-2 px-4 py-2.5 bg-slate-50 text-slate-600 rounded-xl text-sm font-semibold hover:bg-slate-100 transition-colors border border-transparent">
+            <Filter size={16} /> Nhóm
+          </button>
         </div>
       </div>
 
-      {/* Table Container */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        {loading ? (
-          <div className="p-12 text-center text-slate-400 font-medium flex items-center justify-center gap-2">
-            <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
-            <span>Đang tải danh sách thiết bị...</span>
+      {/* DEVICE LIST */}
+      {loading ? (
+        <div className="flex flex-col items-center justify-center p-16 text-slate-400 space-y-4">
+          <RefreshCw className="w-8 h-8 animate-spin text-emerald-500" />
+          <p className="font-medium text-sm">Đang tải danh sách thiết bị...</p>
+        </div>
+      ) : viewModels.length === 0 ? (
+        <div className="bg-white border border-slate-100 rounded-3xl p-16 text-center shadow-sm">
+          <div className="w-16 h-16 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-400">
+            <Smartphone size={32} />
           </div>
-        ) : error ? (
-          <div className="p-12 text-center text-rose-500 font-medium">
-            Lỗi tải dữ liệu: {error}
+          <h3 className="text-lg font-bold text-slate-900">Không tìm thấy thiết bị</h3>
+          <p className="text-sm text-slate-500 mt-1">Không có thiết bị nào phù hợp với bộ lọc hiện tại.</p>
+        </div>
+      ) : (
+        <>
+          {/* DESKTOP GRID VIEW (Hidden on Mobile) */}
+          <div className="hidden md:grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+            {viewModels.map((vm) => (
+              <div key={vm.id} className="bg-white border border-slate-200/60 rounded-[20px] p-5 shadow-sm hover:shadow-md transition-shadow flex flex-col justify-between group">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2.5 rounded-xl ${
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' :
+                      vm.presentationStatus === 'Offline' ? 'bg-slate-100 text-slate-400' :
+                      vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-50 text-amber-600' :
+                      'bg-rose-50 text-rose-600'
+                    }`}>
+                      <Smartphone size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-slate-900 text-base">{vm.displayName}</h3>
+                      <p className="text-xs text-slate-500 font-medium">{vm.model}</p>
+                    </div>
+                  </div>
+                  
+                  <span className={`px-2.5 py-1 rounded-full flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide border ${
+                    vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-700 border-emerald-200/50' :
+                    vm.presentationStatus === 'Offline' ? 'bg-slate-50 text-slate-500 border-slate-200' :
+                    vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-50 text-amber-700 border-amber-200/50' :
+                    'bg-rose-50 text-rose-700 border-rose-200/50'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-500' :
+                      vm.presentationStatus === 'Offline' ? 'bg-slate-400' :
+                      vm.presentationStatus === 'Sắp hết hạn' ? 'bg-amber-500' :
+                      'bg-rose-500'
+                    }`} />
+                    {vm.presentationStatus}
+                  </span>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2 mb-5">
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100/50">
+                    <div className="text-[10px] uppercase font-bold text-slate-400 mb-0.5">Hệ điều hành</div>
+                    <div className="text-xs font-semibold text-slate-700">{vm.androidVersion}</div>
+                  </div>
+                  <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100/50">
+                    <div className="text-[10px] uppercase font-bold text-slate-400 mb-0.5 flex items-center gap-1">
+                      <Clock size={10} /> Hết hạn
+                    </div>
+                    <div className="text-xs font-semibold text-slate-700">{vm.remainingTime}</div>
+                  </div>
+                </div>
+                
+                <button 
+                  onClick={handleControlClick}
+                  className="w-full flex items-center justify-center gap-2 py-3 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-sm font-bold transition-all shadow-sm active:scale-[0.99]"
+                >
+                  <MonitorPlay size={16} /> Mở điều khiển
+                </button>
+              </div>
+            ))}
           </div>
-        ) : devices.length === 0 ? (
-          <div className="p-12 text-center text-slate-400 font-medium">
-            Không tìm thấy thiết bị phù hợp.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50/80 border-b border-slate-200 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                  <th className="py-3 px-4 w-10">
-                    <button onClick={handleSelectAll} className="text-slate-400 hover:text-slate-600">
-                      {isAllSelected ? (
-                        <CheckSquare className="w-4 h-4 text-blue-600" />
-                      ) : (
-                        <Square className="w-4 h-4" />
-                      )}
-                    </button>
-                  </th>
-                  <th className="py-3 px-4">{t('devices.name')}</th>
-                  <th className="py-3 px-4">Model & Serial</th>
-                  <th className="py-3 px-4">Trạng thái</th>
-                  <th className="py-3 px-4">Pin / Mạng</th>
-                  <th className="py-3 px-4">Nhóm</th>
-                  <th className="py-3 px-4 text-right">Thao tác</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {devices.map((dev) => {
-                  const isSelected = selectedDeviceIds.includes(dev.device_id);
-                  return (
-                    <tr
-                      key={dev.device_id}
-                      className={`hover:bg-slate-50/80 transition-colors ${
-                        isSelected ? 'bg-blue-50/40' : ''
-                      }`}
-                    >
-                      <td className="py-3.5 px-4">
-                        <button
-                          onClick={() => toggleSelectDevice(dev.device_id)}
-                          className="text-slate-400 hover:text-slate-600"
-                        >
-                          {isSelected ? (
-                            <CheckSquare className="w-4 h-4 text-blue-600" />
-                          ) : (
-                            <Square className="w-4 h-4" />
-                          )}
-                        </button>
-                      </td>
-                      <td className="py-3.5 px-4 font-bold text-slate-900">
-                        {dev.display_name || dev.name}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-600 font-mono text-[11px]">
-                        <div>{dev.model}</div>
-                        <div className="text-slate-400">{dev.serial_number}</div>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span
-                          className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase ${
-                            dev.status === 'online'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : dev.status === 'degraded'
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                              : 'bg-slate-100 text-slate-600 border border-slate-200'
-                          }`}
-                        >
-                          <span
-                            className={`w-1.5 h-1.5 rounded-full ${
-                              dev.status === 'online'
-                                ? 'bg-emerald-500'
-                                : dev.status === 'degraded'
-                                ? 'bg-amber-500'
-                                : 'bg-slate-400'
-                            }`}
-                          />
-                          {dev.status}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-600">
-                        {dev.telemetry ? (
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-slate-700">{dev.telemetry.battery}%</span>
-                            <span className="text-slate-300">|</span>
-                            <span className="uppercase text-[10px] font-bold text-slate-500">{dev.telemetry.network}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-400 italic">No telemetry</span>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-600 font-medium">
-                        {dev.group_id || (dev.groups && dev.groups[0]) || 'Mặc định'}
-                      </td>
-                      <td className="py-3.5 px-4 text-right">
-                        <PermissionGuard permission="device.control.input">
-                          <button
-                            onClick={() => setActiveControlDevice(dev)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-sm transition-all text-xs"
-                          >
-                            <Play className="w-3.5 h-3.5" />
-                            <span>Điều khiển</span>
-                          </button>
-                        </PermissionGuard>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
 
-      {/* Control Modal */}
-      {activeControlDevice && (
-        <DeviceControlModal
-          device={activeControlDevice}
-          onClose={() => setActiveControlDevice(null)}
-        />
+          {/* MOBILE STACKED LIST VIEW (Hidden on Desktop) */}
+          <div className="md:hidden space-y-4">
+            {viewModels.map((vm) => (
+              <div key={vm.id} className="bg-white border border-slate-200/60 rounded-[20px] p-4 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className={`p-2 rounded-xl ${
+                      vm.presentationStatus === 'Online' ? 'bg-emerald-50 text-emerald-600' :
+                      'bg-slate-100 text-slate-500'
+                    }`}>
+                      <Smartphone size={20} />
+                    </div>
+                    <div>
+                      <h3 className="font-extrabold text-slate-900 text-sm">{vm.displayName}</h3>
+                      <p className="text-[11px] text-slate-500">{vm.model}</p>
+                    </div>
+                  </div>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                    vm.presentationStatus === 'Online' ? 'text-emerald-700 bg-emerald-50' : 'text-slate-500 bg-slate-50'
+                  }`}>
+                    {vm.presentationStatus}
+                  </span>
+                </div>
+                
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-medium px-1">
+                  <span>{vm.androidVersion}</span>
+                  <div className="flex items-center gap-1">
+                    <Clock size={12} className={vm.presentationStatus === 'Sắp hết hạn' ? 'text-amber-500' : ''} /> 
+                    <span className={vm.presentationStatus === 'Sắp hết hạn' ? 'text-amber-600 font-bold' : ''}>
+                      {vm.remainingTime}
+                    </span>
+                  </div>
+                </div>
+
+                <button 
+                  onClick={handleControlClick}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 bg-slate-900 text-white rounded-xl text-sm font-bold shadow-sm"
+                >
+                  <MonitorPlay size={16} /> Điều khiển
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </div>
   );
