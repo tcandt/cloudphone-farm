@@ -15,6 +15,8 @@ import (
 	"github.com/tcandt/cloudphone-farm/backend/internal/agentkey"
 	"github.com/tcandt/cloudphone-farm/backend/internal/auth"
 	httptransport "github.com/tcandt/cloudphone-farm/backend/internal/transport/http"
+	custommw "github.com/tcandt/cloudphone-farm/backend/internal/transport/http/middleware"
+	"github.com/go-chi/cors"
 )
 
 type MockAgentKeyService struct {
@@ -60,7 +62,10 @@ func (m *MockAgentKeyService) RevokeKey(ctx context.Context, orgID, keyID string
 
 func setupTestRouter(svc *MockAgentKeyService, orgID string) *chi.Mux {
 	r := chi.NewRouter()
-	
+
+	// Use real CORS configuration from middleware
+	r.Use(cors.Handler(custommw.GetCorsOptions([]string{"http://localhost:3000"})))
+
 	// mock auth middleware
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,12 +80,8 @@ func setupTestRouter(svc *MockAgentKeyService, orgID string) *chi.Mux {
 
 	handler := httptransport.NewAgentKeyHandler(svc)
 
-	r.Route("/api/v2/agent-keys", func(r chi.Router) {
-		r.Post("/", handler.Create)
-		r.Get("/", handler.List)
-		r.Get("/{keyId}", handler.GetByID)
-		r.Patch("/{keyId}", handler.Update)
-		r.Delete("/{keyId}", handler.Revoke)
+	r.Route("/api/v2", func(r chi.Router) {
+		r.Route("/agent-keys", handler.RegisterRoutes)
 	})
 
 	return r
@@ -227,6 +228,42 @@ func TestAgentKeyHandler_Patch_TriState(t *testing.T) {
 	w8 := httptest.NewRecorder()
 	r.ServeHTTP(w8, req8)
 	assert.Equal(t, http.StatusBadRequest, w8.Code)
+
+	// Case 9: PATCH {"organization_id":"other"}
+	body9 := []byte(`{"organization_id":"other"}`)
+	req9, _ := http.NewRequest("PATCH", "/api/v2/agent-keys/key1", bytes.NewBuffer(body9))
+	req9.Header.Set("Content-Type", "application/json")
+	w9 := httptest.NewRecorder()
+	r.ServeHTTP(w9, req9)
+	assert.Equal(t, http.StatusBadRequest, w9.Code)
+
+	// Case 10: PATCH {"revoked_at":null}
+	body10 := []byte(`{"revoked_at":null}`)
+	req10, _ := http.NewRequest("PATCH", "/api/v2/agent-keys/key1", bytes.NewBuffer(body10))
+	req10.Header.Set("Content-Type", "application/json")
+	w10 := httptest.NewRecorder()
+	r.ServeHTTP(w10, req10)
+	assert.Equal(t, http.StatusBadRequest, w10.Code)
+
+	// Case 11: Trailing JSON
+	body11 := []byte(`{} {}`)
+	req11, _ := http.NewRequest("PATCH", "/api/v2/agent-keys/key1", bytes.NewBuffer(body11))
+	req11.Header.Set("Content-Type", "application/json")
+	w11 := httptest.NewRecorder()
+	r.ServeHTTP(w11, req11)
+	assert.Equal(t, http.StatusBadRequest, w11.Code)
+
+	// Case 12: Valid expires_at
+	svc.On("UpdateKey", mock.Anything, "org1", "key1", mock.MatchedBy(func(req agentkey.UpdateKeyRequest) bool {
+		return req.UpdateExpiresAt && req.ExpiresAt != nil
+	})).Return(&domain.AgentKey{}, nil).Once()
+
+	body12 := []byte(`{"expires_at":"2026-08-19T10:00:00Z"}`)
+	req12, _ := http.NewRequest("PATCH", "/api/v2/agent-keys/key1", bytes.NewBuffer(body12))
+	req12.Header.Set("Content-Type", "application/json")
+	w12 := httptest.NewRecorder()
+	r.ServeHTTP(w12, req12)
+	assert.Equal(t, http.StatusOK, w12.Code)
 }
 
 func TestAgentKeyHandler_TenantIsolation(t *testing.T) {
@@ -234,14 +271,28 @@ func TestAgentKeyHandler_TenantIsolation(t *testing.T) {
 	// Router uses org2, but key belongs to org1
 	r := setupTestRouter(svc, "org2")
 
+	// GET
 	svc.On("GetKey", mock.Anything, "org2", "key1").Return((*domain.AgentKey)(nil), agentkey.ErrNotFound)
+	req1, _ := http.NewRequest("GET", "/api/v2/agent-keys/key1", nil)
+	w1 := httptest.NewRecorder()
+	r.ServeHTTP(w1, req1)
+	assert.Equal(t, http.StatusNotFound, w1.Code)
 
-	req, _ := http.NewRequest("GET", "/api/v2/agent-keys/key1", nil)
-	w := httptest.NewRecorder()
-	r.ServeHTTP(w, req)
+	// PATCH
+	svc.On("UpdateKey", mock.Anything, "org2", "key1", mock.Anything).Return((*domain.AgentKey)(nil), agentkey.ErrNotFound)
+	body := []byte(`{"name":"Hacked"}`)
+	req2, _ := http.NewRequest("PATCH", "/api/v2/agent-keys/key1", bytes.NewBuffer(body))
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusNotFound, w2.Code)
 
-	// Expected 404 since it's not found in org2
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	// DELETE
+	svc.On("RevokeKey", mock.Anything, "org2", "key1").Return(agentkey.ErrNotFound)
+	req3, _ := http.NewRequest("DELETE", "/api/v2/agent-keys/key1", nil)
+	w3 := httptest.NewRecorder()
+	r.ServeHTTP(w3, req3)
+	assert.Equal(t, http.StatusNotFound, w3.Code)
 }
 
 func TestAgentKeyHandler_Delete(t *testing.T) {
@@ -270,11 +321,22 @@ func TestAgentKeyHandler_WrongV1Route_Fails(t *testing.T) {
 }
 
 func TestAgentKeyHandler_CORS_Options(t *testing.T) {
+	svc := new(MockAgentKeyService)
+	r := setupTestRouter(svc, "org1")
+
 	req, _ := http.NewRequest("OPTIONS", "/api/v2/agent-keys/key1", nil)
-	// We need to inject CORS headers manually for test router since middleware is missing, 
-	// OR we test the real server CORS. But since we use setupTestRouter we mock standard behavior.
-	// Actually, the user wants us to prove CORS OPTIONS for PATCH.
-	// We can skip this if we just ensure it's in main.go, or we can add a basic handler for OPTIONS if not present.
-	// But let's verify CORS is in main.go instead.
-	_ = req
+	req.Header.Set("Origin", "http://localhost:3000")
+	req.Header.Set("Access-Control-Request-Method", "PATCH")
+
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// Should be successful preflight
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	// Assert methods
+	assert.Contains(t, w.Header().Get("Access-Control-Allow-Methods"), "PATCH")
+	
+	// Assert origin
+	assert.Equal(t, "http://localhost:3000", w.Header().Get("Access-Control-Allow-Origin"))
 }

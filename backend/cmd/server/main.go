@@ -190,14 +190,7 @@ func main() {
 	r.Use(custommw.CSRFMiddleware(cfg.CorsAllowedOrigins))
 
 	// CORS configuration
-	r.Use(cors.Handler(cors.Options{
-		AllowedOrigins:   cfg.CorsAllowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "X-Request-ID", "X-Agent-Fingerprint", "X-Agent-ID", "X-Agent-Timestamp", "X-Agent-Nonce", "X-Agent-Signature"},
-		ExposedHeaders:   []string{"Link", "X-Request-ID"},
-		AllowCredentials: true,
-		MaxAge:           300,
-	}))
+	r.Use(cors.Handler(custommw.GetCorsOptions(cfg.CorsAllowedOrigins)))
 
 	// Health Check Handlers (Public)
 	r.Get("/health/live", healthHandler.Live)
@@ -318,11 +311,7 @@ func main() {
 
 			r.Group(func(r chi.Router) {
 				r.Use(custommw.RequirePermission("agent.enroll"))
-				r.Post("/agent-keys", agentKeyHandler.Create)
-				r.Get("/agent-keys", agentKeyHandler.List)
-				r.Get("/agent-keys/{keyId}", agentKeyHandler.GetByID)
-				r.Patch("/agent-keys/{keyId}", agentKeyHandler.Update)
-				r.Delete("/agent-keys/{keyId}", agentKeyHandler.Revoke)
+				r.Route("/agent-keys", agentKeyHandler.RegisterRoutes)
 			})
 		})
 	})

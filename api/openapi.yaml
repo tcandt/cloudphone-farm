@@ -333,12 +333,16 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               required: [name]
               properties:
                 name:
                   type: string
+                  minLength: 1
+                  maxLength: 128
                 max_bindings:
                   type: integer
+                  minimum: 1
                   nullable: true
                 expires_at:
                   type: string
@@ -385,11 +389,15 @@ paths:
           application/json:
             schema:
               type: object
+              additionalProperties: false
               properties:
                 name:
                   type: string
+                  minLength: 1
+                  maxLength: 128
                 max_bindings:
                   type: integer
+                  minimum: 1
                   nullable: true
                 expires_at:
                   type: string

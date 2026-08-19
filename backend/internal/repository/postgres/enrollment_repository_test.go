@@ -205,19 +205,7 @@ func TestPostgreSQLRecordDeviceHeartbeat_NullableTelemetryAndKeyProtection(t *te
 		t.Errorf("expected security_level STRONGBOX on device_agents, got: %v", daMap["security_level"])
 	}
 
-	var devKeyProtRaw []byte
-	err = pool.QueryRow(ctx, `SELECT key_protection FROM devices WHERE organization_id = $1 AND device_id = $2`, orgID, deviceID).Scan(&devKeyProtRaw)
-	if err != nil {
-		t.Fatalf("failed to query devices key_protection: %v", err)
-	}
 
-	var devMap map[string]interface{}
-	if err := json.Unmarshal(devKeyProtRaw, &devMap); err != nil {
-		t.Fatalf("failed to unmarshal devices key_protection: %v", err)
-	}
-	if devMap["security_level"] != "STRONGBOX" {
-		t.Errorf("expected security_level STRONGBOX on devices, got: %v", devMap["security_level"])
-	}
 
 	// 4. Assert error propagation when key_protection UPDATE fails (invalid JSONB syntax)
 	invalidJSON := []byte("INVALID_JSON_SYNTAX")

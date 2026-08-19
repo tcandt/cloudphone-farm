@@ -20,6 +20,14 @@ func NewAgentKeyHandler(svc agentkey.AgentKeyService) *AgentKeyHandler {
 	return &AgentKeyHandler{svc: svc}
 }
 
+func (h *AgentKeyHandler) RegisterRoutes(r chi.Router) {
+	r.Post("/", h.Create)
+	r.Get("/", h.List)
+	r.Get("/{keyId}", h.GetByID)
+	r.Patch("/{keyId}", h.Update)
+	r.Delete("/{keyId}", h.Revoke)
+}
+
 func (h *AgentKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 	principal, err := auth.GetPrincipal(r.Context())
 	if err != nil {
