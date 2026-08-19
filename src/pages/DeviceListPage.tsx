@@ -43,13 +43,12 @@ export const DeviceListPage: React.FC = () => {
   const [rawDevices, setRawDevices] = useState<DeviceEntity[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
   
   const addToast = useToastStore((state) => state.addToast);
 
-  const fetchDevices = () => {
+  useEffect(() => {
     let isMounted = true;
-    setLoading(true);
-    setError(null);
     
     // We only fetch based on search term. We DO NOT send fake presentation statuses to the API.
     deviceService
@@ -68,12 +67,7 @@ export const DeviceListPage: React.FC = () => {
       });
 
     return () => { isMounted = false; };
-  };
-
-  useEffect(() => {
-    const cleanup = fetchDevices();
-    return cleanup;
-  }, [searchTerm]);
+  }, [searchTerm, retryVersion]);
 
   const viewModels = useMemo(() => {
     const allModels = mapToClientViewModel(rawDevices);
@@ -121,7 +115,11 @@ export const DeviceListPage: React.FC = () => {
             type="text"
             placeholder="Tìm kiếm tên thiết bị..."
             value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              setLoading(true);
+              setError(null);
+            }}
             className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border-transparent rounded-xl text-sm focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all outline-none"
           />
         </div>
@@ -160,7 +158,11 @@ export const DeviceListPage: React.FC = () => {
           <h3 className="text-lg font-bold text-slate-900">Không thể tải dữ liệu</h3>
           <p className="text-sm text-slate-500 mt-1">{error}</p>
           <button 
-            onClick={() => fetchDevices()}
+            onClick={() => {
+              setLoading(true);
+              setError(null);
+              setRetryVersion(v => v + 1);
+            }}
             className="mt-6 px-6 py-2 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl shadow-sm hover:bg-slate-50 transition-colors"
           >
             Thử lại

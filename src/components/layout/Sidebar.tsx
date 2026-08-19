@@ -2,7 +2,6 @@ import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { ShoppingBag, Smartphone, Wallet, BookOpen } from 'lucide-react';
 import { useUiStore } from '../../stores/useUiStore';
-import { BrandLogo } from '@brand/index';
 
 interface NavItemProps {
   to: string;

@@ -82,6 +82,7 @@ export const AdminMobileDrawer: React.FC = () => {
       
       {/* Drawer */}
       <div 
+        id="admin-mobile-drawer"
         ref={drawerRef}
         tabIndex={-1}
         className="relative w-4/5 max-w-sm bg-white h-full shadow-2xl flex flex-col focus:outline-none"

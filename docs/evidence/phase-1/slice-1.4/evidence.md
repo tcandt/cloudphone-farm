@@ -3,19 +3,45 @@
 **Scope:** Dedicated Admin Console shell completely separated from the Client shell. Includes persistent Desktop Sidebar, tablet/mobile Drawer, and responsive empty page shells. 
 **Design:** Platform Pro (dense, premium, data-heavy Admin).
 
+NO backend changes
+NO Android changes
+NO DB migrations
+NO OpenAPI changes
+NO Agent enrollment implementation
+NO Token Key backend
+NO WebRTC / SFU runtime
+NO automation runtime
+NO rental/payment backend changes
+
 ## 1. Test Verification
-```text
-Test Result: PASS 
-(8 test files, 47 tests passed)
-```
+Exact file count: 8 test files
+Exact test count: 51 tests passed
 
 ## 2. Gate Status
-- Typecheck: PASS
-- Lint: 1 error, 8 warnings (This occurs in the unmodified `DeviceListPage.tsx` baseline `1b1ef33`. `DeviceListPage.tsx` was restored and completely frozen per instructions).
-- Test: PASS 
-- Build: PASS
+Desktop: 1280x800
+Tablet: 768x1024
+Mobile: 375x812
+Typecheck: PASS
+Lint: PASS — 0 errors / 0 warnings
+Tests: 8 files / 51 tests passed
+Build: PASS
+Console errors: 0
+Horizontal overflow: PASS
 
-## 3. Visual Verification
+## 3. Exact Changed Source Files
+- `src/components/admin/layout/AdminHeader.tsx`
+- `src/components/admin/layout/AdminLayout.tsx`
+- `src/components/admin/layout/AdminMobileDrawer.tsx`
+- `src/components/admin/layout/AdminSidebar.tsx`
+- `src/components/admin/navigation/adminNav.ts`
+- `src/pages/admin/AdminEmptyShell.tsx`
+- `src/pages/admin/OverviewPage.tsx`
+- `src/pages/admin/PlaceholderPages.tsx`
+- `src/router.tsx`
+- `src/stores/useAdminUiStore.ts`
+- `src/test/admin-shell.integration.test.tsx`
+
+## 4. Visual Verification
 
 ### Overview
 ![Desktop Overview](admin-overview-desktop.png)

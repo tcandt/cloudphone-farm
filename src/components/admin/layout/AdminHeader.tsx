@@ -8,7 +8,7 @@ import { useAdminUiStore } from '../../../stores/useAdminUiStore';
 export const AdminHeader: React.FC = () => {
   const { i18n } = useTranslation();
   const navigate = useNavigate();
-  const { toggleSidebar, toggleMobileDrawer } = useAdminUiStore();
+  const { isMobileDrawerOpen, toggleSidebar, toggleMobileDrawer } = useAdminUiStore();
 
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showLangMenu, setShowLangMenu] = useState(false);
@@ -27,7 +27,8 @@ export const AdminHeader: React.FC = () => {
           onClick={toggleMobileDrawer}
           className="lg:hidden p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-all active:scale-95"
           aria-label="Open Admin Menu"
-          aria-expanded={false}
+          aria-expanded={isMobileDrawerOpen}
+          aria-controls="admin-mobile-drawer"
         >
           <Menu size={20} />
         </button>
@@ -37,6 +38,7 @@ export const AdminHeader: React.FC = () => {
           onClick={toggleSidebar}
           className="hidden lg:block p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-all active:scale-95"
           title="Toggle Sidebar"
+          aria-label="Toggle Sidebar"
         >
           <Menu size={20} />
         </button>
@@ -55,6 +57,7 @@ export const AdminHeader: React.FC = () => {
           <button
             onClick={() => setShowLangMenu(!showLangMenu)}
             className="flex items-center gap-1.5 px-3 py-2 bg-transparent hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-700 transition-colors"
+            aria-label="Toggle Language Menu"
           >
             <span>{i18n.language === 'vi' ? 'VN' : 'EN'}</span>
             <ChevronDown size={14} />
@@ -79,7 +82,10 @@ export const AdminHeader: React.FC = () => {
         </div>
 
         {/* Notification Indicator */}
-        <button className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors relative">
+        <button 
+          className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-50 rounded-xl transition-colors relative"
+          aria-label="View Notifications"
+        >
           <BellRing size={18} />
           <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-rose-500 rounded-full border-2 border-white"></span>
         </button>
@@ -89,6 +95,7 @@ export const AdminHeader: React.FC = () => {
           <button
             onClick={() => setShowProfileMenu(!showProfileMenu)}
             className="flex items-center gap-2.5 p-1 rounded-xl hover:bg-slate-50 transition-colors"
+            aria-label="Toggle Profile Menu"
           >
             <img
               src={mockCurrentUserSession.avatar_url}

@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { useTranslation } from 'react-i18next';
 import { Search, SlidersHorizontal, Package, Check, Smartphone, Cpu } from 'lucide-react';
 import { mockRentalPackages } from '../data/mockData';
 import { useToastStore } from '@ui/toast/Toast';
@@ -36,7 +35,6 @@ const clientPackages: ClientRentalPackage[] = mockRentalPackages.map((pkg, index
 }));
 
 export const RentalStorePage: React.FC = () => {
-  const { t } = useTranslation();
   const addToast = useToastStore((state) => state.addToast);
   const [selectedDuration, setSelectedDuration] = useState<Record<string, 'daily' | 'weekly' | 'monthly'>>({});
 

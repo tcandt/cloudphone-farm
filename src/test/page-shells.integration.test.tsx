@@ -1,4 +1,5 @@
 import React from 'react';
+import { DeviceEntity } from '../types';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -81,7 +82,7 @@ describe('Slice 1.3 Client Page Shells Contracts', () => {
 
     it('renders realistic mocked device and hides operator telemetry', async () => {
       vi.mocked(deviceService.list).mockResolvedValue({ 
-        items: [mockRealDevice as any], 
+        items: [mockRealDevice as unknown as DeviceEntity], 
         total: 1,
         page: 1,
         limit: 10
