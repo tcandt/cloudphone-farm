@@ -41,11 +41,15 @@ I have completed the implementation of **Phase 2 Slice 2.2** ensuring the archit
 
 ## Hardening & Production Polish (Owner Gate 2.2 Requisites)
 
+- **Go 1.22.6 Toolchain Lock**: The `backend/go.mod` is explicitly pinned to Go 1.22.6 to prevent silent upgrades and ensure a stable build baseline.
 - **Cryptographic Storage**: Now strictly stores the raw `public_key` (SPKI DER as `[]byte`) and validates its length/content alongside the 64-char lowercase `public_key_fingerprint`.
 - **Strict Parsing**: Uses `dec.DisallowUnknownFields()` and length validation (e.g. `client_instance_id` <= 64) to reject payloads with trailing data or unmapped properties.
 - **Typed Contracts**: Eliminated `map[string]interface{}` in favor of the strongly typed `AgentDeviceInfo`, explicitly validating the presence of Manufacturer, Model, AndroidVersion, SerialNumber, AgentVersion, and ProtocolVersion.
 - **Security Check**: `ChallengeID` now generated via 32-byte `crypto/rand` encoded to base64url without padding, NOT hex.
-- **Integration Test Matrix**: We created tests fully covering the concurrency matrix (same identity, different identity) natively interacting with the PostgreSQL transaction limits and isolation levels.
+- **SECRET HYGIENE Test**: Correctly asserts that the enrollment token is strictly absent from the Redis payload under `agent:enroll:challenge:<id>` and from the database `agent_enrollment_keys` row.
+- **Integration Test Matrix**: The `SecurityMatrix` was extended to include comprehensive checks for non-P256 public keys, malformed ASN.1 DER signatures, expired challenges, request/challenge mismatch cases, and device-offline quota rules.
+- **HTTP Contract Testing**: The full HTTP contract was exercised over `httptest` simulating production, rigorously verifying 201 Created, 200 OK (idempotent), 401 Unauthorized, 409 Conflict, 400 Bad Request responses, and actively validating the `ScopeEnrollment` rate-limit middleware logic.
+- **Migration Verification**: Assertions in `agentkey_migration_test.go` were updated to correctly inspect PostgreSQL `pg_indexes`, `pg_constraint`, and `information_schema.columns` to verify UP/DOWN parity.
 - **Schema Validation**: Tests added validating the CHECK constraint `chk_akb_fp` and the `client_instance_id` unique composite keys directly against Postgres 16.
 
 All integration, unit, and frontend tests pass (`go test`, `npm run typecheck`, `npm run lint -- --max-warnings=0`, `npm run test -- --run`, `npm run build`), and the implementation follows your hardening plan exactly. 

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,16 +247,17 @@ func TestEnrollmentV2_SecurityMatrix(t *testing.T) {
 		ci := "ci_secret_hygiene"
 		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
 		
-		// Ensure secret not in Redis
-		val, err := rdb.Get(ctx, "chal:"+chalID).Result()
-		if err == nil {
-			var chalData struct {
-				TokenHash string `json:"token_hash"`
-			}
-			json.Unmarshal([]byte(val), &chalData)
-			if chalData.TokenHash == rawSecret {
-				t.Errorf("raw secret found in Redis")
-			}
+		val, err := rdb.Get(ctx, "agent:enroll:challenge:"+chalID).Result()
+		if err != nil {
+			t.Fatalf("Redis challenge should exist before enrollment: %v", err)
+		}
+		if strings.Contains(val, rawSecret) {
+			t.Errorf("raw enrollment token IS contained in serialized challenge value")
+		}
+		var chalData map[string]interface{}
+		json.Unmarshal([]byte(val), &chalData)
+		if _, ok := chalData["token_hash"]; ok {
+			t.Errorf("token_hash IS stored in challenge value")
 		}
 
 		req := agentenrollment.AgentEnrollRequest{
@@ -267,6 +269,11 @@ func TestEnrollmentV2_SecurityMatrix(t *testing.T) {
 			DeviceInfo:       validDeviceInfo,
 		}
 		service.EnrollAgent(ctx, req)
+
+		_, err = rdb.Get(ctx, "agent:enroll:challenge:"+chalID).Result()
+		if err == nil || err != redis.Nil {
+			t.Errorf("challenge key was not removed by GETDEL")
+		}
 
 		var tokenHashDB string
 		pool.QueryRow(ctx, "SELECT token_hash FROM agent_enrollment_keys WHERE key_id = $1", keyID).Scan(&tokenHashDB)
@@ -298,8 +305,196 @@ func TestEnrollmentV2_SecurityMatrix(t *testing.T) {
 		req.ChallengeID = chalID2
 		req.Signature = signNonce(nonce2, priv)
 		_, _, err := service.EnrollAgent(ctx, req)
-		if err == nil {
-			t.Errorf("expected error on revoked retry, got success")
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized on revoked retry, got %v", err)
+		}
+		
+		// Check that it was not reactivated
+		var status string
+		pool.QueryRow(ctx, "SELECT status FROM device_agents WHERE agent_id = $1", res.AgentID).Scan(&status)
+		if status != "revoked" {
+			t.Errorf("expected agent to remain revoked, got %s", status)
+		}
+	})
+
+	t.Run("non-P256 public key", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		privP384, _ := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+		pubBytes, _ := x509.MarshalPKIXPublicKey(&privP384.PublicKey)
+		pub := base64.StdEncoding.EncodeToString(pubBytes)
+		_, _, err := service.GenerateChallenge(ctx, rawSecret, "ci_p384", pub)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized for non-P256 key, got %v", err)
+		}
+	})
+
+	t.Run("malformed ASN.1 DER signature", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, _ := genKey()
+		chalID, _, _ := service.GenerateChallenge(ctx, rawSecret, "ci_malformed_sig", pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: "ci_malformed_sig",
+			PublicKey:        pub,
+			Signature:        "invalid_base64_sig==",
+			DeviceInfo:       validDeviceInfo,
+		}
+		_, _, err := service.EnrollAgent(ctx, req)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized for malformed signature, got %v", err)
+		}
+	})
+
+	t.Run("expired challenge", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		ci := "ci_expired_chal"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		
+		// forcibly expire in redis
+		rdb.Del(ctx, "agent:enroll:challenge:"+chalID)
+
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: ci,
+			PublicKey:        pub,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		_, _, err := service.EnrollAgent(ctx, req)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized for expired challenge, got %v", err)
+		}
+	})
+
+	t.Run("challenge/client_instance_id mismatch", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		ci := "ci_mismatch_ci"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: "ci_other",
+			PublicKey:        pub,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		_, _, err := service.EnrollAgent(ctx, req)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+
+	t.Run("challenge/public_key mismatch", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		pub2, _ := genKey()
+		ci := "ci_mismatch_pk"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: ci,
+			PublicKey:        pub2,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		_, _, err := service.EnrollAgent(ctx, req)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+
+	t.Run("challenge/enrollment_token mismatch", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		ci := "ci_mismatch_token"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  "token_other",
+			ChallengeID:      chalID,
+			ClientInstanceID: ci,
+			PublicKey:        pub,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		_, _, err := service.EnrollAgent(ctx, req)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized, got %v", err)
+		}
+	})
+
+	t.Run("Token-Key revoke AFTER one successful binding", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		ci := "ci_revoke_after_bind"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: ci,
+			PublicKey:        pub,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		res, _, err := service.EnrollAgent(ctx, req)
+		if err != nil {
+			t.Fatalf("initial enroll failed: %v", err)
+		}
+
+		// Revoke the key
+		pool.Exec(ctx, "UPDATE agent_enrollment_keys SET revoked_at = NOW() WHERE key_id = $1", keyID)
+
+		// Assert existing agent and binding remain unchanged and active
+		var aStatus string
+		var bReleasedAt *time.Time
+		pool.QueryRow(ctx, "SELECT status FROM device_agents WHERE agent_id = $1", res.AgentID).Scan(&aStatus)
+		pool.QueryRow(ctx, "SELECT released_at FROM agent_key_bindings WHERE agent_id = $1 AND key_id = $2", res.AgentID, keyID).Scan(&bReleasedAt)
+		if aStatus != "active" || bReleasedAt != nil {
+			t.Errorf("expected active agent/binding, got agent=%s binding_released=%v", aStatus, bReleasedAt)
+		}
+
+		// Fresh NEW identity enrollment should be rejected
+		pub2, _ := genKey()
+		_, _, err = service.GenerateChallenge(ctx, rawSecret, "ci_fresh_reject", pub2)
+		if err != agentenrollment.ErrUnauthorized {
+			t.Errorf("expected ErrUnauthorized on revoked key fresh challenge, got %v", err)
+		}
+	})
+
+	t.Run("device offline", func(t *testing.T) {
+		setupKey(nil, nil, nil)
+		pub, priv := genKey()
+		ci := "ci_offline_device"
+		chalID, nonce, _ := service.GenerateChallenge(ctx, rawSecret, ci, pub)
+		req := agentenrollment.AgentEnrollRequest{
+			EnrollmentToken:  rawSecret,
+			ChallengeID:      chalID,
+			ClientInstanceID: ci,
+			PublicKey:        pub,
+			Signature:        signNonce(nonce, priv),
+			DeviceInfo:       validDeviceInfo,
+		}
+		res, _, _ := service.EnrollAgent(ctx, req)
+
+		// Mark device offline
+		pool.Exec(ctx, "UPDATE device_agents SET status = 'offline' WHERE agent_id = $1", res.AgentID)
+
+		// Active binding remains
+		var bReleasedAt *time.Time
+		pool.QueryRow(ctx, "SELECT released_at FROM agent_key_bindings WHERE agent_id = $1 AND key_id = $2", res.AgentID, keyID).Scan(&bReleasedAt)
+		if bReleasedAt != nil {
+			t.Errorf("expected active binding (released_at is null), got %v", bReleasedAt)
+		}
+
+		// Quota remains occupied
+		var currentBindings int
+		pool.QueryRow(ctx, "SELECT COUNT(*) FROM agent_key_bindings WHERE key_id = $1 AND released_at IS NULL", keyID).Scan(&currentBindings)
+		if currentBindings != 1 {
+			t.Errorf("expected 1 active binding, got %d", currentBindings)
 		}
 	})
 }

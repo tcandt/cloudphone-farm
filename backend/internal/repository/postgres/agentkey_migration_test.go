@@ -250,7 +250,7 @@ func TestMigration000011_AgentKeyBindings(t *testing.T) {
 	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'device_agents' AND column_name = 'client_instance_id')").Scan(&exists)
 	if exists { t.Errorf("client_instance_id column should be absent after DOWN") }
 
-	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_constraint WHERE conname = 'uq_device_agents_org_client_instance')").Scan(&exists)
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_indexes WHERE indexname = 'uq_device_agents_org_client_instance')").Scan(&exists)
 	if exists { t.Errorf("uq_device_agents_org_client_instance should be absent after DOWN") }
 
 	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_constraint WHERE conname = 'uq_device_agents_org_device_agent')").Scan(&exists)
@@ -260,6 +260,18 @@ func TestMigration000011_AgentKeyBindings(t *testing.T) {
 	if _, err := pool.Exec(ctx, string(m11Up)); err != nil {
 		t.Fatalf("failed to re-apply 000011 up: %v", err)
 	}
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.columns WHERE table_name = 'device_agents' AND column_name = 'client_instance_id')").Scan(&exists)
+	if !exists { t.Errorf("client_instance_id column should exist after UP") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_indexes WHERE indexname = 'uq_device_agents_org_client_instance')").Scan(&exists)
+	if !exists { t.Errorf("uq_device_agents_org_client_instance index should exist after UP") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_constraint WHERE conname = 'uq_device_agents_org_device_agent')").Scan(&exists)
+	if !exists { t.Errorf("uq_device_agents_org_device_agent constraint should exist after UP") }
+
+	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM pg_indexes WHERE indexname = 'uq_agent_key_bindings_active_agent')").Scan(&exists)
+	if !exists { t.Errorf("uq_agent_key_bindings_active_agent index should exist after UP") }
 
 	_ = pool.QueryRow(ctx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'agent_key_bindings')").Scan(&exists)
 	if !exists { t.Errorf("agent_key_bindings table should exist after UP") }
