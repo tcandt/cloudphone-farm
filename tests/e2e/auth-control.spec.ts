@@ -104,8 +104,9 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
 
     await page.goto('/app/devices/dev_s7_001');
 
-    // Verify Acquire Control button is hidden for Viewer
-    await expect(page.locator('button:has-text("Xin quyền điều khiển")')).not.toBeVisible();
+    // Verify View-only button is visible, but Control button is hidden/disabled by PermissionGuard for Viewer
+    await expect(page.getByRole('button', { name: 'Xem trực tiếp', exact: true })).toBeVisible();
+    await expect(page.locator('.pointer-events-none').getByRole('button', { name: 'Bật điều khiển', exact: true })).toBeVisible();
   });
 
   // Test 4: Operator Role Control Lease & Touch Gesture
@@ -118,16 +119,16 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
 
     await page.goto('/app/devices/dev_s7_001');
 
-    // Click Acquire Control button to open modal
-    await page.click('button:has-text("Xin quyền điều khiển")');
+    // Click Control button to open modal
+    await page.getByRole('button', { name: 'Bật điều khiển', exact: true }).click();
 
     // Verify Control Modal opens with canvas
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible();
 
     // Click Acquire Control Lease inside modal
-    await page.click('button:has-text("Lấy Quyền (Lease)")');
-    await expect(page.locator('text=Active')).toBeVisible();
+    await page.getByRole('button', { name: 'Bật điều khiển (Acquire Control Lease)', exact: true }).click();
+    await expect(page.getByText('ĐANG ĐIỀU KHIỂN')).toBeVisible();
 
     // Perform canvas touch click at center of content area
     await canvas.click();
@@ -145,17 +146,20 @@ test.describe('Phone Control Platform — E2E Browser & Integration Contract Sui
     await page.goto('/app/devices/dev_s7_001');
 
     // Open Control Modal but do NOT acquire lease
-    await page.click('button:has-text("Xin quyền điều khiển")');
+    await page.getByRole('button', { name: 'Bật điều khiển', exact: true }).click();
+    
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible();
 
-    // Verify Interactive Control Lock UI overlay is present
-    await expect(page.locator('text=Interactive Control Lock')).toBeVisible();
+    // Verify unleased view mode UI
+    await expect(page.getByText('ĐANG XEM TRỰC TIẾP')).toBeVisible();
     await expect(page.locator('button:has-text("Home")')).toBeDisabled();
 
-    // Click lock overlay backdrop
-    await page.locator('text=Interactive Control Lock').click();
-    await expect(page.locator('text=Interactive Control Lock')).toBeVisible();
+    // Click canvas without lease
+    await canvas.click();
+    
+    // Command should be rejected locally or via mock with CONTROL_LEASE_REQUIRED
+    await expect(page.getByText('CONTROL_LEASE_REQUIRED').first()).toBeVisible();
   });
 
   // Test 6: Unknown Device 404

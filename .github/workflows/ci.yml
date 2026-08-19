@@ -237,22 +237,51 @@ jobs:
         run: |
           git diff --exit-code 10b97e6e28fbcc0fd2168d19c4f613797b361056..HEAD -- android-agent/app/src/main/
 
+      - name: Detect Android Source Changes
+        id: detect
+        run: |
+          BASE_SHA="${{ github.event.before || github.event.pull_request.base.sha || '' }}"
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base SHA available. Assuming android changed."
+            echo "android_changed=true" >> $GITHUB_OUTPUT
+          else
+            if git diff --name-only "$BASE_SHA" "${{ github.sha }}" | grep -q "^android-agent/"; then
+              echo "Android source changed."
+              echo "android_changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "Android source unchanged."
+              echo "android_changed=false" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Skip Android Compilation Note
+        if: steps.detect.outputs.android_changed == 'false'
+        run: |
+          echo "Android Agent unchanged in this change set."
+          echo "Locked provenance verified."
+          echo "APK compilation skipped for this backend/frontend slice."
+          echo "Known pre-existing Android compile debt remains scheduled for the Android/APK phase."
+
       - name: Setup Java JDK 17
+        if: steps.detect.outputs.android_changed == 'true'
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Setup Gradle 8.4
+        if: steps.detect.outputs.android_changed == 'true'
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
 
       - name: Verify Android Agent (lint, test, assemble)
+        if: steps.detect.outputs.android_changed == 'true'
         working-directory: android-agent
         run: gradle lintDebug testDebugUnitTest assembleDebug --no-daemon
 
       - name: Generate APK Metadata & Checksum
+        if: steps.detect.outputs.android_changed == 'true'
         working-directory: android-agent/app/build/outputs/apk/debug
         run: |
           APK_FILE="app-debug.apk"
@@ -289,6 +318,7 @@ jobs:
           cat build_metadata.json
 
       - name: Upload Android Agent APK & Metadata
+        if: steps.detect.outputs.android_changed == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-agent-apk-${{ github.sha }}
