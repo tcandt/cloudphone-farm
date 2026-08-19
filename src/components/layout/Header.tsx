@@ -31,7 +31,7 @@ export const Header: React.FC = () => {
         {/* Collapse / Expand Toggle */}
         <button
           onClick={toggleSidebar}
-          className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-all active:scale-95"
+          className="hidden md:block p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-all active:scale-95"
           title="Toggle Sidebar"
         >
           <Menu size={20} />
