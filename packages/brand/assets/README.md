@@ -1,0 +1,8 @@
+Canonical Brand Asset:
+packages/brand/assets/cloudphonerental-mark.png
+
+SHA256:
+3A02C25A2294AAAF5C5337CE989C3C4D9EDD6EE2F1AFEBE1C01B246A94AB9112
+
+Status:
+OWNER APPROVED / LOCKED
